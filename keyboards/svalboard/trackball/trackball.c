@@ -1,6 +1,7 @@
 // Trackball (PMW3360/PMW3389) custom driver wrapper
 // Calls upstream driver functions directly - no pointing_device.c patch needed
 
+#include "pointing_detect.h"
 #include "quantum.h"
 #include "pointing_device.h"
 #include "drivers/sensors/pmw33xx_common.h"
@@ -54,17 +55,12 @@ void sval_pointer_identity(sval_pointer_identity_t *id) {
 #endif
     id->product_id         = sensor_product_id;
     id->inverse_product_id = sensor_inverse_product_id;
-    // Datasheet signatures, as in drivers/sensors/pmw3360.c and pmw3389.c.
-    if (sensor_product_id == 0x42 && sensor_inverse_product_id == 0xBD) {
-        id->detected = SVAL_SENSOR_PMW3360;
-    } else if (sensor_product_id == 0x47 && sensor_inverse_product_id == 0xB8) {
-        id->detected = SVAL_SENSOR_PMW3389;
-    } else if ((sensor_product_id == 0x00 && sensor_inverse_product_id == 0x00) || (sensor_product_id == 0xFF && sensor_inverse_product_id == 0xFF)) {
-        id->detected = SVAL_SENSOR_NO_RESPONSE;
-    } else {
-        id->detected = SVAL_SENSOR_UNKNOWN;
-    }
+    id->detected           = sval_pmw33xx_classify(sensor_product_id, sensor_inverse_product_id);
     if (sensor_init_ok) id->flags |= SVAL_POINTER_INIT_OK;
+}
+
+uint8_t sval_pointer_own_bus(void) {
+    return SVAL_BUS_SPI;
 }
 
 report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {

@@ -67,14 +67,16 @@ typedef struct __attribute__((__packed__)) _presence_rpc_t {
     uint8_t  scan_deep_clock_idx;
 } presence_rpc_t;
 
-// Which pointing sensor a half's firmware drives and which one answered, so a
-// host can say when the wrong trackball .uf2 was flashed (Sval 0x2C, docs/protocol.md).
+// Which pointing module a half's firmware drives and which one answered, so a host
+// can say when the wrong .uf2 was flashed (Sval 0x2C, docs/protocol.md).
 enum sval_pointer_sensor {
-    SVAL_SENSOR_NONE        = 0, // built_for: not a trackball build; detected: not checked
-    SVAL_SENSOR_PMW3360     = 1,
-    SVAL_SENSOR_PMW3389     = 2,
-    SVAL_SENSOR_NO_RESPONSE = 3, // detected only: Product_ID read back 0x00 or 0xFF
-    SVAL_SENSOR_UNKNOWN     = 4, // detected only: some other Product_ID
+    SVAL_SENSOR_NONE        = 0, // built_for: no pointing module; detected: not checked yet
+    SVAL_SENSOR_PMW3360     = 1, // trackball
+    SVAL_SENSOR_PMW3389     = 2, // trackball
+    SVAL_SENSOR_NO_RESPONSE = 3, // detected only: no module answered
+    SVAL_SENSOR_UNKNOWN     = 4, // detected only: the trackball bus answered with another Product_ID
+    SVAL_SENSOR_AZOTEQ      = 5, // trackpad (IQS5xx)
+    SVAL_SENSOR_TRACKPOINT  = 6, // TrackPoint (PS/2)
 };
 #define SVAL_POINTER_REPORTED 0x01 // this block holds a report
 #define SVAL_POINTER_LEFT     0x02 // the half is the left half (EE_HANDS)
@@ -83,12 +85,16 @@ typedef struct __attribute__((__packed__)) {
     uint8_t flags;              // SVAL_POINTER_*
     uint8_t built_for;          // enum sval_pointer_sensor
     uint8_t detected;           // enum sval_pointer_sensor
-    uint8_t product_id;         // raw Product_ID register
-    uint8_t inverse_product_id; // raw Inverse_Product_ID register
+    uint8_t product_id;         // raw IDs: PMW Product_ID, Azoteq product number high byte, or PS/2 device ID
+    uint8_t inverse_product_id; // PMW Inverse_Product_ID, or Azoteq product number low byte
 } sval_pointer_identity_t;
-// Weak (leaves it zeroed) without a PMW33xx driver; trackball builds fill
-// built_for, detected, the raw IDs and SVAL_POINTER_INIT_OK.
+// Each pointing build fills built_for, detected (its own module, or
+// SVAL_SENSOR_NO_RESPONSE), the raw IDs and SVAL_POINTER_INIT_OK; the weak default
+// leaves it zeroed (no module). When the build's own module didn't answer,
+// svalboard.c probes the other buses once (pointing_detect.h) and reports what it found.
 void sval_pointer_identity(sval_pointer_identity_t *id);
+// The bus the build's own driver uses (SVAL_BUS_*), which the probes skip; 0 for no module.
+uint8_t sval_pointer_own_bus(void);
 
 // The other half's reply to the master's KEYBOARD_SYNC_A ping. The magic tells
 // it apart from a stale RPC buffer left by firmware that doesn't fill it.

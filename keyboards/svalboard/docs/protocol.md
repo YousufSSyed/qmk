@@ -40,15 +40,16 @@ Check feature flags before using an extension, send one request at a time per co
 
 ## Pointing hardware
 
-`POINTING_HARDWARE` (`0x2C`) tells a host which side each half thinks it is, which trackball sensor its firmware drives, and which sensor actually answered. PMW3360 and PMW3389 need different firmware, and the wrong one leaves the trackball dead with no other sign, so a host can use this to name the right `.uf2`.
+`POINTING_HARDWARE` (`0x2C`) tells a host which side each half thinks it is, which pointing module its firmware drives, and which module actually answered. Each module needs its own firmware (and PMW3360 and PMW3389 trackballs need different firmware), and the wrong one leaves the module dead with no other sign, so a host can use this to name the right `.uf2`.
 
 - Discovery: GET_INFO byte 19 (the second feature byte), bit 1 (`sval_flag2_pointing_hardware`). Older firmware leaves it zero.
 - Request: `DF 2C`
 - Response: `DF 2C <format> <this half: 5 bytes> <other half: 5 bytes>`. `format` is `1`; `0` means the board has nothing to report. "This half" is the one plugged into USB.
 - Each half: `<flags> <built_for> <detected> <Product_ID> <Inverse_Product_ID>`.
   - `flags`: bit 0 the block holds a report, bit 1 the half is the left half, bit 2 the sensor driver initialised.
-  - `built_for`: `0` not a trackball build, `1` PMW3360, `2` PMW3389.
-  - `detected`: `0` not checked, `1` PMW3360 (`42 BD`), `2` PMW3389 (`47 B8`), `3` no answer (`00 00` or `FF FF`), `4` some other ID.
+  - `built_for`: `0` no pointing module, `1` PMW3360 trackball, `2` PMW3389 trackball, `5` Azoteq trackpad, `6` TrackPoint.
+  - `detected`: `0` not checked yet, `1` PMW3360 (`42 BD`), `2` PMW3389 (`47 B8`), `3` no module answered, `4` the trackball bus answered with some other ID, `5` Azoteq (IDs: product number, high byte first), `6` TrackPoint (first ID byte: its PS/2 device ID).
+  - Each build checks its own module at startup. When that module doesn't answer, or the build has none, the half checks the other modules' buses once, about 1.5 s after boot (PS/2, then I2C, then SPI), so `detected` names whatever is attached. Until then it reads `0` (no module build) or `3` (its own module missing).
 - The other half reports through the split link's half-second presence ping, so its block is zero while it is disconnected, for up to half a second after it connects, and when it runs firmware without this command.
 
 Packet formats: [client-ID protocol](../../../modules/svalboard/core/docs/CLIENT_ID_PROTOCOL.md), [layer state](../../../modules/svalboard/core/docs/LAYER_STATE_PROTOCOL.md), [command definitions](../../../modules/svalboard/core/sval.h).
