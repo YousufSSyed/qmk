@@ -71,6 +71,11 @@ def main():
     tmp = Path(tempfile.mkdtemp())
 
     # ---- vectors -------------------------------------------------------------------
+    # The storage-format floor is kept in two places: the firmware's and the tool's must agree.
+    cfg = (ROOT / "keyboards/svalboard/config.h").read_text()
+    fw_fmt = re.search(r"^#define SVAL_UPDATE_STORAGE_FORMAT (\d+)", cfg, re.M)
+    check(fw_fmt is not None and int(fw_fmt.group(1)) == mu.STORAGE_FORMAT,
+          f"make_update.STORAGE_FORMAT {mu.STORAGE_FORMAT} == SVAL_UPDATE_STORAGE_FORMAT {fw_fmt and fw_fmt.group(1)}")
     check(mu.crc32_mpeg2(b"123456789") == 0x0376E6E7, "CRC-32/MPEG-2 check value")
     check(mu.crc32_mpeg2(BOOT2[:252]) == 0xD58F0B07, "real page 0 CRC d58f0b07")
     check(mu.boot2_valid(BOOT2), "real page 0 valid")

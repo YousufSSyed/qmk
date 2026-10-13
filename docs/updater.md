@@ -610,6 +610,20 @@ Dry runs are not compared, so they never use up a number. A tag whose name
 contains `dryrun` or `dry-run` (any case), such as `vLaunch3-dryrun1`, is a
 dry run: its release is always a prerelease.
 
+**Tag names (D38).** Release CI accepts only three kinds of tag: stable
+`vLaunch<N>` (`vLaunch3`), bleeding-edge `vNext<N>`, and dry runs. Every
+other `v*` tag is refused, since it would publish as the latest release.
+Point-release names such as `vLaunch2.3` belong to Keybard and Keybard Host
+releases only and are never tagged here. The tagged commit must be on the
+`svalboard` branch, and only `svalboard/qmk` publishes: on a fork the run
+stops at the first job.
+
+**Graduating a vNext (D38).** A stable release is a new build: raise
+`fw_version.txt` above every `vNext` before it, run a dry run, then tag
+`vLaunch<N>`. Never edit a `vNext` release into a non-prerelease by hand: it
+would become the latest release with a number the next stable tag must still
+exceed.
+
 **Bleeding edge (D36).** A `vNext` tag with a number, such as `vNext1`, is a
 bleeding-edge release, for use with next.keybard.svalboard.com. It is
 published as a prerelease, so it never becomes the latest release, but its
