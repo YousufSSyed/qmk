@@ -26,7 +26,7 @@ Masks may be zero, nonzero, or have multiple bits including bit 31. Hosts must p
 - Old trainer/Keybard + new firmware: active mask remains at its original offset. Keybard `VialService.getLayerStateMask()` decodes one uint32 after the command echo and ignores the appended bytes. Existing feature checks mask their own bits; protocol version stays 3. No Keybard update is required for existing functionality.
 - Reconnects negotiate `GET_INFO` again. A capability from a previous connection must not be retained after a downgrade.
 
-This feature does not report physical presses, modifiers, held-key resolution, keymap revisions or macro execution. Existing clients can still use their existing layer-state setter; Sval Trainer never sends it.
+This feature does not report physical presses, held-key resolution, keymap revisions or macro execution. Modifiers are reported only with the extension below. Existing clients can still use their existing layer-state setter; Sval Trainer never sends it.
 
 ## Validation
 
@@ -47,3 +47,17 @@ This feature does not report physical presses, modifiers, held-key resolution, k
 - Response: `DD <client:u32 LE> DF 2B <status:u8>`: `0` = set, `1` = the keymap has no such layer (nothing changes).
 - Discovery: GET_INFO byte 19 (inner Sval offset; full report offset 24) is a second feature byte, after the storage flags in byte 18. Bit 0 (`sval_flag2_default_layer_set`) advertises this command. Older firmware leaves the byte zero; older hosts never read it. The first feature byte is full (bit 4 is held by the tap-dance context branch, bit 7 is reserved).
 - `0x2A` is `STORAGE_RESET_CLEAR`; don't confuse the two.
+
+## Modifier state
+
+The `0x16` reply also carries the board's own modifier state, so a host such as Keybard Host can show shifted legends for this board alone, whatever other keyboards on the computer are doing.
+
+- Discovery: GET_INFO byte 19 (the second feature byte) bit 2, `sval_flag2_modifier_state` (`0x04`).
+- Response: `DD <client:u32 LE> DF 16 <active:u32 LE> <default:u32 LE> <mods:u8> <status:u8> ...`
+
+| Full report offset | Inner Sval offset | Meaning |
+|---|---|---|
+| 15 | 10 | Modifiers in HID modifier-byte order (bit 1 left Shift, bit 5 right Shift): `get_mods()` plus any pending or locked one-shot modifiers |
+| 16 | 11 | Status: bit 0 Caps Word is on, bit 1 the host's Caps Lock LED is on |
+
+The bytes are written only when the handler has at least twelve inner bytes; the normal wrapper supplies 27. Caps Lock comes from the LED state the computer sends this board. Older hosts ignore the bytes, and hosts must ignore them when the flag is absent.
