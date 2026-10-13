@@ -1,4 +1,5 @@
 #include "svalboard.h"
+#include "pointing_detect.h"
 #if VIA_ENABLE
 #include "via.h"
 #endif
@@ -414,11 +415,36 @@ void sval_rgb_idle_task(void) {
 __attribute__((weak)) void sval_pointer_rest_apply(void) {}
 __attribute__((weak)) void sval_pointer_status(sval_idle_status_t *st) { st->sensor_present = 0; }
 __attribute__((weak)) void sval_pointer_identity(sval_pointer_identity_t *id) {}
+__attribute__((weak)) uint8_t sval_pointer_own_bus(void) { return 0; }
 
-// This half's side and pointing sensor.
+// When this half's own pointing module didn't answer (or the build has none), what the
+// other buses found, probed once a moment after boot: late enough that a TrackPoint has
+// finished its power-on self-test, and outside the startup path.
+#define SVAL_POINTER_PROBE_AFTER_MS 1500
+static bool                pointer_probed = false;
+static sval_probe_result_t pointer_probe;
+
+static void sval_pointer_probe_task(void) {
+    if (pointer_probed || timer_read32() < SVAL_POINTER_PROBE_AFTER_MS) return;
+    pointer_probed = true;
+    sval_pointer_identity_t own = {0};
+    sval_pointer_identity(&own);
+    if (own.built_for != SVAL_SENSOR_NONE && own.detected == own.built_for) return; // its own module answered
+    if (own.built_for != SVAL_SENSOR_NONE && own.detected == SVAL_SENSOR_UNKNOWN) return; // the trackball bus answered
+    pointer_probe = sval_probe_pointers(sval_pointer_own_bus());
+}
+
+// This half's side and pointing module.
 static void sval_local_pointer_identity(sval_pointer_identity_t *id) {
     memset(id, 0, sizeof(*id));
     sval_pointer_identity(id);
+    // The other buses found something (or nothing) where the build's own module didn't answer.
+    bool own_missing = id->built_for == SVAL_SENSOR_NONE || id->detected == SVAL_SENSOR_NO_RESPONSE;
+    if (pointer_probed && own_missing && (pointer_probe.detected != SVAL_SENSOR_NO_RESPONSE || id->built_for == SVAL_SENSOR_NONE)) {
+        id->detected           = pointer_probe.detected;
+        id->product_id         = pointer_probe.id0;
+        id->inverse_product_id = pointer_probe.id1;
+    }
     id->flags |= SVAL_POINTER_REPORTED | (is_keyboard_left() ? SVAL_POINTER_LEFT : 0);
 }
 
@@ -547,6 +573,7 @@ static void sval_usb_wake_handler(void) {
 }
 
 void housekeeping_task_kb(void) {
+    sval_pointer_probe_task();
     sval_usb_wake_handler();
     scanlab_housekeeping();
 #ifdef SVAL_KEYTEST

@@ -5,6 +5,23 @@
 #include "pointing_device.h"
 #include "pointing_device_ps2.h"
 #include "ps2.h"
+#include "svalboard.h"
+#include "pointing_detect.h"
+
+// Whether a PS/2 device answered Get Device ID at init, and the ID it sent.
+static bool    tp_found = false;
+static uint8_t tp_id    = 0;
+
+void sval_pointer_identity(sval_pointer_identity_t *id) {
+    id->built_for  = SVAL_SENSOR_TRACKPOINT;
+    id->detected   = tp_found ? SVAL_SENSOR_TRACKPOINT : SVAL_SENSOR_NO_RESPONSE;
+    id->product_id = tp_id;
+    if (tp_found) id->flags |= SVAL_POINTER_INIT_OK;
+}
+
+uint8_t sval_pointer_own_bus(void) {
+    return SVAL_BUS_PS2;
+}
 
 // Override get_report to apply axis rotation for svalboard orientation
 report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
@@ -22,6 +39,10 @@ void pointing_device_init_kb(void) {
     // TrackPoint-specific initialization
     // Disable Z-tap
     ps2_mouse_disable_data_reporting();
+
+    // Get Device ID: a PS/2 device ACKs (0xFA) and sends its ID.
+    tp_found = ps2_host_send(0xF2) == 0xFA;
+    tp_id    = tp_found ? ps2_host_recv_response() : 0;
 
     PS2_MOUSE_SEND(0xE2, "pts: 0xE2");
     PS2_MOUSE_SEND(0x47, "pts: 0x47");
