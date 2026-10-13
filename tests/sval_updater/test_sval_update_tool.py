@@ -79,17 +79,19 @@ class FakeBoard(su.Device):
         self.waited = False
         self.chords = 0
         self.allow_unwrapped = allow_unwrapped
+        self.ops = []  # (op, request after [hand]) of each wrapped updater packet
         FakeBoard.current = self
 
     def _exchange(self, packet, match):
-        packet = bytes(packet).ljust(32, b"\0")
+        check(len(packet) <= su.REPORT, f"a packet of {len(packet)} bytes")
+        packet = bytes(packet).ljust(su.REPORT, b"\0")
         lib.host_passes(2)  # the main loop runs between packets
         if packet[0] != su.WRAPPER:
             if not self.allow_unwrapped:
                 raise AssertionError("the tool sent an unwrapped packet")
-            via = ctypes.create_string_buffer(packet, 32)
+            via = ctypes.create_string_buffer(packet, su.REPORT)
             lib.host_via(via, 0)  # plain VIA: no client ID
-            reply = via.raw[:32]
+            reply = via.raw[:su.REPORT]
             if not match(reply):
                 raise AssertionError(f"reply does not match: {reply.hex()}")
             self.round_trips += 1
@@ -98,14 +100,18 @@ class FakeBoard(su.Device):
         if cid == bytes(4):
             new = struct.pack("<I", 0x00510000 + len(self.issued) + 1)
             self.issued.append(new)
-            reply = packet[:25] + new + struct.pack("<H", 120) + b"\0"
+            reply = (packet[:25] + new + struct.pack("<H", 120)).ljust(su.REPORT, b"\0")
         elif cid not in self.issued:
-            reply = bytes([su.WRAPPER]) + cid + bytes([0xFF, 1]) + bytes(25)
+            reply = (bytes([su.WRAPPER]) + cid + bytes([0xFF, 1])).ljust(su.REPORT, b"\0")
         else:
+            # As client_wrapper.c: VIA gets the report shifted down 6 bytes (the
+            # last 6 stale), and the reply loses its last 6 to the header.
             check(packet[5] == su.VIA_PROTO, "VIA inside the wrapper")
-            via = ctypes.create_string_buffer(packet[6:32] + bytes(6), 32)
+            self.ops.append((packet[8], packet[10:]))
+            via = ctypes.create_string_buffer(packet[6:] + b"\xEE" * 6, su.REPORT)
             lib.host_via(via, struct.unpack("<I", cid)[0])
-            reply = bytes([su.WRAPPER]) + cid + bytes([su.VIA_PROTO]) + via.raw[:26]
+            check(via.raw[su.REPORT - 6:su.REPORT] == b"\xEE" * 6, "the updater wrote into the wrapper's 6 bytes")
+            reply = bytes([su.WRAPPER]) + cid + bytes([su.VIA_PROTO]) + via.raw[:su.REPORT - 6]
         if lib.host_state() == 2 and self.waited:  # CONFIRM_WAIT and the tool is waiting: the user makes the chord
             self.waited = False
             self.chords += 1
@@ -186,6 +192,13 @@ def main():
     check(slot == img, "slot holds the image")
     check(lib.host_commit_runs() == 0, "no commit ran")
 
+    # protocol 3: the pieces are the sizes INFO gives, the largest that fit a 64-byte report
+    check(su.REPORT == 64 and su.CHUNK_PIECE_MAX == 50 and su.MANIFEST_PIECE_MAX == 52, "protocol 3 sizes")
+    manifests = [r for op, r in board.ops if op == su.MANIFEST]
+    chunks = [r for op, r in board.ops if op == su.CHUNK]
+    check([m[1] for m in manifests] == [52, 52, 4], f"MANIFEST pieces {[m[1] for m in manifests]}")
+    check(max(c[3] for c in chunks) == 50 and len(chunks) == -(-len(img) // 50), f"{len(chunks)} CHUNKs")
+
     # with a commit routine: COMMIT accepted, and it runs 100 ms later with the image CRC
     rc, board, _ = run_update(svup, commit_available=True)
     check(rc == 0, f"commit: exit {rc}")
@@ -253,7 +266,39 @@ def main():
     check(info["hand"] == "right" and info["pointing"] == "pmw3389" and info["jedec"] == "ef4018", f"info {info}")
     check(info["slot_base"] == "0x800000" and info["slot_size"] == "0x160000" and info["max_image"] == "0x160000", f"info {info}")
     check(info["storage_format"] == 2 and info["flash_16mib"] and not info["settings_writes_failing"], f"info {info}")
-    check(info["protocol"] == mu.UPDATER_PROTO == 2 and not info["release_build"], f"info {info}")
+    check(info["protocol"] == mu.UPDATER_PROTO == 3 and not info["release_build"], f"info {info}")
+    check((info["chunk_max"], info["manifest_max"], info["report_bytes"]) == (50, 52, 64), f"info sizes {info}")
+    check(su.check_protocol(info) == (52, 50), "piece sizes from INFO")
+    # a board on another protocol, or with piece sizes that do not fit, is refused before any session op
+    for change, want in ((dict(protocol=2), "protocol 2"), (dict(protocol=4), "protocol 4"),
+                         (dict(chunk_max=51), "do not fit"), (dict(chunk_max=0), "do not fit"),
+                         (dict(manifest_max=53), "do not fit"), (dict(report_bytes=32), "32-byte")):
+        try:
+            su.check_protocol({**info, **change})
+            check(False, f"check_protocol took {change}")
+        except su.UpdaterError as exc:
+            check(want in str(exc), f"check_protocol {change}: {exc}")
+
+    class OldBoard(FakeBoard):
+        """INFO from protocol 2 firmware, as far as this tool could read it."""
+        def op(self, op, args=b"", hand=su.HAND_SELF, client=None):
+            st, r = super().op(op, args, hand, client)
+            return (st, bytes([r[0], 2]) + r[2:]) if op == su.INFO else (st, r)
+    lib.host_lib_reset(0)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            su.Session(OldBoard(), Args()).run(svup)
+        check(False, "a protocol 2 board was updated")
+    except su.UpdaterError as exc:
+        check("protocol 2" in str(exc) and "BOOTSEL" in str(exc), f"protocol 2 board: {exc}")
+    check(lib.host_state() == 0, "protocol 2 board: nothing sent")
+    lib.host_lib_reset(0)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            su.Rejects(OldBoard(allow_unwrapped=True), svup).run()
+        check(False, "reject ran on a protocol 2 board")
+    except su.UpdaterError as exc:
+        check("protocol 2" in str(exc), f"reject, protocol 2 board: {exc}")
     check(not info["other_half_mismatch"], f"info {info}")
     diag = su.decode_diag(*board.op(su.DIAG, b"\0", hand=1))
     check(diag["status"] == "OK" and diag["stack_size"] == 0xAE0 and diag["stack_unused"] == 0x2A4, f"diag {diag}")
@@ -371,13 +416,13 @@ def main():
         check(lib.host_state() == 0 and lib.host_slave_state() == 0 and lib.host_slave_commits() == 0,
               "pair precheck: nothing started on either half")
     # the board's view of an image: the checks update_manifest_check() makes
-    base_info = dict(hand_id=1, hand="right", pointing_id=3, pointing="pmw3389", release_build=False, protocol=2,
+    base_info = dict(hand_id=1, hand="right", pointing_id=3, pointing="pmw3389", release_build=False, protocol=3,
                      security_epoch=1, storage_format=2, max_image="0x160000")
     base_m = dict(flags=0, hand=1, pointing_id=3, security_epoch=1, storage_format=2, image_len=0x1000,
                   fw_version=5)
     check(su.image_refusal(base_m, base_info) is None, "image_refusal: a fitting image")
     for change, info_change, want in ((dict(hand=0), {}, "UNSUPPORTED"), (dict(pointing_id=2), {}, "WRONG_HW"),
-                                      ({}, dict(protocol=1), "UNSUPPORTED"),
+                                      ({}, dict(protocol=1), "UNSUPPORTED"), ({}, dict(protocol=2), "UNSUPPORTED"),
                                       (dict(flags=2), dict(release_build=True), "BAD_IMAGE"),
                                       (dict(security_epoch=0), {}, "EPOCH"), (dict(storage_format=1), {}, "STORAGE"),
                                       (dict(image_len=0x161000), {}, "TOO_LARGE")):
@@ -387,6 +432,10 @@ def main():
                                 (dict(flags=2), {})):
         got = su.image_refusal({**base_m, **change}, {**base_info, **info_change})
         check(got is None, f"image_refusal takes {change} {info_change}: {got}")
+    # the other half, over the split cable: protocol 2 or 3 (the relay is the same)
+    for proto, ok in ((1, False), (2, True), (3, True), (4, False)):
+        got = su.image_refusal(base_m, {**base_info, "protocol": proto}, other=True)
+        check((got is None) == ok, f"image_refusal, the other half on protocol {proto}: {got}")
     check(not su.fw_differs(5, dict(fw_version=5)) and su.fw_differs(4, dict(fw_version=5)), "fw_differs")
     check(not su.fw_differs(0, dict(fw_version=5)) and not su.fw_differs(5, dict(fw_version=0)), "fw_differs: 0 is unset")
     # pair refuses two images for the same half, before any op

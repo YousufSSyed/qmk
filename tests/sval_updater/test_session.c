@@ -326,7 +326,16 @@ static void presence_ping(void) {
 #define CLIENT_B 0x00B2B2B2u
 #define CLIENT_C 0x00C3C3C3u
 
-static uint8_t  rsp[23];
+// The packet layout for RAW_EPSIZE (keyboards/svalboard/config.h, included
+// first): as updater.c derives it, written out again here so a change to one
+// is caught by the other.
+#define T_REPORT RAW_EPSIZE             // 64
+#define T_VALUE (T_REPORT - 6 - 3)      // value bytes after the wrapper and VIA's header: 55
+#define T_CHUNK (T_VALUE - 5)           // CHUNK data after [hand][off u24][n]: 50
+#define T_MPIECE (T_VALUE - 3)          // MANIFEST data after [hand][off][n]: 52
+_Static_assert(T_REPORT == 64, "64-byte raw HID reports");
+
+static uint8_t  rsp[T_VALUE];
 static uint8_t  req_hand = UPDATE_HAND_RIGHT;
 static uint8_t  req_cmd  = 0x07; // id_custom_set_value
 static uint64_t max_op_us, max_pass_us, sig_pass_us;
@@ -342,13 +351,16 @@ static uint16_t get16le(const uint8_t *p) {
 }
 
 static update_status_t send(uint32_t client, uint8_t opcode, const void *args, size_t n) {
-    uint8_t pkt[32];
+    // A wrapped report as VIA sees it: the request in the first 3 + T_VALUE
+    // bytes, and the wrapper's 6 at the end, whose reply bytes never reach the host.
+    uint8_t pkt[T_REPORT];
+    CHECK(n <= T_VALUE - 1);
     memset(pkt, 0xEE, sizeof(pkt)); // stale bytes past the request
     pkt[0] = req_cmd;
     pkt[1] = UPDATE_CHANNEL;
     pkt[2] = opcode;
     pkt[3] = req_hand;
-    memset(pkt + 4, 0, 22);
+    memset(pkt + 4, 0, T_VALUE - 1);
     if (n) memcpy(pkt + 4, args, n);
     port_client = client;
     uint64_t t0 = sim_us;
@@ -356,7 +368,7 @@ static update_status_t send(uint32_t client, uint8_t opcode, const void *args, s
     if (sim_us - t0 > max_op_us) max_op_us = sim_us - t0;
     port_client = 0;
     CHECK(pkt[0] == req_cmd && pkt[1] == UPDATE_CHANNEL && pkt[2] == opcode); // header untouched
-    for (int i = 26; i < 32; i++) CHECK(pkt[i] == 0xEE);                    // nothing past the 23 value bytes
+    for (int i = 3 + T_VALUE; i < T_REPORT; i++) CHECK(pkt[i] == 0xEE);     // nothing past the value bytes
     memcpy(rsp, pkt + 3, sizeof(rsp));
     return (update_status_t)rsp[0];
 }
@@ -460,9 +472,9 @@ static uint32_t body_crc(void) {
 }
 
 static update_status_t load_manifest(uint32_t client) {
-    for (uint32_t off = 0; off < UPDATE_MANIFEST_BYTES; off += 20) {
-        uint8_t n = UPDATE_MANIFEST_BYTES - off < 20 ? (uint8_t)(UPDATE_MANIFEST_BYTES - off) : 20;
-        uint8_t a[22];
+    for (uint32_t off = 0; off < UPDATE_MANIFEST_BYTES; off += T_MPIECE) {
+        uint8_t n = UPDATE_MANIFEST_BYTES - off < T_MPIECE ? (uint8_t)(UPDATE_MANIFEST_BYTES - off) : T_MPIECE;
+        uint8_t a[2 + T_MPIECE];
         a[0] = (uint8_t)off;
         a[1] = n;
         memcpy(a + 2, blob + off, n);
@@ -474,18 +486,18 @@ static update_status_t load_manifest(uint32_t client) {
 }
 
 static update_status_t send_chunk(uint32_t client, uint32_t off, uint8_t n, const uint8_t *data) {
-    uint8_t a[4 + 18] = {0};
+    uint8_t a[4 + T_CHUNK] = {0};
     a[0] = off & 0xFF;
     a[1] = (off >> 8) & 0xFF;
     a[2] = (off >> 16) & 0xFF;
     a[3] = n;
-    memcpy(a + 4, data, n > 18 ? 18 : n);
+    memcpy(a + 4, data, n > T_CHUNK ? T_CHUNK : n);
     return send(client, UPDATE_OP_CHUNK, a, sizeof(a));
 }
 
 static update_status_t send_image(uint32_t client, uint32_t from, uint32_t to) {
     for (uint32_t off = from; off < to;) {
-        uint8_t         n  = to - off < 18 ? (uint8_t)(to - off) : 18;
+        uint8_t         n  = to - off < T_CHUNK ? (uint8_t)(to - off) : T_CHUNK;
         update_status_t st = send_chunk(client, off, n, img + off);
         if (st != UPDATE_OK) return st;
         CHECK_EQ(get24le(rsp + 1), off + n);
@@ -586,6 +598,13 @@ static void test_session_info_and_wrapper(void) {
     CHECK_EQ(rsp[18], SVAL_UPDATE_STORAGE_FORMAT);
     CHECK_EQ(rsp[21] & 0x07, 0x01);
     CHECK_EQ(rsp[21] & (0x10 | 0x40), 0); // reserved (protocol 1's key flags)
+    // protocol 3: the largest CHUNK and MANIFEST pieces and the report size,
+    // which a host sizes its requests by; nothing after them
+    CHECK_EQ(rsp[2], 3);
+    CHECK_EQ(rsp[23], T_CHUNK);
+    CHECK_EQ(rsp[24], T_MPIECE);
+    CHECK_EQ(rsp[25], T_REPORT);
+    for (int i = 26; i < T_VALUE; i++) CHECK_EQ(rsp[i], 0);
     // INFO page 1 (M3): the version from the build-info record; no wrapper needed
     const uint8_t page1 = 1, page2 = 2;
     CHECK_EQ(send(0, UPDATE_OP_INFO, &page1, 1), UPDATE_OK);
@@ -654,11 +673,24 @@ static void test_session_info_and_wrapper(void) {
     CHECK_EQ(send(CLIENT_A, UPDATE_OP_STATUS, NULL, 0), UPDATE_OK);
     CHECK_EQ(get24le(rsp + 2), 0);
     // a short report is refused, not read past its end
-    uint8_t pkt[32] = {0x07, UPDATE_CHANNEL, UPDATE_OP_INFO, 0xFF};
+    uint8_t pkt[T_REPORT] = {0x07, UPDATE_CHANNEL, UPDATE_OP_INFO, 0xFF};
     port_client     = CLIENT_A;
     updater_via_command(pkt, 20);
     port_client = 0;
     CHECK_EQ(pkt[3], UPDATE_INVALID);
+    // so is a 32-byte report (protocol 2's), and one a byte short of the value
+    // bytes; only the status byte is written
+    const uint8_t lens[] = {32, 3 + T_VALUE - 1};
+    for (size_t i = 0; i < sizeof(lens); i++) {
+        memset(pkt, 0xEE, sizeof(pkt));
+        pkt[0] = 0x07, pkt[1] = UPDATE_CHANNEL, pkt[2] = UPDATE_OP_INFO, pkt[3] = 0xFF;
+        port_client = CLIENT_A;
+        updater_via_command(pkt, lens[i]);
+        port_client = 0;
+        CHECK_EQ(pkt[3], UPDATE_INVALID);
+        for (int k = 4; k < T_REPORT; k++) CHECK_EQ(pkt[k], 0xEE);
+    }
+    CHECK_EQ(updater_state(), UPDATE_STATE_RECEIVING);
 }
 
 static void test_session_happy_path(void) {
@@ -1053,7 +1085,10 @@ static void test_session_chunks(void) {
     int ops = program_ops;
     // lengths
     CHECK_EQ(send_chunk(CLIENT_A, 0, 0, img), UPDATE_INVALID);
-    CHECK_EQ(send_chunk(CLIENT_A, 0, 19, img), UPDATE_INVALID);
+    CHECK_EQ(send_chunk(CLIENT_A, 0, T_CHUNK + 1, img), UPDATE_INVALID); // one more than the value bytes hold
+    CHECK_EQ(send_chunk(CLIENT_A, 0, 0xFF, img), UPDATE_INVALID);
+    CHECK_EQ(get24le(rsp + 1), 0);
+    CHECK_EQ(program_ops, ops);
     // out of order: ahead of the next offset, refused with the offset expected
     CHECK_EQ(send_chunk(CLIENT_A, 18, 18, img + 18), UPDATE_OUT_OF_ORDER);
     CHECK_EQ(get24le(rsp + 1), 0);
@@ -1329,8 +1364,9 @@ static void test_session_refusals(void) {
     CHECK_EQ(send(CLIENT_A, UPDATE_OP_MANIFEST, a, sizeof(a)), UPDATE_OUT_OF_ORDER); // must start at 0
     CHECK_EQ(updater_state(), UPDATE_STATE_IDLE);
     a[0] = 0;
-    a[1] = 21;
+    a[1] = T_MPIECE + 1; // one more than the value bytes hold
     CHECK_EQ(send(CLIENT_A, UPDATE_OP_MANIFEST, a, sizeof(a)), UPDATE_INVALID);
+    CHECK_EQ(updater_state(), UPDATE_STATE_IDLE);
     a[1] = 0;
     CHECK_EQ(send(CLIENT_A, UPDATE_OP_MANIFEST, a, sizeof(a)), UPDATE_INVALID);
     a[0] = 89;
@@ -1403,6 +1439,58 @@ static void test_session_presence(void) {
     }
 }
 
+// Protocol 3's pieces at their bounds: the largest CHUNK and MANIFEST piece the
+// value bytes hold are taken, one more is refused, and no reply reaches past
+// the value bytes (send() checks every op).
+static void test_session_max_pieces(void) {
+    fresh(0x3000);
+    // the manifest in two whole pieces and the rest
+    CHECK_EQ(UPDATE_MANIFEST_BYTES / T_MPIECE, 2);
+    uint8_t a[2 + T_MPIECE];
+    a[0] = 0;
+    a[1] = T_MPIECE;
+    memcpy(a + 2, blob, T_MPIECE);
+    CHECK_EQ(send(CLIENT_A, UPDATE_OP_MANIFEST, a, sizeof(a)), UPDATE_OK);
+    CHECK_EQ(rsp[1], T_MPIECE);
+    a[0] = T_MPIECE;
+    a[1] = T_MPIECE + 1;
+    CHECK_EQ(send(CLIENT_A, UPDATE_OP_MANIFEST, a, sizeof(a)), UPDATE_INVALID);
+    CHECK_EQ(updater_state(), UPDATE_STATE_MANIFEST_LOADING);
+    CHECK_EQ(rsp[1], T_MPIECE); // nothing taken
+    updater_host_reset();
+    CHECK(to_receiving(CLIENT_A));
+    int ops = program_ops;
+    // the largest CHUNK, then one across the first page boundary (240 + 50)
+    CHECK_EQ(send_chunk(CLIENT_A, 0, T_CHUNK, img), UPDATE_OK);
+    CHECK_EQ(get24le(rsp + 1), T_CHUNK);
+    CHECK_EQ(send_chunk(CLIENT_A, T_CHUNK, T_CHUNK + 1, img + T_CHUNK), UPDATE_INVALID);
+    CHECK_EQ(get24le(rsp + 1), T_CHUNK); // nothing taken
+    CHECK_EQ(send_image(CLIENT_A, T_CHUNK, 240), UPDATE_OK);
+    CHECK_EQ(program_ops, ops);
+    CHECK_EQ(send_chunk(CLIENT_A, 240, T_CHUNK, img + 240), UPDATE_OK);
+    CHECK_EQ(get24le(rsp + 1), 240 + T_CHUNK);
+    CHECK_EQ(program_ops, ops + 1);
+    CHECK(memcmp(update_host_flash + SVAL_UPDATE_BASE, img, 256) == 0);
+    // a repeat of the largest chunk is acknowledged
+    CHECK_EQ(send_chunk(CLIENT_A, 0, T_CHUNK, img), UPDATE_OK);
+    CHECK_EQ(get24le(rsp + 1), 240 + T_CHUNK);
+    // the rest in whole chunks: the last ends exactly at image_len, which no
+    // chunk size divides here (0x3000 = 245 * 50 + 46)
+    CHECK(img_len % T_CHUNK != 0);
+    CHECK_EQ(send_image(CLIENT_A, 240 + T_CHUNK, img_len), UPDATE_OK);
+    CHECK_EQ(program_ops, ops + (int)(img_len / 256));
+    CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_END, session_nonce), UPDATE_ACCEPTED);
+    passes_until(UPDATE_STATE_VERIFIED, 5000);
+    CHECK_EQ(updater_state(), UPDATE_STATE_VERIFIED);
+    CHECK(memcmp(update_host_flash + SVAL_UPDATE_BASE, img, img_len) == 0);
+    // the largest chunk past the end: OVERRUN
+    fresh(0x3000);
+    CHECK(to_receiving(CLIENT_A));
+    CHECK_EQ(send_image(CLIENT_A, 0, img_len - T_CHUNK + 1), UPDATE_OK);
+    CHECK_EQ(send_chunk(CLIENT_A, img_len - T_CHUNK + 1, T_CHUNK, img), UPDATE_OVERRUN);
+    CHECK_EQ(updater_state(), UPDATE_STATE_ERROR);
+}
+
 static void test_session(void) {
     int before_failures = failures;
     test_session_info_and_wrapper();
@@ -1412,6 +1500,7 @@ static void test_session(void) {
     test_session_rebind();
     test_session_clients_and_abort();
     test_session_chunks();
+    test_session_max_pieces();
     test_session_timeouts();
     test_session_refusals();
     test_session_presence();

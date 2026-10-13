@@ -113,7 +113,7 @@ static void test_manifest_layout(void) {
     CHECK_EQ(sizeof(sval_update_manifest_t), 108);
     CHECK_EQ(UPDATE_MANIFEST_BYTES, 108); // the MANIFEST op's buffer: no signature after it (protocol 2)
     CHECK_EQ(UPDATE_MANIFEST_VERSION, 2);
-    CHECK_EQ(UPDATE_PROTOCOL_VERSION, 2);
+    CHECK_EQ(UPDATE_PROTOCOL_VERSION, 3); // 2 in 64-byte reports
     CHECK_EQ(UPDATE_BAD_SIG, 8); // retired, never returned; the codes after it keep their values
     CHECK_EQ(UPDATE_BAD_HASH, 9);
     CHECK_EQ(offsetof(sval_update_manifest_t, reserved0), 6); // key_id in version 1
@@ -714,7 +714,7 @@ void host_lib_reset(int commit_available) {
 }
 void host_via(uint8_t *pkt, uint32_t client) {
     port_client = client;
-    updater_via_command(pkt, 32);
+    updater_via_command(pkt, RAW_EPSIZE);
     port_client = 0;
 }
 void host_passes(int n) {

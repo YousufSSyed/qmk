@@ -42,7 +42,7 @@ from pathlib import Path
 
 MANIFEST_MAGIC = 0x50555653  # "SVUP"
 MANIFEST_VERSION = 2  # 1: protocol 1, signed (never released); refused
-UPDATER_PROTO = 2
+UPDATER_PROTO = 3  # 3: 64-byte raw HID reports (updater.c)
 MANIFEST_FMT = "<IHBBBBHHBBIII16s64s"
 MANIFEST_BYTES = 108
 assert struct.calcsize(MANIFEST_FMT) == MANIFEST_BYTES

@@ -17,7 +17,7 @@ image's first page last. A power cut at any point leaves either the new image
 or a board that comes up in BOOTSEL. It never leaves a half-written image that
 the boot ROM would run.
 
-This first version (updater protocol 2) does not sign updates. See "Security"
+This version (updater protocol 3) does not sign updates. See "Security"
 below. Signing was built and tested in M3 and then deferred; that code is kept
 under the tag `archive/fw-updater-signed`.
 
@@ -132,8 +132,17 @@ The updater is a keyboard-local VIA custom-value channel (`0x55`, `'U'`) inside
 the Sval client wrapper:
 
 ```
-[0xDD][client_id:4][0xFE] [id_custom_set_value 0x07 | get 0x08][0x55][op][value_data:23]
+[0xDD][client_id:4][0xFE] [id_custom_set_value 0x07 | get 0x08][0x55][op][value_data:55]
 ```
+
+Each packet is one 64-byte raw HID report (`RAW_EPSIZE` in `kb/config.h`), so
+`value_data` is 64 - 6 - 3 = 55 bytes. Protocol 3 is protocol 2 (32-byte
+reports, 23 value bytes) in 64-byte reports: the same ops and fields, larger
+MANIFEST and CHUNK pieces, and the piece sizes at the end of INFO. A host sizes
+its pieces from INFO and refuses any other protocol; a protocol 2 host cannot
+talk to a protocol 3 board (its 32-byte reports don't fit the descriptor), and
+`sval_update.py` refuses a protocol 2 board. The relay over the split cable is
+unchanged, so either protocol's half can be updated through the other.
 
 The reply is the same packet with `value_data` rewritten. `value_data[0]` is
 always a status. Every request starts with `[hand]`: this half (0 left, 1 right),
@@ -144,11 +153,11 @@ byte layouts are in the comment at the top of `kb/updater/updater.c`. In short:
 
 | Op | Request after `[hand]` | Reply after `[status]` / rule |
 |---|---|---|
-| `0x00 INFO` | page (0, the default) | state, protocol (2), slot base/size and max image (4 KiB units), JEDEC ID, pointing ID, hand, fw version, storage format, security epoch, flags (bit0 16 MiB die, bit1 settings writes failing, bit2 release build, bit3 test hooks, bit4 reserved, bit5 the other half's version differs, bit6 reserved), last error. Page 1 (this half only): `1`, fw version u32, the 16-character version string from the build-info record. Other pages: INVALID |
-| `0x01 MANIFEST` | off, n ≤ 20, bytes | bytes filled, of 108. In order; offset 0 restarts. Bytes past 108 are INVALID. Ties the load to this client |
+| `0x00 INFO` | page (0, the default) | state, protocol (3), slot base/size and max image (4 KiB units), JEDEC ID, pointing ID, hand, fw version, storage format, security epoch, flags (bit0 16 MiB die, bit1 settings writes failing, bit2 release build, bit3 test hooks, bit4 reserved, bit5 the other half's version differs, bit6 reserved), last error, then the largest CHUNK data (50), the largest MANIFEST piece (52) and the report size (64), for either half. Page 1 (this half only): `1`, fw version u32, the 16-character version string from the build-info record. Other pages: INVALID |
+| `0x01 MANIFEST` | off, n ≤ 52, bytes | bytes filled, of 108. In order; offset 0 restarts. Bytes past 108 are INVALID. Ties the load to this client |
 | `0x02 ARM` | - | nonce u32 and the first 4 bytes of SHA-512(manifest), which the host shows. Needs all 108 bytes. Checks the manifest fields, binds the session to client ID + nonce, starts the 30 s chord window. BUSY, with nothing changed, while a Scan Lab sweep runs |
 | `0x03 BEGIN` | nonce | ACCEPTED once the chord is made: the manifest is checked again, then the erase, one 4 KiB sector per main-loop pass |
-| `0x04 CHUNK` | off u24, n ≤ 18, bytes | next offset. Strictly in order; an earlier chunk is acknowledged and not written again |
+| `0x04 CHUNK` | off u24, n ≤ 50, bytes | next offset. Strictly in order; an earlier chunk is acknowledged and not written again |
 | `0x05 END` | nonce | ACCEPTED: SHA-512, structure checks and CRC of the staged image, 2 KiB per pass |
 | `0x06 STATUS` | - | state, bytes staged, image length, erase progress, last error, reserved u16 (0), verify ms, longest sector erase ms, CRC low 16 bits once VERIFIED, flags, the other half by split presence (see below) |
 | `0x07 COMMIT` | nonce, CRC low 16 | ACCEPTED; the commit runs from housekeeping 100 ms later. The CRC (CRC-32/MPEG-2 over image bytes `[0x100, len)`) must match the verified image |

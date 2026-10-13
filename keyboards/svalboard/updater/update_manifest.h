@@ -10,9 +10,12 @@
 
 #include <stdint.h>
 
+// 3: protocol 2 in 64-byte raw HID reports, with larger MANIFEST and CHUNK
+// pieces and the piece sizes in INFO (updater.c). The manifest is unchanged
+// (UPDATE_MANIFEST_VERSION 2), and so is the relay over the split cable.
 // 2: the manifest travels alone, 108 bytes, with nothing after it. Version 1
 // (never released) put a 64-byte signature after it.
-#define UPDATE_PROTOCOL_VERSION 2 // reported by INFO, and stored as updater_proto in images
+#define UPDATE_PROTOCOL_VERSION 3 // reported by INFO, and stored as updater_proto in images
 
 // VIA custom-value channel ('U'). The others: IDENTITY 0x49, SCANLAB 0x53, KEYTEST 0x54.
 #define UPDATE_CHANNEL 0x55

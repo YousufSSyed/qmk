@@ -813,6 +813,10 @@ static void test_relay_session(void) {
     CHECK_EQ(get32le(rsp + 14), 2001);
     CHECK_EQ(rsp[21] & 0x1F, 0x01);
     CHECK_EQ(get16le(rsp + 3), SVAL_UPDATE_BASE / 4096);
+    // the piece sizes are this half's: the other half's image is staged here first
+    CHECK_EQ(rsp[23], T_CHUNK);
+    CHECK_EQ(rsp[24], T_MPIECE);
+    CHECK_EQ(rsp[25], T_REPORT);
     link_up = false;
     CHECK_EQ(send(0, UPDATE_OP_INFO, NULL, 0), UPDATE_UNAVAILABLE);
     CHECK_EQ(rsp[1], 0xFF);
@@ -857,6 +861,11 @@ static void test_relay_session(void) {
     CHECK_EQ(updater_state(), UPDATE_STATE_ERROR);
 
     // The whole session: staged and verified here, relayed, committed there.
+    // The host's chunks (T_CHUNK, 50 B) are larger than the relay's PAGE
+    // fragments (24 B, over the split cable's 32-byte RPC buffers): the relay
+    // reads whole pages back from this half's slot, so the two never line up.
+    _Static_assert(T_CHUNK > USPLIT_PAGE_DATA_MAX, "a host chunk spans more than one relay fragment");
+    _Static_assert(USPLIT_MSG_MAX == 32, "the relay's messages are unchanged");
     const uint32_t len = 0x5000;
     fresh(len);
     make_slave_update(len);

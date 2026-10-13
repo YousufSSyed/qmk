@@ -62,6 +62,10 @@ once (well under 1 s) through the RAM vector table; a reset only after about
 back as RPI-RP2 (page 0 is not valid); recover it with flash.sh.
 
 The protocol is documented at the top of keyboards/svalboard/updater/updater.c.
+This tool speaks updater protocol 3: 64-byte raw HID reports, with the MANIFEST
+and CHUNK piece sizes taken from INFO. A board on protocol 2 (32-byte reports)
+is refused: update it with the sval_update.py of its own release, or copy the
+.uf2 in BOOTSEL mode.
 """
 import argparse
 import hashlib
@@ -82,7 +86,18 @@ HAND_SELF = 0xFF
 INFO, MANIFEST, ARM, BEGIN, CHUNK, END, STATUS, COMMIT, ABORT, REBIND, TEST_HALT, DIAG, RELAY = range(13)
 HALT_POINTS = {"invalidated": 1, "first-erase": 2, "mid-program": 3, "last-sector": 4, "page0": 5, "fault": 6,
                "fault-erased": 7}
-MANIFEST_PIECE, CHUNK_PIECE = 20, 18
+# Protocol 3: one 64-byte report each way. The updater's value bytes are what is
+# left after the client wrapper's 6 bytes and VIA's 3 (updater.c); INFO reports
+# the piece sizes the board takes, which can be no larger than these.
+REPORT = 64
+VALUE_BYTES = REPORT - 6 - 3          # 55: [status] + 54 reply bytes
+MANIFEST_PIECE_MAX = VALUE_BYTES - 3  # 52, after [hand][off][n]
+CHUNK_PIECE_MAX = VALUE_BYTES - 5     # 50, after [hand][off u24][n]
+# The other half is updated over the split cable, whose relay is the same in
+# protocols 2 and 3: a half on either can be updated through this one.
+OTHER_HALF_PROTOS = (2, 3)
+OLD_FIRMWARE = ("a board on updater protocol 2 (32-byte reports) does not answer this tool: update it with "
+                "the sval_update.py of its release, or copy the .uf2 in BOOTSEL mode")
 
 STATUS_NAMES = ["OK", "INVALID", "UNAVAILABLE", "FLASH_ERR", "ACCEPTED", "BUSY", "NOT_CONFIRMED", "WRONG_HW", "BAD_SIG",
                 "BAD_HASH", "BAD_IMAGE", "EPOCH", "OUT_OF_ORDER", "OVERRUN", "TOO_LARGE", "TIMEOUT", "OTHER_CLIENT",
@@ -149,18 +164,21 @@ class Device:
             self.handle = None
 
     def _exchange(self, packet, match):
-        packet = bytes(packet).ljust(32, b"\0")
-        if self.handle.write(b"\0" + packet) != 33:
-            raise RuntimeError("Incomplete HID write")
+        packet = bytes(packet).ljust(REPORT, b"\0")
+        if len(packet) != REPORT:
+            raise ValueError("packet longer than one report")
+        # hidapi: report ID 0 (the raw interface has none), then the report
+        if self.handle.write(b"\0" + packet) != REPORT + 1:
+            raise RuntimeError(f"Incomplete HID write ({OLD_FIRMWARE})")
         t0 = time.monotonic()
         deadline = t0 + 2.0
         while time.monotonic() < deadline:
-            reply = bytes(self.handle.read(32, 200))
-            if len(reply) == 32 and match(reply):
+            reply = bytes(self.handle.read(REPORT, 200))
+            if len(reply) == REPORT and match(reply):
                 self.round_trips += 1
                 self.round_trip_s += time.monotonic() - t0
                 return reply
-        raise RuntimeError(f"No reply to {packet[:12].hex()}")
+        raise RuntimeError(f"No reply to {packet[:12].hex()} ({OLD_FIRMWARE})")
 
     def new_client(self):
         """A fresh client ID from the Sval client wrapper, without adopting it."""
@@ -179,20 +197,22 @@ class Device:
     def unwrapped_op(self, op, args=b"", hand=HAND_SELF):
         """One updater op as a plain VIA packet, without the client wrapper (reject tests)."""
         body = bytes([SET_VALUE, CHANNEL, op, hand]) + bytes(args)
+        if len(body) > 3 + VALUE_BYTES:
+            raise ValueError("updater request too long")
         r = self._exchange(body, lambda r: r[0:3] == body[:3])
-        return r[3], r[4:26]
+        return r[3], r[4:3 + VALUE_BYTES]
 
     def op(self, op, args=b"", hand=HAND_SELF, client=None):
-        """One updater op in the client wrapper: (status, the 22 reply bytes after it)."""
+        """One updater op in the client wrapper: (status, the 54 reply bytes after it)."""
         cid = client or self.client or self.bootstrap()
         body = bytes([SET_VALUE, CHANNEL, op, hand]) + bytes(args)
-        if len(body) > 26:
+        if len(body) > 3 + VALUE_BYTES:
             raise ValueError("updater request too long")
         r = self._exchange(bytes([WRAPPER]) + cid + bytes([VIA_PROTO]) + body,
                            lambda r: r[0] == WRAPPER and r[1:5] == cid and (r[5] == WRAPPER_ERROR or r[6:9] == body[:3]))
         if r[5] == WRAPPER_ERROR:
             raise ClientIdExpired(f"client wrapper error {r[6]} for client {cid.hex()}")
-        return r[9], r[10:32]
+        return r[9], r[10:REPORT]
 
 
 def decode_info(st, r):
@@ -204,13 +224,34 @@ def decode_info(st, r):
                 hand_id=r[12], pointing_id=r[11], fw_version=struct.unpack_from("<I", r, 13)[0], storage_format=r[17],
                 security_epoch=struct.unpack_from("<H", r, 18)[0], flash_16mib=bool(r[20] & 1),
                 settings_writes_failing=bool(r[20] & 2), release_build=bool(r[20] & 4), test_hooks=bool(r[20] & 8),
-                other_half_mismatch=bool(r[20] & 32), last_error=status_name(r[21]))
+                other_half_mismatch=bool(r[20] & 32), last_error=status_name(r[21]),
+                chunk_max=r[22], manifest_max=r[23], report_bytes=r[24])
 
 
-def image_refusal(m, info):
-    """Why a half would refuse this manifest, as far as its INFO shows (None: no reason seen).
-    The same order of checks as update_manifest_check() (update_image.c)."""
+def piece_sizes(info):
+    """(MANIFEST piece, CHUNK data) sizes from a protocol 3 INFO, checked against
+    what fits this tool's reports."""
+    if info["report_bytes"] != REPORT:
+        raise UpdaterError(f"the board reports {info['report_bytes']}-byte raw HID reports, this tool sends {REPORT}")
+    if not (1 <= info["manifest_max"] <= MANIFEST_PIECE_MAX and 1 <= info["chunk_max"] <= CHUNK_PIECE_MAX):
+        raise UpdaterError(f"the board's piece sizes (MANIFEST {info['manifest_max']}, CHUNK {info['chunk_max']}) "
+                           f"do not fit {REPORT}-byte reports")
+    return info["manifest_max"], info["chunk_max"]
+
+
+def check_protocol(info):
+    """The half with USB must speak this tool's protocol; returns its piece sizes."""
     if info["protocol"] != make_update.UPDATER_PROTO:
+        raise UpdaterError(f"the board speaks updater protocol {info['protocol']}, this tool "
+                           f"{make_update.UPDATER_PROTO}: {OLD_FIRMWARE}")
+    return piece_sizes(info)
+
+
+def image_refusal(m, info, other=False):
+    """Why a half would refuse this manifest, as far as its INFO shows (None: no reason seen).
+    The same order of checks as update_manifest_check() (update_image.c). other: the half
+    without USB, reached over the split cable, whose relay protocols 2 and 3 share."""
+    if info["protocol"] not in (OTHER_HALF_PROTOS if other else (make_update.UPDATER_PROTO,)):
         return (f"UNSUPPORTED: the half speaks updater protocol {info['protocol']}, this tool "
                 f"{make_update.UPDATER_PROTO} (flash it with BOOTSEL and the .uf2)")
     if info["release_build"] and m["flags"] & make_update.FLAG_DIAGNOSTIC:
@@ -366,6 +407,7 @@ class Session:
 
         info = decode_info(*self.dev.op(INFO))
         board_hand = info["hand_id"]
+        manifest_piece, chunk_piece = check_protocol(info)
         # The image's own hand picks the half: this one, or the other one through it (M2).
         self.other = m["hand"] in HANDS and m["hand"] == board_hand ^ 1
         self.hand = m["hand"] if self.other else board_hand
@@ -375,9 +417,6 @@ class Session:
             raise UpdaterError("--halt is for the half with USB only")
         print(f"board: {info['hand']} half, pointing {info['pointing']}, JEDEC {info['jedec']}, state {info['state']}, "
               f"status {info['status']}")
-        if info["protocol"] != make_update.UPDATER_PROTO:
-            raise UpdaterError(f"the board speaks updater protocol {info['protocol']}, this tool "
-                               f"{make_update.UPDATER_PROTO}: flash it with BOOTSEL and the .uf2 instead")
         if self.other:
             self.other_half(m)
         elif m["hand"] != self.hand or m["pointing_id"] != info["pointing_id"]:
@@ -387,8 +426,8 @@ class Session:
 
         t_start = time.monotonic()
         blob = manifest
-        for off in range(0, len(blob), MANIFEST_PIECE):
-            piece = blob[off:off + MANIFEST_PIECE]
+        for off in range(0, len(blob), manifest_piece):
+            piece = blob[off:off + manifest_piece]
             r = self.need("MANIFEST", self.dev.op(MANIFEST, bytes([off, len(piece)]) + piece, hand=self.hand), OK)
             if r[0] != off + len(piece):
                 raise UpdaterError(f"MANIFEST: board has {r[0]} bytes, expected {off + len(piece)}")
@@ -416,7 +455,7 @@ class Session:
         next_report = step
         while off < len(image):
             self.maybe_renew()
-            n = min(CHUNK_PIECE, len(image) - off)
+            n = min(chunk_piece, len(image) - off)
             st, r = self.dev.op(CHUNK, struct.pack("<I", off)[:3] + bytes([n]) + image[off:off + n], hand=self.hand)
             nxt = r[0] | r[1] << 8 | r[2] << 16
             if st == OK:
@@ -629,8 +668,9 @@ def pair(dev, args, paths, sessions):
     if r[0] == 0xFF:
         raise UpdaterError(f"pair: the other half does not answer INFO ({status_name(st)})")
     infos = {board: decode_info(*dev.op(INFO)), board ^ 1: decode_info(st, r)}
+    check_protocol(infos[board])
     for p, m in other + this:
-        why = image_refusal(m, infos[m["hand"]])
+        why = image_refusal(m, infos[m["hand"]], other=m["hand"] != board)
         if why:
             raise UpdaterError(f"pair: {p.name} would be refused by the {HANDS[m['hand']]} half ({why}); nothing was sent")
     print("pair: the chord is made twice, both times on this half (the one with USB): once for each image")
@@ -710,8 +750,8 @@ class Rejects:
         return r
 
     def load(self, client):
-        for off in range(0, len(self.blob), MANIFEST_PIECE):
-            piece = self.blob[off:off + MANIFEST_PIECE]
+        for off in range(0, len(self.blob), self.mp):
+            piece = self.blob[off:off + self.mp]
             st, _ = self.dev.op(MANIFEST, bytes([off, len(piece)]) + piece, hand=self.hand, client=client)
             if st != OK:
                 raise UpdaterError(f"MANIFEST: {status_name(st)}")
@@ -723,7 +763,7 @@ class Rejects:
     def send_image(self, client, end):
         off = 0
         while off < end:
-            n = min(CHUNK_PIECE, end - off)
+            n = min(self.cp, end - off)
             st, _ = self.chunk(client, off, n)
             if st != OK:
                 raise UpdaterError(f"CHUNK at {off}: {status_name(st)}")
@@ -756,6 +796,7 @@ class Rejects:
     def run(self):
         info = decode_info(*self.dev.op(INFO))
         self.hand = info["hand_id"]
+        self.mp, self.cp = check_protocol(info)
         if info["state"] != "IDLE":
             raise UpdaterError(f"the board is in {info['state']}; ABORT first")
         a = self.dev.bootstrap()
@@ -763,9 +804,9 @@ class Rejects:
 
         print("session 1: unwrapped packets, a second client, wrong nonces, order")
         self.expect("unwrapped INFO", self.dev.unwrapped_op(INFO), OK, ST_IDLE)
-        self.expect("unwrapped MANIFEST", self.dev.unwrapped_op(MANIFEST, bytes([0, MANIFEST_PIECE]) + self.blob[:MANIFEST_PIECE], hand=self.hand), INVALID, ST_IDLE)
+        self.expect("unwrapped MANIFEST", self.dev.unwrapped_op(MANIFEST, bytes([0, self.mp]) + self.blob[:self.mp], hand=self.hand), INVALID, ST_IDLE)
         self.load(a)
-        self.expect("MANIFEST from a second client", self.dev.op(MANIFEST, bytes([0, MANIFEST_PIECE]) + self.blob[:MANIFEST_PIECE], hand=self.hand, client=b), OTHER_CLIENT, ST_MANIFEST_LOADING)
+        self.expect("MANIFEST from a second client", self.dev.op(MANIFEST, bytes([0, self.mp]) + self.blob[:self.mp], hand=self.hand, client=b), OTHER_CLIENT, ST_MANIFEST_LOADING)
         self.expect("ARM from a second client", self.dev.op(ARM, hand=self.hand, client=b), OTHER_CLIENT, ST_MANIFEST_LOADING)
         self.expect("unwrapped ARM", self.dev.unwrapped_op(ARM, hand=self.hand), INVALID, ST_MANIFEST_LOADING)
         self.expect("ABORT from a second client", self.nonce_op(ABORT, 0, b), OTHER_CLIENT, ST_MANIFEST_LOADING)
@@ -775,13 +816,13 @@ class Rejects:
         self.expect("BEGIN from a second client", self.nonce_op(BEGIN, nonce, b), OTHER_CLIENT, ST_CONFIRM_WAIT)
         self.expect("BEGIN before the chord", self.nonce_op(BEGIN, nonce, a), NOT_CONFIRMED, ST_CONFIRM_WAIT)
         self.chord(a, nonce)
-        r = self.expect("CHUNK ahead of the next offset", self.chunk(a, CHUNK_PIECE, CHUNK_PIECE), OUT_OF_ORDER, ST_RECEIVING)
+        r = self.expect("CHUNK ahead of the next offset", self.chunk(a, self.cp, self.cp), OUT_OF_ORDER, ST_RECEIVING)
         if r[0] | r[1] << 8 | r[2] << 16:
             self.failed += 1
             print("  FAIL  ... and it did not report offset 0 as the next one")
         self.expect("END too early", self.nonce_op(END, nonce, a), OUT_OF_ORDER, ST_RECEIVING)
-        self.expect("CHUNK from a second client", self.chunk(b, 0, CHUNK_PIECE), OTHER_CLIENT, ST_RECEIVING)
-        self.expect("unwrapped CHUNK", self.dev.unwrapped_op(CHUNK, bytes([0, 0, 0, CHUNK_PIECE]) + self.image[:CHUNK_PIECE], hand=self.hand), INVALID, ST_RECEIVING)
+        self.expect("CHUNK from a second client", self.chunk(b, 0, self.cp), OTHER_CLIENT, ST_RECEIVING)
+        self.expect("unwrapped CHUNK", self.dev.unwrapped_op(CHUNK, bytes([0, 0, 0, self.cp]) + self.image[:self.cp], hand=self.hand), INVALID, ST_RECEIVING)
         self.expect("ABORT with the wrong nonce", self.nonce_op(ABORT, nonce ^ 1, a), OTHER_CLIENT, ST_RECEIVING)
         self.expect("ABORT from a second client", self.nonce_op(ABORT, nonce, b), OTHER_CLIENT, ST_RECEIVING)
         self.send_image(a, len(self.image))

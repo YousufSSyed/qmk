@@ -75,7 +75,7 @@ def main():
     check(mu.boot2_valid(BOOT2), "real page 0 valid")
     check(mu.crc32_mpeg2(bytes(252)) == 0x7065399A and not mu.boot2_valid(bytes(256)), "zero page 7065399a, invalid")
     check(mu.crc32_mpeg2(b"\xff" * 252) == 0x0B8FD31A and not mu.boot2_valid(b"\xff" * 256), "erased page 0b8fd31a, invalid")
-    check((mu.MANIFEST_VERSION, mu.UPDATER_PROTO, mu.MANIFEST_BYTES) == (2, 2, 108), "format 2: a 108-byte manifest")
+    check((mu.MANIFEST_VERSION, mu.UPDATER_PROTO, mu.MANIFEST_BYTES) == (2, 3, 108), "format 2, protocol 3: a 108-byte manifest")
     check(not any(hasattr(mu, n) for n in ("sign", "verify", "SIG_BYTES", "release_keys", "TEST_KEY_FILE")),
           "make_update.py has no signing left")
 
@@ -103,7 +103,7 @@ def main():
     check(body == img and manifest == data[:108], "image bytes are the UF2 payload")
     check(f["magic"] == 0x50555653 and manifest[:4] == b"SVUP", "magic")
     check((f["manifest_ver"], f["reserved0"], f["hand"], f["pointing_id"], f["keymap_id"]) == (2, 0, 1, 3, 1), f"fields {f}")
-    check((f["flags"], f["security_epoch"], f["storage_format"], f["updater_proto"]) == (0, 0, 2, 2), f"fields {f}")
+    check((f["flags"], f["security_epoch"], f["storage_format"], f["updater_proto"]) == (0, 0, 2, 3), f"fields {f}")
     check((f["image_len"], f["fw_version"], f["reserved"]) == (len(img), 0x010203, 0), f"fields {f}")
     check(f["version"] == b"M1-test-A".ljust(16, b"\0"), "version string")
     check(f["sha512"] == hashlib.sha512(img).digest(), "sha512")
@@ -209,7 +209,7 @@ def main():
 
     # ---- the build-info record and --release ------------------------------------------------
     def release_img(flags=mu.BI_RELEASE, fw=3, version=b"vM3-test", extra=b"", hand=1, pointing_id=0, keymap_id=1,
-                    info_ver=3, proto=2, reserved0=0):
+                    info_ver=3, proto=3, reserved0=0):
         body = bytearray(image(0x1800))
         rec = struct.pack(mu.BUILD_INFO_FMT, b"SVBI", info_ver, flags, reserved0, proto, fw, version.ljust(16, b"\0"),
                           hand, pointing_id, keymap_id, 0)
@@ -267,6 +267,7 @@ def main():
     refuse_rel("a record with a retired key flag", "reserved", release_img(flags=mu.BI_RELEASE | 0x20))
     refuse_rel("a record with reserved0 set", "reserved", release_img(reserved0=2))
     refuse_rel("a protocol-1 build", "protocol", release_img(proto=1))
+    refuse_rel("a protocol-2 build (32-byte reports)", "protocol", release_img(proto=2))
     refuse_rel("the wrong tag", "expected 'vLaunch9'", None, *rel_common, "--expect-version", "vLaunch9")
     refuse_rel("the wrong number", "expected 4", None, *rel_common, "--expect-fw-version", "4")
     refuse_rel("a blank-keymap image labeled sval", "keymap_id 1, the image was built with 2", release_img(keymap_id=2))
