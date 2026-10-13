@@ -408,6 +408,8 @@ __attribute__((weak)) void sval_pointer_rest_apply(void) {}
 __attribute__((weak)) void sval_pointer_status(sval_idle_status_t *st) { st->sensor_present = 0; }
 __attribute__((weak)) void sval_pointer_identity(sval_pointer_identity_t *id) {}
 __attribute__((weak)) uint8_t sval_pointer_own_bus(void) { return 0; }
+// Starts the driver for what the probe found; a build with every driver in uses it (pointing_auto).
+__attribute__((weak)) void sval_pointer_select(const sval_probe_result_t *found) {}
 
 // When this half's own pointing module didn't answer (or the build has none), what the
 // other buses found, probed once a moment after boot: late enough that a TrackPoint has
@@ -424,6 +426,7 @@ static void sval_pointer_probe_task(void) {
     if (own.built_for != SVAL_SENSOR_NONE && own.detected == own.built_for) return; // its own module answered
     if (own.built_for != SVAL_SENSOR_NONE && own.detected == SVAL_SENSOR_UNKNOWN) return; // the trackball bus answered
     pointer_probe = sval_probe_pointers(sval_pointer_own_bus());
+    sval_pointer_select(&pointer_probe);
 }
 
 // This half's side and pointing module.

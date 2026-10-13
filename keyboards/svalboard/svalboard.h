@@ -81,6 +81,7 @@ enum sval_pointer_sensor {
 #define SVAL_POINTER_REPORTED 0x01 // this block holds a report
 #define SVAL_POINTER_LEFT     0x02 // the half is the left half (EE_HANDS)
 #define SVAL_POINTER_INIT_OK  0x04 // the sensor driver initialised
+#define SVAL_POINTER_AUTO     0x08 // the firmware drives whichever module is attached; built_for is the one it chose
 typedef struct __attribute__((__packed__)) {
     uint8_t flags;              // SVAL_POINTER_*
     uint8_t built_for;          // enum sval_pointer_sensor
