@@ -3,8 +3,8 @@
 
     check_release_artifacts.py DIR --version TAG
 
-DIR holds what release CI's build jobs uploaded: for each of the 12 release
-keymap builds NAME (svalboard_trackball_pmw3389_right_sval, ...) exactly
+DIR holds what release CI's build jobs uploaded: for each of the 2 release
+builds NAME (svalboard_left_sval, svalboard_right_sval: D34) exactly
 NAME.elf, NAME_TAG.uf2 and NAME_TAG.svup, and nothing else. For each build
 this checks, and exits 1 on any failure:
 
@@ -33,11 +33,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import make_update as mu  # noqa: E402
 
-# The release keymap builds: release.yml's build_sval and build_blank matrices.
-RELEASE_BUILDS = [(f"svalboard/{v}{side}", km)
-                  for v, km in (("", "sval"), ("", "blank"), ("trackpoint/", "sval"), ("trackball/pmw3360/", "sval"),
-                                ("trackball/pmw3389/", "sval"), ("azoteq/", "sval"))
-                  for side in ("left", "right")]
+# The release builds: release.yml's build_sval matrix. One auto build per side,
+# with every pointing driver (pointing_id auto), keymap sval (D34).
+RELEASE_BUILDS = [(f"svalboard/{side}", "sval") for side in ("left", "right")]
 PT_LOAD = 1
 
 
@@ -84,7 +82,7 @@ def check_dir(d, version):
     expected_files |= {f"{n}_{version}{ext}" for n in want for ext in (".uf2", ".svup")}
     present = {p.name for p in d.iterdir()} if d.is_dir() else set()
     for extra in sorted(present - expected_files):
-        problems.append(f"unexpected file {extra}: the directory must hold only the 12 builds' artifacts")
+        problems.append(f"unexpected file {extra}: the directory must hold only the {len(want)} builds' artifacts")
     for missing in sorted(expected_files - present):
         problems.append(f"missing {missing}")
     if problems:

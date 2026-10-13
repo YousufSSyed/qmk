@@ -13,6 +13,8 @@
 #    error "release updater builds cannot have test hooks"
 #elif defined(SVAL_KEYTEST) && defined(SVAL_UPDATE_RELEASE)
 #    error "release updater builds cannot have SVAL_KEYTEST"
+#elif defined(SVAL_TEST_WIPE) && defined(SVAL_UPDATE_RELEASE)
+#    error "release updater builds cannot have SVAL_TEST_WIPE (bench builds only)"
 #endif
 #if defined(SVAL_UPDATE_RELEASE) && defined(SVAL_HOST_BOOTLOADER)
 #    if SVAL_HOST_BOOTLOADER

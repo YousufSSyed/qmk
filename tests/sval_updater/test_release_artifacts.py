@@ -3,7 +3,7 @@
 
     test_release_artifacts.py OUT_DIR
 
-Builds a synthetic release directory (for each of the 12 release builds: a
+Builds a synthetic release directory (for each of the 2 release builds: a
 minimal ELF with one loadable segment at 0x10000000, the .uf2, and the .svup
 from make_update.py --release), checks that it passes, and that each kind of
 substitution is refused.
@@ -98,11 +98,14 @@ def main():
     good = out / "good"
     make_dir(good)
     hashes, problems = cra.check_dir(good, VER)
-    check(not problems and len(hashes) == 12, f"a clean directory passes: {problems}")
+    check([b for b in cra.RELEASE_BUILDS] == [("svalboard/left", "sval"), ("svalboard/right", "sval")],
+          f"the release is the two auto builds (D34): {cra.RELEASE_BUILDS}")
+    check(all(mu.kb_fields(kb)[1] == mu.POINTING["auto"] for kb, _ in cra.RELEASE_BUILDS), "release builds are auto")
+    check(not problems and len(hashes) == 2, f"a clean directory passes: {problems}")
     check(quiet_main([str(good), "--version", VER]) == 0, "main passes a clean directory")
     check(quiet_main([str(good), "--version", "vOther"]) == 1, "another version refused")
 
-    r, l, rb = "svalboard_right_sval", "svalboard_left_sval", "svalboard_right_blank"
+    r, l = "svalboard_right_sval", "svalboard_left_sval"
 
     def case(what, needle, edit):
         d = out / "case"
@@ -141,9 +144,19 @@ def main():
     case("a left build as right", "the manifest says hand 0", lambda d: [
         shutil.copy(d / f"{l}{x}", d / f"{r}{x}") for x in (".elf",)]
         + [shutil.copy(d / f"{l}_{VER}{x}", d / f"{r}_{VER}{x}") for x in (".uf2", ".svup")])
-    case("a blank build as sval", "keymap_id 2", lambda d: [
-        shutil.copy(d / f"{rb}{x}", d / f"{r}{x}") for x in (".elf",)]
-        + [shutil.copy(d / f"{rb}_{VER}{x}", d / f"{r}_{VER}{x}") for x in (".uf2", ".svup")])
+    def replace_with(d, kb, km):
+        """The right release build's three files swapped for another build's (a per-module or blank image)."""
+        flash = image_for(kb, km)
+        flash += b"\xff" * (-len(flash) % 256)
+        (d / f"{r}.elf").write_bytes(elf(flash))
+        (d / f"{r}_{VER}.uf2").write_bytes(tmu.uf2(flash))
+        p = make_svup(d / f"{r}_{VER}.uf2", d / f"{r}_{VER}.svup", kb, km)
+        check(p.returncode == 0, f"make_update.py --release {kb}:{km}: {p.stdout}{p.stderr}")
+
+    case("a blank build as sval", "keymap_id 2", lambda d: replace_with(d, "svalboard/right", "blank"))
+    case("a per-module build as the release", "pointing_id 3", lambda d: replace_with(d, "svalboard/trackball/pmw3389/right", "sval"))
+    case("a per-module build's files", "unexpected file",
+         lambda d: (d / "svalboard_trackpoint_right_sval.elf").write_bytes((d / f"{r}.elf").read_bytes()))
     case("a manifest edited to the other hand", "the manifest says hand 0", lambda d: svup_byte(d, r, 7, 0))
     case("a manifest without RELEASE", "flags 0x0", lambda d: svup_byte(d, r, 10, 0))
     case("a nonzero reserved byte", "reserved", lambda d: svup_byte(d, r, 6, 1))

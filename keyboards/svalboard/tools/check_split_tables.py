@@ -5,8 +5,9 @@
     check_split_tables.py --dir BUILD_DIR [--dir ...]
     check_split_tables.py --dump BUILD.elf [--json]
 
-Both halves of a Svalboard run the same release, but they may run different
-builds of it (left trackball, right TrackPoint: D18). Over the split link each
+Both halves of a Svalboard run the same release. A release has one build per
+side (the auto builds, D34), but a half may run another build of the same
+release (a single-module build, D18). Over the split link each
 side frames every transaction with its own table: the transaction ID, the
 buffer sizes and the shared-memory offsets come from
 quantum/split_common/transactions.c's split_transaction_table, and both sides
