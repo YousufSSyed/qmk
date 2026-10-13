@@ -13,6 +13,8 @@ out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
 python3 -I "$tests/test_make_update.py" "$out/cross" "$@"
+python3 -I "$tests/test_release_version.py" "$out/release_version"
+python3 -I "$tests/test_release_artifacts.py" "$out/release_artifacts"
 
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
