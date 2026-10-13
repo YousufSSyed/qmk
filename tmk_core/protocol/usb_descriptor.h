@@ -301,7 +301,14 @@ enum usb_endpoints {
 #define KEYBOARD_EPSIZE 8
 #define SHARED_EPSIZE 32
 #define MOUSE_EPSIZE 16
-#define RAW_EPSIZE 32
+// A keyboard may set a larger raw HID report (up to 64 bytes, the full-speed
+// interrupt endpoint maximum) in its config.h.
+#ifndef RAW_EPSIZE
+#    define RAW_EPSIZE 32
+#endif
+#if RAW_EPSIZE < 1 || RAW_EPSIZE > 64
+#    error "RAW_EPSIZE must be 1..64"
+#endif
 #define PLOVER_HID_EPSIZE 9
 #define CONSOLE_EPSIZE 32
 #define MIDI_STREAM_EPSIZE 64

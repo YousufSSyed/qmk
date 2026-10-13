@@ -3,8 +3,8 @@
 
     check_release_assets.py DIR TAG
 
-DIR must hold exactly NAME_TAG.uf2 and NAME_TAG.svup for each of the 12
-release keymap builds. For each pair: the .svup's image is the .uf2's image;
+DIR must hold exactly NAME_TAG.uf2 and NAME_TAG.svup for each of the 2
+release builds (svalboard/left and svalboard/right, keymap sval: D34). For each pair: the .svup's image is the .uf2's image;
 its manifest says TAG and the build's side, pointing device and keymap; the
 image's build-info record agrees; and make_update.py verify --build release
 accepts it (manifest rules, hash, structure). Exit 1 on any failure.
@@ -57,7 +57,7 @@ def main(argv):
         print(f"FAIL: {p}")
     if problems:
         return 1
-    print(f"ok: {tag}: 12 .uf2 and 12 .svup; each .svup holds its .uf2's image and a release build accepts it")
+    print(f"ok: {tag}: {len(names)} .uf2 and {len(names)} .svup; each .svup holds its .uf2's image and a release build accepts it")
     return 0
 
 

@@ -161,26 +161,26 @@ static void test_relay_happy(uint32_t len) {
     printf("relay 0x%x: %u RPCs, %llu ms to verified in simulated time\n", (unsigned)len, (unsigned)lk.n, (unsigned long long)relay_ms);
 }
 
-// The other half refuses: its own checks (D7), the commit, its settings.
+// The other half refuses: its own checks (D7), the commit, its settings. It
+// never refuses for the image's hand or pointing device (D33): see
+// test_relay_slave_mismatch.
 static void test_relay_slave_refusals(void) {
     const int f0 = failures;
     static const struct {
         const char     *what;
         update_status_t want;
     } cases[] = {
-        {"wrong hand", UPDATE_UNSUPPORTED}, {"wrong pointing", UPDATE_WRONG_HW}, {"nonzero reserved byte", UPDATE_INVALID},
-        {"bad hash", UPDATE_BAD_HASH},      {"settings failing", UPDATE_UNAVAILABLE}, {"version 1", UPDATE_UNSUPPORTED},
+        {"nonzero reserved byte", UPDATE_INVALID}, {"bad hash", UPDATE_BAD_HASH},
+        {"settings failing", UPDATE_UNAVAILABLE}, {"version 1", UPDATE_UNSUPPORTED},
     };
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
         relay_fresh(0x2000);
         sval_update_manifest_t *m = blob_manifest();
         switch (c) {
-            case 0: m->hand = UPDATE_HAND_RIGHT; break;
-            case 1: m->pointing_id = UPDATE_POINTING_PMW3360; break;
-            case 2: m->reserved0 = 1; break; // version 1's key_id
-            case 3: img[0x1234] ^= 1; break; // the image differs from the manifest's hash
-            case 4: port_failing = true; break;
-            case 5: m->manifest_ver = 1; break;
+            case 0: m->reserved0 = 1; break; // version 1's key_id
+            case 1: img[0x1234] ^= 1; break; // the image differs from the manifest's hash
+            case 2: port_failing = true; break;
+            case 3: m->manifest_ver = 1; break;
         }
         CHECK(update_relay_start(blob, img_len, body_crc()));
         uint8_t ph = relay_until(RELAY_VERIFIED, 60000);
@@ -190,7 +190,7 @@ static void test_relay_slave_refusals(void) {
         // the relay's ABORT cleared the other half; nothing outside its slot changed
         CHECK_EQ(update_split_slave_state(), UPDATE_STATE_IDLE);
         CHECK(only_slot_changed());
-        if (c != 3) CHECK_EQ(erase_ops, 0); // refused before any erase
+        if (c != 1) CHECK_EQ(erase_ops, 0); // refused before any erase
         CHECK_EQ(slave_commit_runs, 0);
         if (failures != f0) fprintf(stderr, "  (slave refusal: %s)\n", cases[c].what);
         port_failing = false;
@@ -215,6 +215,22 @@ static void test_relay_slave_refusals(void) {
 }
 
 // ---- faults on the link ----------------------------------------------------------------
+
+// Gentle (D33): the other half checks a relayed manifest itself (D7) but never
+// refuses it for its hand or pointing device: such an image is verified there.
+static void test_relay_slave_mismatch(void) {
+    for (int c = 0; c < 3; c++) {
+        relay_fresh(0x2000);
+        sval_update_manifest_t *m = blob_manifest();
+        if (c == 0) m->hand = UPDATE_HAND_RIGHT;
+        if (c == 1) m->pointing_id = UPDATE_POINTING_PMW3360;
+        if (c == 2) m->pointing_id = UPDATE_POINTING_AUTO;
+        CHECK(update_relay_start(blob, img_len, body_crc()));
+        CHECK_EQ(relay_until(RELAY_VERIFIED, 60000), RELAY_VERIFIED);
+        CHECK_EQ(update_split_slave_state(), UPDATE_STATE_VERIFIED);
+        CHECK_EQ(slave_commit_runs, 0);
+    }
+}
 
 static void test_relay_faults(void) {
     const int f0 = failures;
@@ -813,6 +829,10 @@ static void test_relay_session(void) {
     CHECK_EQ(get32le(rsp + 14), 2001);
     CHECK_EQ(rsp[21] & 0x1F, 0x01);
     CHECK_EQ(get16le(rsp + 3), SVAL_UPDATE_BASE / 4096);
+    // the piece sizes are this half's: the other half's image is staged here first
+    CHECK_EQ(rsp[23], T_CHUNK);
+    CHECK_EQ(rsp[24], T_MPIECE);
+    CHECK_EQ(rsp[25], T_REPORT);
     link_up = false;
     CHECK_EQ(send(0, UPDATE_OP_INFO, NULL, 0), UPDATE_UNAVAILABLE);
     CHECK_EQ(rsp[1], 0xFF);
@@ -846,17 +866,26 @@ static void test_relay_session(void) {
             CHECK_EQ(updater_state(), UPDATE_STATE_IDLE);
         }
     }
-    // the manifest is checked against the other half's pointing device (D18)
-    fresh(0x2000);
-    make_slave_update(0x2000);
-    blob_manifest()->pointing_id = UPDATE_POINTING_PMW3389; // this half's, not the other's
-    presence_up();
-    req_hand = UPDATE_HAND_LEFT;
-    CHECK_EQ(load_manifest(CLIENT_A), UPDATE_OK);
-    CHECK_EQ(send(CLIENT_A, UPDATE_OP_ARM, NULL, 0), UPDATE_WRONG_HW);
-    CHECK_EQ(updater_state(), UPDATE_STATE_ERROR);
+    // the other half's pointing device and hand are not checked (D33): an image
+    // naming this half's pointing device, or the right hand, is armed for the left
+    for (int c = 0; c < 2; c++) {
+        fresh(0x2000);
+        make_slave_update(0x2000);
+        if (c == 0) blob_manifest()->pointing_id = UPDATE_POINTING_PMW3389; // this half's, not the other's
+        if (c == 1) blob_manifest()->hand = UPDATE_HAND_RIGHT;               // the request's hand picks the half
+        presence_up();
+        req_hand = UPDATE_HAND_LEFT;
+        CHECK_EQ(load_manifest(CLIENT_A), UPDATE_OK);
+        CHECK_EQ(send(CLIENT_A, UPDATE_OP_ARM, NULL, 0), UPDATE_OK);
+        CHECK_EQ(updater_state(), UPDATE_STATE_CONFIRM_WAIT);
+    }
 
     // The whole session: staged and verified here, relayed, committed there.
+    // The host's chunks (T_CHUNK, 50 B) are larger than the relay's PAGE
+    // fragments (24 B, over the split cable's 32-byte RPC buffers): the relay
+    // reads whole pages back from this half's slot, so the two never line up.
+    _Static_assert(T_CHUNK > USPLIT_PAGE_DATA_MAX, "a host chunk spans more than one relay fragment");
+    _Static_assert(USPLIT_MSG_MAX == 32, "the relay's messages are unchanged");
     const uint32_t len = 0x5000;
     fresh(len);
     make_slave_update(len);
@@ -1073,6 +1102,7 @@ static void test_relay(void) {
     test_relay_happy(0x3000);
     test_relay_happy(0x13000);
     test_relay_slave_refusals();
+    test_relay_slave_mismatch();
     test_relay_pages();
     test_relay_mailbox();
     test_relay_slave_timeout();

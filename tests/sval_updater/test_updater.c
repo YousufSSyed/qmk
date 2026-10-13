@@ -113,7 +113,7 @@ static void test_manifest_layout(void) {
     CHECK_EQ(sizeof(sval_update_manifest_t), 108);
     CHECK_EQ(UPDATE_MANIFEST_BYTES, 108); // the MANIFEST op's buffer: no signature after it (protocol 2)
     CHECK_EQ(UPDATE_MANIFEST_VERSION, 2);
-    CHECK_EQ(UPDATE_PROTOCOL_VERSION, 2);
+    CHECK_EQ(UPDATE_PROTOCOL_VERSION, 3); // 2 in 64-byte reports
     CHECK_EQ(UPDATE_BAD_SIG, 8); // retired, never returned; the codes after it keep their values
     CHECK_EQ(UPDATE_BAD_HASH, 9);
     CHECK_EQ(offsetof(sval_update_manifest_t, reserved0), 6); // key_id in version 1
@@ -160,11 +160,24 @@ static void test_manifest_check(void) {
     EXPECT(rel, (void)0, UPDATE_OK);
     EXPECT(rel, m.flags = UPDATE_FLAG_RELEASE, UPDATE_OK);
     EXPECT(rel, m.flags = UPDATE_FLAG_DIAGNOSTIC, UPDATE_BAD_IMAGE); // release build: no DIAGNOSTIC image
-    // this half, this build
-    EXPECT(test_dev, m.hand = UPDATE_HAND_LEFT, UPDATE_UNSUPPORTED);
-    EXPECT(test_dev, m.hand = 7, UPDATE_UNSUPPORTED);
-    EXPECT(test_dev, m.pointing_id = UPDATE_POINTING_PMW3360, UPDATE_WRONG_HW);
-    EXPECT(test_dev, m.pointing_id = UPDATE_POINTING_NONE, UPDATE_WRONG_HW);
+    // gentle (D33): an image for the other hand or another pointing device is taken,
+    // on a plain and a release build; the host tools warn and ask instead
+    EXPECT(test_dev, m.hand = UPDATE_HAND_LEFT, UPDATE_OK);
+    EXPECT(test_dev, m.hand = 7, UPDATE_OK);
+    EXPECT(rel, m.hand = UPDATE_HAND_LEFT, UPDATE_OK);
+    EXPECT(test_dev, m.pointing_id = UPDATE_POINTING_PMW3360, UPDATE_OK);
+    EXPECT(test_dev, m.pointing_id = UPDATE_POINTING_NONE, UPDATE_OK);
+    EXPECT(test_dev, m.pointing_id = UPDATE_POINTING_AUTO, UPDATE_OK); // auto image on a single-module build
+    EXPECT(rel, (m.hand = UPDATE_HAND_LEFT, m.pointing_id = UPDATE_POINTING_TRACKPOINT), UPDATE_OK);
+    {
+        update_device_t auto_dev = test_dev; // a single-module image on an auto build
+        auto_dev.pointing_id     = UPDATE_POINTING_AUTO;
+        EXPECT(auto_dev, (void)0, UPDATE_OK);
+        EXPECT(auto_dev, m.pointing_id = UPDATE_POINTING_AZOTEQ, UPDATE_OK);
+    }
+    // a mismatched hand never hides a real refusal
+    EXPECT(test_dev, (m.hand = UPDATE_HAND_LEFT, m.security_epoch = 2), UPDATE_EPOCH);
+    EXPECT(rel, (m.pointing_id = UPDATE_POINTING_PMW3360, m.flags = UPDATE_FLAG_DIAGNOSTIC), UPDATE_BAD_IMAGE);
     EXPECT(test_dev, m.keymap_id = 99, UPDATE_OK); // display only
     EXPECT(test_dev, m.fw_version = 0, UPDATE_OK); // downgrades are allowed (D19)
     // floors
@@ -714,7 +727,7 @@ void host_lib_reset(int commit_available) {
 }
 void host_via(uint8_t *pkt, uint32_t client) {
     port_client = client;
-    updater_via_command(pkt, 32);
+    updater_via_command(pkt, RAW_EPSIZE);
     port_client = 0;
 }
 void host_passes(int n) {

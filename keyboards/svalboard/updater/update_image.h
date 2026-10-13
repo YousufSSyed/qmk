@@ -24,8 +24,8 @@
 
 // What the running build is, for the checks that compare an image with it.
 typedef struct {
-    uint8_t  hand;           // UPDATE_HAND_*
-    uint8_t  pointing_id;    // UPDATE_POINTING_*
+    uint8_t  hand;           // UPDATE_HAND_*: reported (INFO), not checked against the manifest (D33)
+    uint8_t  pointing_id;    // UPDATE_POINTING_*: reported (INFO), not checked (D33)
     uint16_t security_epoch; // SVAL_UPDATE_SECURITY_EPOCH
     uint8_t  storage_format; // SVAL_UPDATE_STORAGE_FORMAT
     bool     release_build;  // SVAL_UPDATE_RELEASE: refuse DIAGNOSTIC images
@@ -45,8 +45,9 @@ uint32_t update_crc32_mpeg2_update(uint32_t crc, const uint8_t *p, size_t n);
 // Whether page 0 carries a boot2 the ROM would run.
 bool update_boot2_valid(const uint8_t page0[UPDATE_BOOT2_BYTES]);
 
-// Manifest fields against this build. UPDATE_OK or the
-// refusal's status; the order of checks is fixed, so a manifest with several
+// Manifest fields against this build: integrity and structure only (magic,
+// version, flags, floors, length), never its hand or pointing device (D33).
+// UPDATE_OK or the refusal's status; the order of checks is fixed, so a manifest with several
 // faults always reports the same one.
 update_status_t update_manifest_check(const sval_update_manifest_t *m, const update_device_t *dev);
 

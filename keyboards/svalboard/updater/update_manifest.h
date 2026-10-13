@@ -10,9 +10,12 @@
 
 #include <stdint.h>
 
+// 3: protocol 2 in 64-byte raw HID reports, with larger MANIFEST and CHUNK
+// pieces and the piece sizes in INFO (updater.c). The manifest is unchanged
+// (UPDATE_MANIFEST_VERSION 2), and so is the relay over the split cable.
 // 2: the manifest travels alone, 108 bytes, with nothing after it. Version 1
 // (never released) put a 64-byte signature after it.
-#define UPDATE_PROTOCOL_VERSION 2 // reported by INFO, and stored as updater_proto in images
+#define UPDATE_PROTOCOL_VERSION 3 // reported by INFO, and stored as updater_proto in images
 
 // VIA custom-value channel ('U'). The others: IDENTITY 0x49, SCANLAB 0x53, KEYTEST 0x54.
 #define UPDATE_CHANNEL 0x55
@@ -28,12 +31,14 @@
 #define UPDATE_HAND_LEFT 0
 #define UPDATE_HAND_RIGHT 1
 
-// pointing_id: this half's pointing device only (D18). Append-only.
+// pointing_id: this half's pointing device only (D18). Append-only. Reported, and
+// warned about by the host tools, but never checked by the firmware (D33).
 #define UPDATE_POINTING_NONE 0
 #define UPDATE_POINTING_TRACKPOINT 1
 #define UPDATE_POINTING_PMW3360 2
 #define UPDATE_POINTING_PMW3389 3
 #define UPDATE_POINTING_AZOTEQ 4
+#define UPDATE_POINTING_AUTO 5 // one build with every driver, started for whichever module answers
 
 // keymap_id: display only, never checked (D18).
 #define UPDATE_KEYMAP_UNKNOWN 0
@@ -102,7 +107,7 @@ typedef enum {
     UPDATE_ACCEPTED      = 4,  // slow work started; poll STATUS
     UPDATE_BUSY          = 5,
     UPDATE_NOT_CONFIRMED = 6,  // the gesture was not made in time
-    UPDATE_WRONG_HW      = 7,  // pointing device differs from this build's
+    UPDATE_WRONG_HW      = 7,  // retired: the pointing device is not checked (D33); never returned, kept so codes don't shift
     UPDATE_BAD_SIG       = 8,  // retired: protocol 1's signature check; never returned, kept so codes don't shift
     UPDATE_BAD_HASH      = 9,  // staged image does not match the manifest's SHA-512
     UPDATE_BAD_IMAGE     = 10, // structure checks failed (boot2, SP, reset vector, length, flags)
@@ -112,7 +117,7 @@ typedef enum {
     UPDATE_TOO_LARGE     = 14, // image_len above SVAL_UPDATE_MAX_IMAGE
     UPDATE_TIMEOUT       = 15,
     UPDATE_OTHER_CLIENT  = 16,
-    UPDATE_UNSUPPORTED   = 17, // hand is not this half's, or a manifest/protocol version this build doesn't know
+    UPDATE_UNSUPPORTED   = 17, // the request's hand is neither half's, or a manifest/protocol version this build doesn't know
     UPDATE_STORAGE       = 18, // settings storage format below this device's floor
 } update_status_t;
 

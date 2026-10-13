@@ -7,13 +7,13 @@ the image, and the chord on the keyboard confirms the manifest. The manifest
 layout and the image rules match keyboards/svalboard/updater/update_manifest.h
 and update_image.c; see docs/updater.md.
 
-    make_update.py IN.uf2 -o OUT.svup --kb svalboard/trackball/pmw3389/right \\
-        [--keymap sval] [--version-string S] [--fw-version N]
+    make_update.py IN.uf2 -o OUT.svup --kb svalboard/right \\
+        [--keymap sval] [--version-string S] [--fw-version N] [--yes]
 
 Release CI adds --release, which also checks that the image is a release
 updater build (SVAL_UPDATE_RELEASE) for a release keymap, with no test hooks,
 keytest or host bootloader, and that its build-info record says the same
-version, side, pointing device and keymap as the manifest:
+version and keymap as the manifest:
 
     make_update.py IN.uf2 -o OUT.svup --kb svalboard/right --keymap sval \\
         --release [--expect-version vLaunch3] [--expect-fw-version N]
@@ -25,8 +25,11 @@ anything: the manifest rules, the hash and the image structure.
 
 fw_version and the version string default to the image's build-info record
 (SVAL_FW_VERSION, SVAL_FW_VERSION_STRING), so a manifest always says what the
-firmware reports, and a manifest whose side or pointing device is not the
-image's is refused. Refuses, with exit status 2: a UF2 that is malformed, for
+firmware reports. A --kb whose side or pointing device is not the image's
+(including an any-module "auto" image labeled as one module, or the reverse)
+is a warning, not a refusal (D33): the tool asks (y/N) before writing the
+.svup, and --yes skips the question; with no answer (no terminal) it writes
+nothing. Refuses, with exit status 2: a UF2 that is malformed, for
 another chip family, not starting at 0x10000000, with gaps or overlaps, or
 ending beyond 0x10160000; an image whose boot2 CRC, initial SP or reset vector
 is wrong; and flag and field combinations the firmware would refuse anyway.
@@ -42,13 +45,13 @@ from pathlib import Path
 
 MANIFEST_MAGIC = 0x50555653  # "SVUP"
 MANIFEST_VERSION = 2  # 1: protocol 1, signed (never released); refused
-UPDATER_PROTO = 2
+UPDATER_PROTO = 3  # 3: 64-byte raw HID reports (updater.c)
 MANIFEST_FMT = "<IHBBBBHHBBIII16s64s"
 MANIFEST_BYTES = 108
 assert struct.calcsize(MANIFEST_FMT) == MANIFEST_BYTES
 
 HAND = {"left": 0, "right": 1}
-POINTING = {"none": 0, "trackpoint": 1, "pmw3360": 2, "pmw3389": 3, "azoteq": 4}
+POINTING = {"none": 0, "trackpoint": 1, "pmw3360": 2, "pmw3389": 3, "azoteq": 4, "auto": 5}
 KEYMAP = {"sval": 1, "blank": 2}  # the release keymaps (D22)
 FLAG_RELEASE, FLAG_DIAGNOSTIC = 0x0001, 0x0002
 STORAGE_FORMAT = 2  # SVAL_UPDATE_STORAGE_FORMAT in keyboards/svalboard/config.h
@@ -223,7 +226,7 @@ def kb_fields(kb):
     if not parts or parts[0] != "svalboard" or parts[-1] not in HAND:
         raise Refused(f"--kb {kb!r}: expected svalboard/.../left or svalboard/.../right")
     middle = parts[1:-1]
-    table = {(): "none", ("trackpoint",): "trackpoint", ("trackball", "pmw3360"): "pmw3360",
+    table = {(): "auto", ("trackpoint",): "trackpoint", ("trackball", "pmw3360"): "pmw3360",
              ("trackball", "pmw3389"): "pmw3389", ("azoteq",): "azoteq"}
     if tuple(middle) not in table:
         raise Refused(f"--kb {kb!r}: unknown variant")
@@ -283,12 +286,46 @@ def manifest_from_args(image, args):
     manifest = build_manifest(image, hand=hand, pointing_id=pointing_id, keymap_id=keymap_id, flags=flags,
                               epoch=args.epoch, storage_format=args.storage_format, fw_version=fw_version,
                               version=version)
-    if info:
-        # The right image for the right half: the record says what the image was built for.
-        problems = build_info_identity_problems(info, parse_manifest(manifest), ("hand", "pointing_id"))
-        if problems:
-            raise Refused("; ".join(problems) + " (--kb is not this image's)")
     return manifest
+
+
+def identity_warnings(manifest, image):
+    """Where --kb names another side or pointing device than the image's build-info
+    record (D33: a warning the user confirms, never a refusal)."""
+    info = build_info(image)
+    if not info:
+        return []
+    m = parse_manifest(manifest)
+    names = {"hand": {v: k for k, v in HAND.items()}, "pointing_id": {v: k for k, v in POINTING.items()}}
+    out = []
+    for field, what in (("hand", "side"), ("pointing_id", "pointing device")):
+        if info[field] != BI_HOST_TEST and info[field] != m[field]:
+            said = names[field].get(m[field], m[field])
+            built = names[field].get(info[field], info[field])
+            out.append(f"the manifest says {what} {said} ({field} {m[field]}), but the image was built for {built} "
+                       f"({field} {info[field]}): --kb is not this image's")
+    return out
+
+
+def ask(prompt):
+    return input(prompt)
+
+
+def confirm(warnings, yes):
+    """Print each warning and ask (y/N) unless --yes; a no (or no answer) refuses."""
+    if not warnings:
+        return
+    for w in warnings:
+        print(f"warning: {w}", file=sys.stderr)
+    if yes:
+        print("--yes: going ahead", file=sys.stderr)
+        return
+    try:
+        answer = ask("Write the .svup anyway? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        raise Refused("not confirmed: nothing was written (--yes skips the question)")
 
 
 def read_image(args):
@@ -355,7 +392,9 @@ def release_image_problems(manifest, image):
         if BI_HOST_TEST in (info["hand"], info["pointing_id"]) or info["keymap_id"] not in KEYMAP.values():
             problems.append(f"the image's build-info record has hand {info['hand']}, pointing_id {info['pointing_id']}, "
                             f"keymap_id {info['keymap_id']}: not a release keymap build for one half")
-        problems += build_info_identity_problems(info, m)
+        # Side and pointing device: a confirmed warning in make (D33); the release
+        # lint checks them against each build's name.
+        problems += build_info_identity_problems(info, m, ("keymap_id",))
     return problems
 
 
@@ -379,6 +418,7 @@ def make(args):
             raise Refused("not a release update: " + "; ".join(problems))
     elif args.expect_version is not None or args.expect_fw_version is not None:
         raise Refused("--expect-* go with --release")
+    confirm(identity_warnings(manifest, image), args.yes)
     out = Path(args.output)
     out.write_bytes(manifest + image)
     print(describe(out, manifest, image))
@@ -444,6 +484,8 @@ def main(argv=None):
         ap.add_argument("--diagnostic", action="store_true", help="set flags.DIAGNOSTIC (scanlab/keytest/host-bootloader images)")
         ap.add_argument("--expect-version", help="--release: refuse unless the version string is this (the tag)")
         ap.add_argument("--expect-fw-version", type=int, help="--release: refuse unless fw_version is this")
+        ap.add_argument("--yes", action="store_true",
+                        help="write the .svup without asking when --kb names another side or pointing device than the image")
         ap.add_argument("--unsafe-allow-bad-image", action="store_true",
                         help="build an image that fails the structure checks (for rejection tests)")
         make(ap.parse_args(argv))

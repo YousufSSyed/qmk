@@ -79,17 +79,19 @@ class FakeBoard(su.Device):
         self.waited = False
         self.chords = 0
         self.allow_unwrapped = allow_unwrapped
+        self.ops = []  # (op, request after [hand]) of each wrapped updater packet
         FakeBoard.current = self
 
     def _exchange(self, packet, match):
-        packet = bytes(packet).ljust(32, b"\0")
+        check(len(packet) <= su.REPORT, f"a packet of {len(packet)} bytes")
+        packet = bytes(packet).ljust(su.REPORT, b"\0")
         lib.host_passes(2)  # the main loop runs between packets
         if packet[0] != su.WRAPPER:
             if not self.allow_unwrapped:
                 raise AssertionError("the tool sent an unwrapped packet")
-            via = ctypes.create_string_buffer(packet, 32)
+            via = ctypes.create_string_buffer(packet, su.REPORT)
             lib.host_via(via, 0)  # plain VIA: no client ID
-            reply = via.raw[:32]
+            reply = via.raw[:su.REPORT]
             if not match(reply):
                 raise AssertionError(f"reply does not match: {reply.hex()}")
             self.round_trips += 1
@@ -98,14 +100,18 @@ class FakeBoard(su.Device):
         if cid == bytes(4):
             new = struct.pack("<I", 0x00510000 + len(self.issued) + 1)
             self.issued.append(new)
-            reply = packet[:25] + new + struct.pack("<H", 120) + b"\0"
+            reply = (packet[:25] + new + struct.pack("<H", 120)).ljust(su.REPORT, b"\0")
         elif cid not in self.issued:
-            reply = bytes([su.WRAPPER]) + cid + bytes([0xFF, 1]) + bytes(25)
+            reply = (bytes([su.WRAPPER]) + cid + bytes([0xFF, 1])).ljust(su.REPORT, b"\0")
         else:
+            # As client_wrapper.c: VIA gets the report shifted down 6 bytes (the
+            # last 6 stale), and the reply loses its last 6 to the header.
             check(packet[5] == su.VIA_PROTO, "VIA inside the wrapper")
-            via = ctypes.create_string_buffer(packet[6:32] + bytes(6), 32)
+            self.ops.append((packet[8], packet[10:]))
+            via = ctypes.create_string_buffer(packet[6:] + b"\xEE" * 6, su.REPORT)
             lib.host_via(via, struct.unpack("<I", cid)[0])
-            reply = bytes([su.WRAPPER]) + cid + bytes([su.VIA_PROTO]) + via.raw[:26]
+            check(via.raw[su.REPORT - 6:su.REPORT] == b"\xEE" * 6, "the updater wrote into the wrapper's 6 bytes")
+            reply = bytes([su.WRAPPER]) + cid + bytes([su.VIA_PROTO]) + via.raw[:su.REPORT - 6]
         if lib.host_state() == 2 and self.waited:  # CONFIRM_WAIT and the tool is waiting: the user makes the chord
             self.waited = False
             self.chords += 1
@@ -122,6 +128,35 @@ class Args:
     min_rebinds = 0
     no_commit = False
     keep = False
+    yes = False
+    half = None
+
+
+def args_with(**kw):
+    a = Args()
+    for k, v in kw.items():
+        setattr(a, k, v)
+    return a
+
+
+class Answers:
+    """Stands in for the y/N question: each call takes the next answer (EOFError for None)."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.asked = 0
+
+    def __call__(self, prompt):
+        self.asked += 1
+        check("[y/N]" in prompt, f"the question: {prompt!r}")
+        a = self.answers.pop(0) if self.answers else None
+        if a is None:
+            raise EOFError
+        return a
+
+
+def no_question(prompt):
+    raise AssertionError(f"asked {prompt!r} with nothing to ask about")
 
 
 def run_update(svup, commit_available, rebind_every=0.0, min_rebinds=0):
@@ -157,6 +192,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     su.time.sleep = fake_sleep
     su.time.monotonic = fake_monotonic
+    su.ask = no_question  # a matching image is never asked about
 
     img = image(0x5100)
     manifest = mu.build_manifest(img, hand=1, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2,
@@ -185,6 +221,13 @@ def main():
     slot = bytes(lib.host_slot()[:len(img)])
     check(slot == img, "slot holds the image")
     check(lib.host_commit_runs() == 0, "no commit ran")
+
+    # protocol 3: the pieces are the sizes INFO gives, the largest that fit a 64-byte report
+    check(su.REPORT == 64 and su.CHUNK_PIECE_MAX == 50 and su.MANIFEST_PIECE_MAX == 52, "protocol 3 sizes")
+    manifests = [r for op, r in board.ops if op == su.MANIFEST]
+    chunks = [r for op, r in board.ops if op == su.CHUNK]
+    check([m[1] for m in manifests] == [52, 52, 4], f"MANIFEST pieces {[m[1] for m in manifests]}")
+    check(max(c[3] for c in chunks) == 50 and len(chunks) == -(-len(img) // 50), f"{len(chunks)} CHUNKs")
 
     # with a commit routine: COMMIT accepted, and it runs 100 ms later with the image CRC
     rc, board, _ = run_update(svup, commit_available=True)
@@ -253,7 +296,39 @@ def main():
     check(info["hand"] == "right" and info["pointing"] == "pmw3389" and info["jedec"] == "ef4018", f"info {info}")
     check(info["slot_base"] == "0x800000" and info["slot_size"] == "0x160000" and info["max_image"] == "0x160000", f"info {info}")
     check(info["storage_format"] == 2 and info["flash_16mib"] and not info["settings_writes_failing"], f"info {info}")
-    check(info["protocol"] == mu.UPDATER_PROTO == 2 and not info["release_build"], f"info {info}")
+    check(info["protocol"] == mu.UPDATER_PROTO == 3 and not info["release_build"], f"info {info}")
+    check((info["chunk_max"], info["manifest_max"], info["report_bytes"]) == (50, 52, 64), f"info sizes {info}")
+    check(su.check_protocol(info) == (52, 50), "piece sizes from INFO")
+    # a board on another protocol, or with piece sizes that do not fit, is refused before any session op
+    for change, want in ((dict(protocol=2), "protocol 2"), (dict(protocol=4), "protocol 4"),
+                         (dict(chunk_max=51), "do not fit"), (dict(chunk_max=0), "do not fit"),
+                         (dict(manifest_max=53), "do not fit"), (dict(report_bytes=32), "32-byte")):
+        try:
+            su.check_protocol({**info, **change})
+            check(False, f"check_protocol took {change}")
+        except su.UpdaterError as exc:
+            check(want in str(exc), f"check_protocol {change}: {exc}")
+
+    class OldBoard(FakeBoard):
+        """INFO from protocol 2 firmware, as far as this tool could read it."""
+        def op(self, op, args=b"", hand=su.HAND_SELF, client=None):
+            st, r = super().op(op, args, hand, client)
+            return (st, bytes([r[0], 2]) + r[2:]) if op == su.INFO else (st, r)
+    lib.host_lib_reset(0)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            su.Session(OldBoard(), Args()).run(svup)
+        check(False, "a protocol 2 board was updated")
+    except su.UpdaterError as exc:
+        check("protocol 2" in str(exc) and "BOOTSEL" in str(exc), f"protocol 2 board: {exc}")
+    check(lib.host_state() == 0, "protocol 2 board: nothing sent")
+    lib.host_lib_reset(0)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            su.Rejects(OldBoard(allow_unwrapped=True), svup).run()
+        check(False, "reject ran on a protocol 2 board")
+    except su.UpdaterError as exc:
+        check("protocol 2" in str(exc), f"reject, protocol 2 board: {exc}")
     check(not info["other_half_mismatch"], f"info {info}")
     diag = su.decode_diag(*board.op(su.DIAG, b"\0", hand=1))
     check(diag["status"] == "OK" and diag["stack_size"] == 0xAE0 and diag["stack_unused"] == 0x2A4, f"diag {diag}")
@@ -320,19 +395,55 @@ def main():
         rc = su.Session(FakeBoard(), a).run(left)
     check(rc == 0 and lib.host_state() == 7 and lib.host_slave_state() == 0, "no-commit: VERIFIED here, nothing relayed")
 
-    # the other half's pointing device is checked at ARM (D18)
+    # Gentle (D33): another pointing device for the other half is a warning and a
+    # question, never a refusal. No, or no answer (EOF): nothing is sent.
     wrong_m = mu.build_manifest(img, hand=0, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2,
                                 fw_version=9, version="left-3389")
     wrong = out / "left3389.svup"
     wrong.write_bytes(wrong_m + img)
+    for answers in (("n",), ("",), (None,)):
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        su.ask = q = Answers(*answers)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as log:
+                su.Session(FakeBoard(), Args()).run(wrong)
+            check(False, f"another pointing device sent without a yes ({answers})")
+        except su.UpdaterError as exc:
+            check("not confirmed" in str(exc) and q.asked == 1, f"no yes: {exc}")
+        text = log.getvalue()
+        check("warning: the image drives pointing pmw3389; the left half's build drives trackpoint" in text, f"warning\n{text}")
+        check(lib.host_state() == 0 and lib.host_slave_state() == 0, "not confirmed: nothing sent")
+    # yes at the question, or --yes: the other half takes it, verifies it and commits it
+    for args, answers in ((Args(), ("y",)), (args_with(yes=True), ())):
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        su.ask = q = Answers(*answers) if answers else no_question
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            rc = su.Session(FakeBoard(), args).run(wrong)
+        text = log.getvalue()
+        check(rc == 0 and lib.host_slave_commits() == 1, f"another pointing device, confirmed: exit {rc}\n{text}")
+        check(("--yes: going ahead" in text) == bool(args.yes), f"--yes noted\n{text}")
+    su.ask = no_question
+
+    # an image for the other hand, sent to the half with USB (--half usb, an MCU moved
+    # between hands): warned, asked, then committed; the auto image is a pointing mismatch too
+    auto_left_m = mu.build_manifest(img, hand=0, pointing_id=5, keymap_id=1, flags=0, epoch=0, storage_format=2,
+                                    fw_version=9, version="left-auto")
+    auto_left = out / "left_auto.svup"
+    auto_left.write_bytes(auto_left_m + img)
     lib.host_lib_reset(1)
-    lib.host_lib_split(1)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            su.Session(FakeBoard(), Args()).run(wrong)
-        check(False, "wrong pointing for the other half accepted")
-    except su.UpdaterError as exc:
-        check("ARM: WRONG_HW" in str(exc), f"wrong pointing: {exc}")
+    su.ask = q = Answers("y")
+    with contextlib.redirect_stdout(io.StringIO()) as log:
+        rc = su.Session(FakeBoard(), args_with(half="usb")).run(auto_left)
+    text = log.getvalue()
+    check(rc == 0 and q.asked == 1, f"--half usb: exit {rc}, asked {q.asked}\n{text}")
+    lib.host_passes(150)
+    check(lib.host_commit_runs() == 1, "--half usb: this half committed the left image")
+    check("warning: the image was built for the left hand; this half runs a right build" in text, f"hand\n{text}")
+    check("the image drives pointing auto (any module); the right half's build drives pmw3389" in text, f"auto\n{text}")
+    check("for the other" not in text, f"--half usb stays on this half\n{text}")
+    su.ask = no_question
 
     # pair: the other half, then this one; the board comes back and presence matches
     lib.host_lib_reset(1)
@@ -352,9 +463,9 @@ def main():
     check("this half fw 9, the other half fw 9" in text and "EXTRAFLAGS=-DSVAL_FW_VERSION=N" not in text, f"pair:\n{text}")
     check("the chord is made twice" in text and text.index("the chord is made twice") < text.index("1/2"), f"pair:\n{text}")
     check(len(sessions) == 2, "pair: two sessions")
-    # pair checks both images against both halves before anything is sent: an
-    # image either half would refuse (here a wrong pointing device) stops it
-    # before the left half is touched
+    # pair asks once, before anything is sent, when an image names another pointing
+    # device than its half runs (D33): no stops it before the left half is touched,
+    # --yes goes ahead with both
     right_wrong_m = mu.build_manifest(img, hand=1, pointing_id=1, keymap_id=1, flags=0, epoch=0,
                                       storage_format=2, fw_version=9, version="right-tp")
     right_wrong = out / "right_tp.svup"
@@ -362,22 +473,39 @@ def main():
     for imgs in ([right_wrong, left], [right, wrong]):
         lib.host_lib_reset(1)
         lib.host_lib_split(1)
+        su.ask = q = Answers("n")
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 su.pair(FakeBoard(), Args(), imgs, [])
-            check(False, f"pair with {imgs[0].name} + {imgs[1].name} accepted")
+            check(False, f"pair with {imgs[0].name} + {imgs[1].name} sent without a yes")
         except su.UpdaterError as exc:
-            check("WRONG_HW" in str(exc) and "nothing was sent" in str(exc), f"pair precheck: {exc}")
+            check("not confirmed" in str(exc) and "nothing was sent" in str(exc) and q.asked == 1, f"pair precheck: {exc}")
         check(lib.host_state() == 0 and lib.host_slave_state() == 0 and lib.host_slave_commits() == 0,
               "pair precheck: nothing started on either half")
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        su.ask = no_question
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            rc = su.pair(FakeBoard(), args_with(yes=True), imgs, [])
+        check(rc == 0 and lib.host_slave_commits() == 1 and lib.host_master_reboots() == 1,
+              f"pair --yes with {imgs[0].name} + {imgs[1].name}: exit {rc}\n{log.getvalue()}")
     # the board's view of an image: the checks update_manifest_check() makes
-    base_info = dict(hand_id=1, hand="right", pointing_id=3, pointing="pmw3389", release_build=False, protocol=2,
+    base_info = dict(hand_id=1, hand="right", pointing_id=3, pointing="pmw3389", release_build=False, protocol=3,
                      security_epoch=1, storage_format=2, max_image="0x160000")
     base_m = dict(flags=0, hand=1, pointing_id=3, security_epoch=1, storage_format=2, image_len=0x1000,
                   fw_version=5)
     check(su.image_refusal(base_m, base_info) is None, "image_refusal: a fitting image")
-    for change, info_change, want in ((dict(hand=0), {}, "UNSUPPORTED"), (dict(pointing_id=2), {}, "WRONG_HW"),
-                                      ({}, dict(protocol=1), "UNSUPPORTED"),
+    check(su.image_mismatches(base_m, base_info) == [], "image_mismatches: a fitting image")
+    # another hand or pointing device is never a refusal (D33), only a warning
+    for change, info_change, want in ((dict(hand=0), {}, ["left hand"]), (dict(pointing_id=2), {}, ["pmw3360"]),
+                                      (dict(pointing_id=5), {}, ["auto (any module)"]),
+                                      ({}, dict(pointing_id=5, pointing="auto"), ["build drives auto (any module)"]),
+                                      (dict(hand=0, pointing_id=1), {}, ["left hand", "trackpoint"])):
+        m2, i2 = {**base_m, **change}, {**base_info, **info_change}
+        check(su.image_refusal(m2, i2) is None, f"image_refusal takes {change} {info_change}")
+        got = su.image_mismatches(m2, i2)
+        check(len(got) == len(want) and all(w in g for w, g in zip(want, got)), f"image_mismatches {change} {info_change}: {got}")
+    for change, info_change, want in (({}, dict(protocol=1), "UNSUPPORTED"), ({}, dict(protocol=2), "UNSUPPORTED"),
                                       (dict(flags=2), dict(release_build=True), "BAD_IMAGE"),
                                       (dict(security_epoch=0), {}, "EPOCH"), (dict(storage_format=1), {}, "STORAGE"),
                                       (dict(image_len=0x161000), {}, "TOO_LARGE")):
@@ -387,6 +515,10 @@ def main():
                                 (dict(flags=2), {})):
         got = su.image_refusal({**base_m, **change}, {**base_info, **info_change})
         check(got is None, f"image_refusal takes {change} {info_change}: {got}")
+    # the other half, over the split cable: protocol 2 or 3 (the relay is the same)
+    for proto, ok in ((1, False), (2, True), (3, True), (4, False)):
+        got = su.image_refusal(base_m, {**base_info, "protocol": proto}, other=True)
+        check((got is None) == ok, f"image_refusal, the other half on protocol {proto}: {got}")
     check(not su.fw_differs(5, dict(fw_version=5)) and su.fw_differs(4, dict(fw_version=5)), "fw_differs")
     check(not su.fw_differs(0, dict(fw_version=5)) and not su.fw_differs(5, dict(fw_version=0)), "fw_differs: 0 is unset")
     # pair refuses two images for the same half, before any op

@@ -49,6 +49,11 @@ ifeq ($(strip $(SVAL_KEYTEST)), yes)
   OPT_DEFS += -DSVAL_KEYTEST
 endif
 
+# Bench builds that reset stored settings when flashed over other firmware; opt in with -e SVAL_TEST_WIPE=yes.
+ifeq ($(strip $(SVAL_TEST_WIPE)), yes)
+  OPT_DEFS += -DSVAL_TEST_WIPE
+endif
+
 # In-firmware updater (docs/updater.md); opt in with -e SVAL_UPDATER=yes.
 # SVAL_UPDATE_TEST_HOOKS adds the commit halt points for hardware tests.
 # SVAL_UPDATE_RELEASE makes a release updater build: images flagged DIAGNOSTIC

@@ -66,16 +66,16 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -o "$out/test_split"
 "$out/test_split"
 
-# Release builds: test hooks, keytest and the host bootloader cannot be
-# compiled into one (update_build_info.c refuses).
-for flags in "-DSVAL_UPDATE_TEST_HOOKS" "-DSVAL_KEYTEST" "-DSVAL_HOST_BOOTLOADER=1"; do
+# Release builds: test hooks, keytest, the host bootloader and the bench
+# settings wipe cannot be compiled into one (update_build_info.c refuses).
+for flags in "-DSVAL_UPDATE_TEST_HOOKS" "-DSVAL_KEYTEST" "-DSVAL_HOST_BOOTLOADER=1" "-DSVAL_TEST_WIPE"; do
     if ${CC:-cc} -std=c11 -O1 -DINIT_EE_HANDS_LEFT -DSVAL_UPDATE_RELEASE $flags -include "$kb/config.h" \
         -I"$kb/updater" -I"$kb/updater/vendor" \
         -c "$kb/updater/update_build_info.c" -o "$out/bi.o" 2>/dev/null; then
         echo "FAIL: a release build compiled with $flags"; exit 1
     fi
 done
-echo "release builds: refuse test hooks, keytest and the host bootloader"
+echo "release builds: refuse test hooks, keytest, the host bootloader and SVAL_TEST_WIPE"
 
 # M3: a release build, against the real update_build_info.c and
 # update_image.c. SVAL_RELEASE_SVUPS, if set, adds .svup files to check as a

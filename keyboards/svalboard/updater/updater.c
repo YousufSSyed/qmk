@@ -5,9 +5,11 @@
 //
 // ---- host protocol: VIA custom values on UPDATE_CHANNEL (0x55, 'U') ----------
 //
-// Packet: [0xDD][client_id:4][0xFE] + VIA [command][0x55][op][value_data:23],
-// command = id_custom_set_value or id_custom_get_value. The reply is the same
-// packet with value_data rewritten; value_data[0] is always an update_status_t.
+// Packet: one raw HID report of RAW_EPSIZE bytes (64: keyboards/svalboard/config.h),
+// [0xDD][client_id:4][0xFE] + VIA [command][0x55][op][value_data:VALUE_BYTES],
+// VALUE_BYTES = RAW_EPSIZE - 9 (55): the wrapper's 6 bytes and VIA's 3. command
+// = id_custom_set_value or id_custom_get_value. The reply is the same packet
+// with value_data rewritten; value_data[0] is always an update_status_t.
 // Every op but INFO needs the client wrapper (UPDATE_INVALID otherwise, with no
 // state change), and every request starts with [hand]: this half's
 // (UPDATE_HAND_*), or the other half's (M2: see "The other half" below), else
@@ -21,14 +23,17 @@
 //                                                flags (bit0 die is 16 MiB, bit1 settings writes failing,
 //                                                bit2 release build, bit3 test hooks, bit4 reserved,
 //                                                bit5 the other half's version differs: see STATUS,
-//                                                bit6 reserved), last error.
+//                                                bit6 reserved), last error; then (protocol 3) the
+//                                                largest CHUNK data u8 (CHUNK_DATA_MAX, 50), the
+//                                                largest MANIFEST piece u8 (MANIFEST_DATA_MAX, 52)
+//                                                and the raw HID report size u8 (RAW_EPSIZE, 64).
 //                                                Status UNAVAILABLE when bit0 is clear or bit1 set.
 //                page 1 (M3; this half only)     1, fw_version u32, version string (16 chars, NUL-padded:
 //                                                the release tag). Other pages: INVALID.
-//  0x01 MANIFEST off u8, n 1..20, bytes          filled u8 (of the 108-byte manifest)
+//  0x01 MANIFEST off u8, n 1..52, bytes          filled u8 (of the 108-byte manifest)
 //  0x02 ARM      -                               nonce u32, first 4 bytes of sha512(108 B manifest)
 //  0x03 BEGIN    nonce u32                       state
-//  0x04 CHUNK    off u24, n 1..18, bytes         next offset u24
+//  0x04 CHUNK    off u24, n 1..50, bytes         next offset u24
 //  0x05 END      nonce u32                       state
 //  0x06 STATUS   -                               state, staged u24, image_len u24, sectors erased u16,
 //                                                sectors to erase u16, last error, reserved u16 (0),
@@ -56,14 +61,18 @@
 //                                                the relay's error, this
 //                                                half's session state. Any hand.
 //
+// Protocol 3 is protocol 2 in 64-byte reports: the same ops and fields, with
+// larger MANIFEST and CHUNK pieces and the three sizes at the end of INFO page
+// 0. A host sizes its pieces from INFO and refuses any other protocol.
+//
 // The image CRC is CRC-32/MPEG-2 over image bytes [0x100, image_len): the
 // range the commit checks after copying (page 0 is written last).
 //
 // The other half (M2, store and forward, D14). With hand = the other side,
 // MANIFEST starts a session for the other half, on this half (the one with
-// USB, where the chord is made, D4). ARM checks the manifest against the
-// other half's side and pointing device by split presence (which must answer
-// MATCH or VERSION, else UNAVAILABLE) and this build's floors; BEGIN, CHUNK and
+// USB, where the chord is made, D4). ARM needs split presence to answer MATCH
+// or VERSION (else UNAVAILABLE) and checks the manifest against this build's
+// floors; BEGIN, CHUNK and
 // END stage and verify the image in this half's slot exactly as for this half.
 // Then:
 //   COMMIT in VERIFIED  -> RELAYING: the image goes to the other half from this
@@ -78,9 +87,11 @@
 // other half (KEYBOARD_UPDATE INFO): the reply has INFO's layout with that
 // half's state, protocol, pointing ID, hand, fw version, storage format, epoch
 // and flags bits 0-3, no JEDEC ID (zeros) and no last error; with no answer it
-// is UNAVAILABLE with state 0xFF (as Scan Lab's relay). This half never
-// commits an image for the other hand: the session never reaches COMMITTING,
-// and the commit's step 0 would refuse its hand anyway.
+// is UNAVAILABLE with state 0xFF (as Scan Lab's relay). The request's hand,
+// not the manifest's, picks the half: a session for the other hand never
+// reaches COMMITTING here. The manifest's hand and pointing device are not
+// checked by either half (D33): an image built for the other side or module
+// is taken, and the host tools warn and ask first.
 //
 // Sessions. MANIFEST from any wrapped client starts loading and ties the load
 // to that client. ARM, from the same client with all 108 bytes, checks the
@@ -123,10 +134,20 @@ enum { id_custom_set_value = 0x07, id_custom_get_value = 0x08 };
 #    include "via.h"
 #endif
 
-#define VALUE_BYTES 23 // value_data that survives the client wrapper: 32 - 6 - 3
-#define HAND_SELF 0xFF // INFO only
-#define MANIFEST_DATA_MAX 20
-#define CHUNK_DATA_MAX 18
+// Sizes from the raw HID report (RAW_EPSIZE, keyboards/svalboard/config.h, which
+// QMK and the host tests both include first).
+#ifndef RAW_EPSIZE
+#    error "updater: RAW_EPSIZE must be set (keyboards/svalboard/config.h)"
+#endif
+#define WRAPPER_BYTES 6                             // CLIENT_WRAPPER_OVERHEAD: [0xDD][client_id:4][0xFE]
+#define VALUE_BYTES (RAW_EPSIZE - WRAPPER_BYTES - 3) // value_data that survives the client wrapper: 64 - 6 - 3
+#define HAND_SELF 0xFF                              // INFO only
+#define MANIFEST_DATA_MAX (VALUE_BYTES - 3)         // after [hand][off][n]: 52
+#define CHUNK_DATA_MAX (VALUE_BYTES - 5)            // after [hand][off u24][n]: 50
+#define INFO_BYTES 26                               // INFO page 0's reply, [status] through the report size
+_Static_assert(VALUE_BYTES >= INFO_BYTES, "INFO page 0 fits the value bytes");
+_Static_assert(MANIFEST_DATA_MAX <= UPDATE_MANIFEST_BYTES && MANIFEST_DATA_MAX <= 0xFF, "a MANIFEST piece fits its u8 count");
+_Static_assert(CHUNK_DATA_MAX <= 0xFF, "a CHUNK fits its u8 count");
 #define VERIFY_SLICE 2048   // image bytes hashed per updater_task() pass
 #define COMMIT_DELAY_MS 100 // so the COMMIT reply reaches the host first (as scanlab.c's reboot)
 #define CHORD_FLASH_MS 300  // white double flash after the chord (D4)
@@ -229,7 +250,7 @@ static update_status_t fail(update_status_t status) {
 }
 
 // The other half, for a session with its hand: its side and pointing device
-// by split presence, this build's floors (both halves run the same release,
+// by split presence (reported, not checked: D33), this build's floors (both halves run the same release,
 // V; the other half checks the manifest again itself, D7). Only a half that
 // answers presence as MATCH or VERSION can be updated through this one.
 static update_status_t other_device(update_device_t *dev) {
@@ -271,6 +292,15 @@ static update_status_t op_info_version(uint8_t *rsp) {
     return UPDATE_OK;
 }
 
+// INFO page 0's last bytes (protocol 3): the piece sizes this half takes, so a
+// host sizes MANIFEST and CHUNK from INFO, and the report size. For the other
+// half too: its image is staged in this half's slot first.
+static void info_sizes(uint8_t *rsp) {
+    rsp[23] = CHUNK_DATA_MAX;
+    rsp[24] = MANIFEST_DATA_MAX;
+    rsp[25] = RAW_EPSIZE;
+}
+
 static update_status_t op_info(const uint8_t *req, uint8_t *rsp) {
     if (req[1] == 1) return op_info_version(rsp);
     if (req[1] != 0) return UPDATE_INVALID;
@@ -300,6 +330,7 @@ static update_status_t op_info(const uint8_t *req, uint8_t *rsp) {
     rsp[21] |= 0x08;
 #endif
     rsp[22] = s.last_error;
+    info_sizes(rsp);
     return die_ok && !failing ? UPDATE_OK : UPDATE_UNAVAILABLE;
 }
 
@@ -322,6 +353,7 @@ static update_status_t op_info_other(uint8_t *rsp) {
     rsp[18] = pl[11];
     memcpy(&rsp[19], &pl[12], 2);
     rsp[21] = (pl[14] & 0x0F) | (split_mismatch() ? 0x20 : 0);
+    info_sizes(rsp);
     return (pl[14] & 0x01) && !(pl[14] & 0x02) ? UPDATE_OK : UPDATE_UNAVAILABLE;
 }
 
@@ -917,6 +949,7 @@ void updater_host_reset(void) {
 #    include "timer.h"
 #    include "wait.h"
 #    include "client_wrapper.h"
+_Static_assert(WRAPPER_BYTES == CLIENT_WRAPPER_OVERHEAD, "the client wrapper's header");
 #    include "scanlab.h"
 #    include "hardware/structs/rosc.h"
 #    ifdef EEPROM_WEAR_LEVELING

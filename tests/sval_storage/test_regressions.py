@@ -65,10 +65,10 @@ void dynamic_keymap_macro_get_buffer(uint32_t a,uint16_t n,uint8_t *b) { nvm_dyn
 void dynamic_keymap_macro_set_buffer(uint32_t a,uint16_t n,uint8_t *b) { nvm_dynamic_keymap_macro_update_buffer(a,n,b); }
 ''' + handler + '''
 void packet(uint8_t *p,uint8_t cmd,uint32_t offset,uint8_t count) {
- memset(p,0,32); p[1]=cmd; memcpy(p+2,&offset,4); p[6]=count; p[7]=42;
+ memset(p,0,64); p[1]=cmd; memcpy(p+2,&offset,4); p[6]=count; p[7]=42;
 }
 int main(void) {
- uint8_t p[32], b[70000];
+ uint8_t p[64], b[70000];
  for(unsigned cmd=31;cmd<=32;cmd++) {
   packet(p,cmd,UINT32_MAX,2); assert(handle(p,32)); assert(!reads && !writes);
   assert(cmd==31 ? p[6]==0 : p[2]==1);
@@ -85,6 +85,10 @@ int main(void) {
  memset(b,7,sizeof(b)); nvm_dynamic_keymap_macro_update_buffer(0,sizeof(b),b);
  memset(b,0,sizeof(b)); nvm_dynamic_keymap_macro_read_buffer(0,sizeof(b),b);
  assert(b[0]==7 && b[65536]==7 && b[69999]==7);
+ // A wrapped Sval packet in a 64-byte report is 59 bytes from 0xDF: 52 data bytes at most.
+ unsigned r0=reads;
+ packet(p,31,0,53); assert(handle(p,59)); assert(reads==r0 && p[6]==0);
+ packet(p,31,0,52); assert(handle(p,59)); assert(reads==r0+52 && p[6]==52 && p[7]==7 && p[58]==7);
  return 0;
 }
 '''

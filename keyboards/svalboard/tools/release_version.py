@@ -10,15 +10,16 @@ fw_version.txt and the version string is the tag name. This checks, and exits
 
   - the tag is a usable version string: at most 16 of A-Z a-z 0-9 . _ + -
     (it goes into the manifest and the firmware's 16-byte version field);
-  - the committed number is greater than the one committed at the previous
-    published release: the newest release that is neither a draft nor a
-    prerelease and is not this tag. A release from before this file existed
-    counts as 0. Dry-run prereleases are not compared against, so a dry run
-    never uses up a number.
+  - the committed number is greater than the highest one committed at any
+    published release that is not a draft, a dry run or this tag. Bleeding-
+    edge releases count, so vLaunch3 must come after every vNext before it.
+    A release from before this file existed counts as 0. Dry runs are not
+    compared against, so a dry run never uses up a number.
 
 A dry-run tag is one whose name contains "dryrun" or "dry-run" (any case),
-such as vLaunch3-dryrun1: a trial of the release run. Its release is always a
-prerelease.
+such as vLaunch3-dryrun1: a trial of the release run. A bleeding-edge tag is
+vNext followed by a number, such as vNext1. Both are always published as
+prereleases, so neither becomes the repository's latest release.
 
 Writes version=, fw_version=, prerelease= and previous= lines to
 --github-output (release CI passes $GITHUB_OUTPUT), and prints them. The list
@@ -36,6 +37,7 @@ HERE = Path(__file__).resolve().parent
 VERSION_FILE = "keyboards/svalboard/updater/fw_version.txt"
 REPO_ROOT = HERE.parents[2]
 DRY_RUN_RE = re.compile(r"dry-?run", re.IGNORECASE)
+NEXT_RE = re.compile(r"^vNext[0-9]+$")  # bleeding edge, for next.keybard
 MAX_FW = 999999999  # rules.mk takes at most 9 digits
 VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]{1,16}$")  # SVAL_FW_VERSION_STRING (rules.mk, make_update.py)
 
@@ -76,8 +78,13 @@ def releases(repo, path):
 
 
 def previous_release(rels, tag):
-    done = [r for r in rels if not r["draft"] and not r["prerelease"] and r["tag"] != tag and r["published"]]
-    return max(done, key=lambda r: r["published"])["tag"] if done else None
+    """The counted release with the highest committed number, and that number."""
+    done = [r for r in rels if not r["draft"] and not DRY_RUN_RE.search(r["tag"]) and r["tag"] != tag and r["published"]]
+    if not done:
+        return None, 0
+    # on a tie, the newest stable release
+    n, _, _, best = max((committed_at(r["tag"]), not r["prerelease"], r["published"], r["tag"]) for r in done)
+    return best, n
 
 
 def main(argv=None):
@@ -93,6 +100,10 @@ def main(argv=None):
     if not VERSION_RE.match(tag):
         errors.append(f"tag {tag!r} is not a version string: at most 16 of A-Z a-z 0-9 . _ + -")
     dry_run = bool(DRY_RUN_RE.search(tag))
+    pre = dry_run or bool(NEXT_RE.match(tag))
+    if tag.lower().startswith("vnext") and not pre:
+        # a near miss would publish as the latest release
+        errors.append(f"tag {tag!r}: bleeding-edge tags are vNext and a number, such as vNext1")
     try:
         fw = parse_version_file((REPO_ROOT / VERSION_FILE).read_text(), VERSION_FILE)
     except (OSError, ValueError) as e:
@@ -100,15 +111,14 @@ def main(argv=None):
         return 1
 
     try:
-        prev = previous_release(releases(args.repo, args.releases), tag)
-        prev_fw = committed_at(prev) if prev else 0
+        prev, prev_fw = previous_release(releases(args.repo, args.releases), tag)
     except (subprocess.CalledProcessError, ValueError) as e:
         print(f"FAIL: cannot read the previous release: {e}")
         return 1
     if fw <= prev_fw:
         errors.append(f"{VERSION_FILE} says {fw}, not greater than {prev_fw} at the previous release {prev}: raise it")
 
-    outputs = dict(version=tag, fw_version=fw, prerelease="true" if dry_run else "false", previous=prev or "")
+    outputs = dict(version=tag, fw_version=fw, prerelease="true" if pre else "false", previous=prev or "")
     for k, v in outputs.items():
         print(f"{k}={v}")
     if errors:
@@ -119,7 +129,7 @@ def main(argv=None):
         with open(args.github_output, "a") as f:
             f.writelines(f"{k}={v}\n" for k, v in outputs.items())
     print(f"ok: {tag} is fw {fw} (previous release {prev or 'none'}: {prev_fw})"
-          f"{', a dry run: prerelease' if dry_run else ''}")
+          f"{', a dry run: prerelease' if dry_run else ', bleeding edge: prerelease' if pre else ''}")
     return 0
 
 

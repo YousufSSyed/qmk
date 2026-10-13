@@ -19,7 +19,9 @@
 #        error "updater: the build must set exactly one of INIT_EE_HANDS_LEFT / INIT_EE_HANDS_RIGHT"
 #    endif
 
-#    if defined(POINTING_DEVICE_IS_PMW3389) + defined(POINTING_DEVICE_IS_PMW3360) + defined(PS2_ENABLE) + defined(AZOTEQ_IQS5XX_TPS43) > 1
+#    if defined(SVAL_POINTING_AUTO)
+#        define UPDATE_SELF_POINTING UPDATE_POINTING_AUTO
+#    elif defined(POINTING_DEVICE_IS_PMW3389) + defined(POINTING_DEVICE_IS_PMW3360) + defined(PS2_ENABLE) + defined(AZOTEQ_IQS5XX_TPS43) > 1
 #        error "updater: more than one pointing device in this build"
 #    elif defined(POINTING_DEVICE_IS_PMW3389)
 #        define UPDATE_SELF_POINTING UPDATE_POINTING_PMW3389

@@ -12,17 +12,23 @@ open handle.
     sval_update.py relay
     sval_update.py diag [--clear]
     sval_update.py abort [--nonce N]
-    sval_update.py update FILE.svup [--delay S] [--rebind-every S] [--min-rebinds N]
-                                    [--no-commit] [--halt POINT [--halt-unfed]]
-    sval_update.py pair FILE1.svup FILE2.svup [--delay S] [--rebind-every S]
+    sval_update.py update FILE.svup [--half usb|other] [--yes] [--delay S] [--rebind-every S]
+                                    [--min-rebinds N] [--no-commit] [--halt POINT [--halt-unfed]]
+    sval_update.py pair FILE1.svup FILE2.svup [--yes] [--delay S] [--rebind-every S]
     sval_update.py reject FILE.svup
 
 update sends the manifest, prints the manifest hash you confirm, waits for the
 chord (Index South + Middle South held for 1 s on the half with USB), then
 erases, sends the image, verifies and commits.
 
-The image's own hand picks the half. An image for the other half (the one
-without USB) is staged and verified on the half with USB, then relayed to the
+The image's own hand picks the half, unless --half says which: usb (the half
+with USB) or other. The firmware checks only an image's integrity and
+structure (D33), never its hand or pointing device: an image built for the
+other hand or for another pointing module (an any-module "auto" image on a
+single-module build, or the reverse) is taken, since moving an MCU between
+hands or modules is a valid use. So the tool warns about every such mismatch
+and asks before sending anything (y/N); --yes skips the question. An image
+for the other half (the one without USB) is staged and verified on the half with USB, then relayed to the
 other half, which checks the manifest and hash itself (D7); a second COMMIT
 makes it write the image and reset. The link to it pauses while it erases,
 verifies and commits (both halves type while the image streams). The tool
@@ -31,7 +37,9 @@ only one half updated the halves differ, which is not supported (V): the half
 with USB blinks red until both match. pair does both: the other half first,
 then the half with USB over USB (the chord twice, once per image), then waits
 for the board to come back and for presence to show the same release on both
-halves within 10 s. relay prints the relay's progress; info --other asks the
+halves within 10 s. pair picks each image by the hand each half reports, and
+asks once (or --yes) if either image names another pointing device than its
+half runs. relay prints the relay's progress; info --other asks the
 other half. The client ID is renewed every
 --rebind-every seconds (50, as Keybard does) and the session moved to it with
 REBIND; after each REBIND the old ID must be refused. The number of renewals is
@@ -62,6 +70,10 @@ once (well under 1 s) through the RAM vector table; a reset only after about
 back as RPI-RP2 (page 0 is not valid); recover it with flash.sh.
 
 The protocol is documented at the top of keyboards/svalboard/updater/updater.c.
+This tool speaks updater protocol 3: 64-byte raw HID reports, with the MANIFEST
+and CHUNK piece sizes taken from INFO. A board on protocol 2 (32-byte reports)
+is refused: update it with the sval_update.py of its own release, or copy the
+.uf2 in BOOTSEL mode.
 """
 import argparse
 import hashlib
@@ -82,7 +94,18 @@ HAND_SELF = 0xFF
 INFO, MANIFEST, ARM, BEGIN, CHUNK, END, STATUS, COMMIT, ABORT, REBIND, TEST_HALT, DIAG, RELAY = range(13)
 HALT_POINTS = {"invalidated": 1, "first-erase": 2, "mid-program": 3, "last-sector": 4, "page0": 5, "fault": 6,
                "fault-erased": 7}
-MANIFEST_PIECE, CHUNK_PIECE = 20, 18
+# Protocol 3: one 64-byte report each way. The updater's value bytes are what is
+# left after the client wrapper's 6 bytes and VIA's 3 (updater.c); INFO reports
+# the piece sizes the board takes, which can be no larger than these.
+REPORT = 64
+VALUE_BYTES = REPORT - 6 - 3          # 55: [status] + 54 reply bytes
+MANIFEST_PIECE_MAX = VALUE_BYTES - 3  # 52, after [hand][off][n]
+CHUNK_PIECE_MAX = VALUE_BYTES - 5     # 50, after [hand][off u24][n]
+# The other half is updated over the split cable, whose relay is the same in
+# protocols 2 and 3: a half on either can be updated through this one.
+OTHER_HALF_PROTOS = (2, 3)
+OLD_FIRMWARE = ("a board on updater protocol 2 (32-byte reports) does not answer this tool: update it with "
+                "the sval_update.py of its release, or copy the .uf2 in BOOTSEL mode")
 
 STATUS_NAMES = ["OK", "INVALID", "UNAVAILABLE", "FLASH_ERR", "ACCEPTED", "BUSY", "NOT_CONFIRMED", "WRONG_HW", "BAD_SIG",
                 "BAD_HASH", "BAD_IMAGE", "EPOCH", "OUT_OF_ORDER", "OVERRUN", "TOO_LARGE", "TIMEOUT", "OTHER_CLIENT",
@@ -149,18 +172,21 @@ class Device:
             self.handle = None
 
     def _exchange(self, packet, match):
-        packet = bytes(packet).ljust(32, b"\0")
-        if self.handle.write(b"\0" + packet) != 33:
-            raise RuntimeError("Incomplete HID write")
+        packet = bytes(packet).ljust(REPORT, b"\0")
+        if len(packet) != REPORT:
+            raise ValueError("packet longer than one report")
+        # hidapi: report ID 0 (the raw interface has none), then the report
+        if self.handle.write(b"\0" + packet) != REPORT + 1:
+            raise RuntimeError(f"Incomplete HID write ({OLD_FIRMWARE})")
         t0 = time.monotonic()
         deadline = t0 + 2.0
         while time.monotonic() < deadline:
-            reply = bytes(self.handle.read(32, 200))
-            if len(reply) == 32 and match(reply):
+            reply = bytes(self.handle.read(REPORT, 200))
+            if len(reply) == REPORT and match(reply):
                 self.round_trips += 1
                 self.round_trip_s += time.monotonic() - t0
                 return reply
-        raise RuntimeError(f"No reply to {packet[:12].hex()}")
+        raise RuntimeError(f"No reply to {packet[:12].hex()} ({OLD_FIRMWARE})")
 
     def new_client(self):
         """A fresh client ID from the Sval client wrapper, without adopting it."""
@@ -179,20 +205,22 @@ class Device:
     def unwrapped_op(self, op, args=b"", hand=HAND_SELF):
         """One updater op as a plain VIA packet, without the client wrapper (reject tests)."""
         body = bytes([SET_VALUE, CHANNEL, op, hand]) + bytes(args)
+        if len(body) > 3 + VALUE_BYTES:
+            raise ValueError("updater request too long")
         r = self._exchange(body, lambda r: r[0:3] == body[:3])
-        return r[3], r[4:26]
+        return r[3], r[4:3 + VALUE_BYTES]
 
     def op(self, op, args=b"", hand=HAND_SELF, client=None):
-        """One updater op in the client wrapper: (status, the 22 reply bytes after it)."""
+        """One updater op in the client wrapper: (status, the 54 reply bytes after it)."""
         cid = client or self.client or self.bootstrap()
         body = bytes([SET_VALUE, CHANNEL, op, hand]) + bytes(args)
-        if len(body) > 26:
+        if len(body) > 3 + VALUE_BYTES:
             raise ValueError("updater request too long")
         r = self._exchange(bytes([WRAPPER]) + cid + bytes([VIA_PROTO]) + body,
                            lambda r: r[0] == WRAPPER and r[1:5] == cid and (r[5] == WRAPPER_ERROR or r[6:9] == body[:3]))
         if r[5] == WRAPPER_ERROR:
             raise ClientIdExpired(f"client wrapper error {r[6]} for client {cid.hex()}")
-        return r[9], r[10:32]
+        return r[9], r[10:REPORT]
 
 
 def decode_info(st, r):
@@ -204,21 +232,39 @@ def decode_info(st, r):
                 hand_id=r[12], pointing_id=r[11], fw_version=struct.unpack_from("<I", r, 13)[0], storage_format=r[17],
                 security_epoch=struct.unpack_from("<H", r, 18)[0], flash_16mib=bool(r[20] & 1),
                 settings_writes_failing=bool(r[20] & 2), release_build=bool(r[20] & 4), test_hooks=bool(r[20] & 8),
-                other_half_mismatch=bool(r[20] & 32), last_error=status_name(r[21]))
+                other_half_mismatch=bool(r[20] & 32), last_error=status_name(r[21]),
+                chunk_max=r[22], manifest_max=r[23], report_bytes=r[24])
 
 
-def image_refusal(m, info):
-    """Why a half would refuse this manifest, as far as its INFO shows (None: no reason seen).
-    The same order of checks as update_manifest_check() (update_image.c)."""
+def piece_sizes(info):
+    """(MANIFEST piece, CHUNK data) sizes from a protocol 3 INFO, checked against
+    what fits this tool's reports."""
+    if info["report_bytes"] != REPORT:
+        raise UpdaterError(f"the board reports {info['report_bytes']}-byte raw HID reports, this tool sends {REPORT}")
+    if not (1 <= info["manifest_max"] <= MANIFEST_PIECE_MAX and 1 <= info["chunk_max"] <= CHUNK_PIECE_MAX):
+        raise UpdaterError(f"the board's piece sizes (MANIFEST {info['manifest_max']}, CHUNK {info['chunk_max']}) "
+                           f"do not fit {REPORT}-byte reports")
+    return info["manifest_max"], info["chunk_max"]
+
+
+def check_protocol(info):
+    """The half with USB must speak this tool's protocol; returns its piece sizes."""
     if info["protocol"] != make_update.UPDATER_PROTO:
+        raise UpdaterError(f"the board speaks updater protocol {info['protocol']}, this tool "
+                           f"{make_update.UPDATER_PROTO}: {OLD_FIRMWARE}")
+    return piece_sizes(info)
+
+
+def image_refusal(m, info, other=False):
+    """Why a half would refuse this manifest, as far as its INFO shows (None: no reason seen).
+    The same order of checks as update_manifest_check() (update_image.c): integrity and
+    structure only, never the hand or pointing device (D33; see image_mismatches). other:
+    the half without USB, reached over the split cable, whose relay protocols 2 and 3 share."""
+    if info["protocol"] not in (OTHER_HALF_PROTOS if other else (make_update.UPDATER_PROTO,)):
         return (f"UNSUPPORTED: the half speaks updater protocol {info['protocol']}, this tool "
                 f"{make_update.UPDATER_PROTO} (flash it with BOOTSEL and the .uf2)")
     if info["release_build"] and m["flags"] & make_update.FLAG_DIAGNOSTIC:
         return "BAD_IMAGE: a DIAGNOSTIC image on a release build"
-    if m["hand"] != info["hand_id"]:
-        return f"UNSUPPORTED: the image is for hand {HANDS.get(m['hand'], m['hand'])}, the half is {info['hand']}"
-    if m["pointing_id"] != info["pointing_id"]:
-        return f"WRONG_HW: the image is for pointing {POINTING.get(m['pointing_id'], m['pointing_id'])}, the half has {info['pointing']}"
     if m["security_epoch"] < info["security_epoch"]:
         return f"EPOCH: image epoch {m['security_epoch']}, the half's floor {info['security_epoch']}"
     if m["storage_format"] < info["storage_format"]:
@@ -226,6 +272,50 @@ def image_refusal(m, info):
     if m["image_len"] > int(info["max_image"], 16):
         return f"TOO_LARGE: {m['image_len']} B, the half takes at most {info['max_image']}"
     return None
+
+
+def pointing_text(pid):
+    if pid == make_update.POINTING["auto"]:
+        return "auto (any module)"
+    return POINTING.get(pid, f"pointing {pid}")
+
+
+def image_mismatches(m, info):
+    """Where the image was built for another hand or pointing device than the half runs,
+    as warnings. The firmware takes such an image (D33); the tool asks first."""
+    out = []
+    if m["hand"] != info["hand_id"]:
+        side = HANDS.get(m["hand"], m["hand"])
+        out.append(f"the image was built for the {side} hand; this half runs a {info['hand']} build. "
+                   f"Afterwards its updater and split presence report it as the {side} half")
+    if m["pointing_id"] != info["pointing_id"]:
+        want, have = pointing_text(m["pointing_id"]), pointing_text(info["pointing_id"])
+        note = ""
+        if m["pointing_id"] != make_update.POINTING["auto"]:
+            note = f"; only a {want} module will work on that half afterwards"
+        out.append(f"the image drives pointing {want}; the {info['hand']} half's build drives {have}{note}")
+    return out
+
+
+def ask(prompt):
+    return input(prompt)
+
+
+def confirm_mismatches(warnings, args, where=""):
+    """Print each mismatch and ask (y/N), unless --yes. Refusing sends nothing."""
+    if not warnings:
+        return
+    for w in warnings:
+        print(f"warning: {where}{w}")
+    if getattr(args, "yes", False):
+        print("--yes: going ahead")
+        return
+    try:
+        answer = ask("Flash it anyway? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        raise UpdaterError("not confirmed: nothing was sent (--yes skips the question)")
 
 
 def fw_differs(seen, m):
@@ -355,7 +445,7 @@ class Session:
             time.sleep(0.2)
         raise UpdaterError(f"{what}: no progress in {timeout} s")
 
-    def run(self, path, confirm_other=True):
+    def run(self, path, confirm_other=True, confirmed=False):
         data = Path(path).read_bytes()
         manifest, image = make_update.parse_svup(data)
         self.image = image
@@ -366,29 +456,33 @@ class Session:
 
         info = decode_info(*self.dev.op(INFO))
         board_hand = info["hand_id"]
-        # The image's own hand picks the half: this one, or the other one through it (M2).
-        self.other = m["hand"] in HANDS and m["hand"] == board_hand ^ 1
-        self.hand = m["hand"] if self.other else board_hand
+        manifest_piece, chunk_piece = check_protocol(info)
+        # The image's own hand picks the half, this one or the other one through it (M2),
+        # unless --half says which.
+        half = getattr(self.args, "half", None)
+        if half == "usb":
+            self.other = False
+        elif half == "other":
+            self.other = True
+        else:
+            self.other = m["hand"] in HANDS and m["hand"] == board_hand ^ 1
+        self.hand = board_hand ^ 1 if self.other else board_hand
         if getattr(self.args, "halt", None) and not info["test_hooks"]:
             raise UpdaterError("--halt needs an SVAL_UPDATE_TEST_HOOKS build on the board")
         if getattr(self.args, "halt", None) and self.other:
             raise UpdaterError("--halt is for the half with USB only")
         print(f"board: {info['hand']} half, pointing {info['pointing']}, JEDEC {info['jedec']}, state {info['state']}, "
               f"status {info['status']}")
-        if info["protocol"] != make_update.UPDATER_PROTO:
-            raise UpdaterError(f"the board speaks updater protocol {info['protocol']}, this tool "
-                               f"{make_update.UPDATER_PROTO}: flash it with BOOTSEL and the .uf2 instead")
-        if self.other:
-            self.other_half(m)
-        elif m["hand"] != self.hand or m["pointing_id"] != info["pointing_id"]:
-            print(f"warning: image is for hand {m['hand']}, pointing {m['pointing_id']}; the board will refuse it")
+        target = self.other_half(m) if self.other else info
+        if not confirmed:
+            confirm_mismatches(image_mismatches(m, target), self.args)
         print(f"image: {version!r} ({m['fw_version']}), {len(image)} B, flags {m['flags']:#x}"
               + (f", for the other ({HANDS[self.hand]}) half" if self.other else ""))
 
         t_start = time.monotonic()
         blob = manifest
-        for off in range(0, len(blob), MANIFEST_PIECE):
-            piece = blob[off:off + MANIFEST_PIECE]
+        for off in range(0, len(blob), manifest_piece):
+            piece = blob[off:off + manifest_piece]
             r = self.need("MANIFEST", self.dev.op(MANIFEST, bytes([off, len(piece)]) + piece, hand=self.hand), OK)
             if r[0] != off + len(piece):
                 raise UpdaterError(f"MANIFEST: board has {r[0]} bytes, expected {off + len(piece)}")
@@ -416,7 +510,7 @@ class Session:
         next_report = step
         while off < len(image):
             self.maybe_renew()
-            n = min(CHUNK_PIECE, len(image) - off)
+            n = min(chunk_piece, len(image) - off)
             st, r = self.dev.op(CHUNK, struct.pack("<I", off)[:3] + bytes([n]) + image[off:off + n], hand=self.hand)
             nxt = r[0] | r[1] << 8 | r[2] << 16
             if st == OK:
@@ -487,9 +581,6 @@ class Session:
         oi = decode_info(st, r)
         print(f"other half: {oi['hand']}, pointing {oi['pointing']}, fw {oi['fw_version']}, state {oi['state']}, "
               f"status {oi['status']}, presence {s['other_half']}")
-        if m["pointing_id"] != oi["pointing_id"]:
-            print(f"warning: image is for pointing {m['pointing_id']}, the other half has {oi['pointing_id']}; "
-                  "it will be refused")
         return oi
 
     def relay(self):
@@ -629,21 +720,24 @@ def pair(dev, args, paths, sessions):
     if r[0] == 0xFF:
         raise UpdaterError(f"pair: the other half does not answer INFO ({status_name(st)})")
     infos = {board: decode_info(*dev.op(INFO)), board ^ 1: decode_info(st, r)}
+    check_protocol(infos[board])
     for p, m in other + this:
-        why = image_refusal(m, infos[m["hand"]])
+        why = image_refusal(m, infos[m["hand"]], other=m["hand"] != board)
         if why:
             raise UpdaterError(f"pair: {p.name} would be refused by the {HANDS[m['hand']]} half ({why}); nothing was sent")
+    # The hands match by construction; another pointing device is a warning (D33), asked once.
+    confirm_mismatches([f"{p.name}: {w}" for p, m in other + this for w in image_mismatches(m, infos[m["hand"]])], args)
     print("pair: the chord is made twice, both times on this half (the one with USB): once for each image")
     print(f"== 1/2: the other ({HANDS[board ^ 1]}) half, {other[0][0].name} ==")
     sessions.append(Session(dev, args))
-    rc = sessions[-1].run(other[0][0], confirm_other=False)
+    rc = sessions[-1].run(other[0][0], confirm_other=False, confirmed=True)
     if rc != 0:
         return rc
     # Straight on, without waiting to hear from the other half: it may not be
     # able to talk to this half's old firmware (V).
     print(f"== 2/2: this ({HANDS[board]}) half, {this[0][0].name} ==")
     sessions.append(Session(dev, args))
-    rc = sessions[-1].run(this[0][0])
+    rc = sessions[-1].run(this[0][0], confirmed=True)
     if rc != 0:
         return rc
     serial = dev.serial
@@ -710,8 +804,8 @@ class Rejects:
         return r
 
     def load(self, client):
-        for off in range(0, len(self.blob), MANIFEST_PIECE):
-            piece = self.blob[off:off + MANIFEST_PIECE]
+        for off in range(0, len(self.blob), self.mp):
+            piece = self.blob[off:off + self.mp]
             st, _ = self.dev.op(MANIFEST, bytes([off, len(piece)]) + piece, hand=self.hand, client=client)
             if st != OK:
                 raise UpdaterError(f"MANIFEST: {status_name(st)}")
@@ -723,7 +817,7 @@ class Rejects:
     def send_image(self, client, end):
         off = 0
         while off < end:
-            n = min(CHUNK_PIECE, end - off)
+            n = min(self.cp, end - off)
             st, _ = self.chunk(client, off, n)
             if st != OK:
                 raise UpdaterError(f"CHUNK at {off}: {status_name(st)}")
@@ -756,6 +850,7 @@ class Rejects:
     def run(self):
         info = decode_info(*self.dev.op(INFO))
         self.hand = info["hand_id"]
+        self.mp, self.cp = check_protocol(info)
         if info["state"] != "IDLE":
             raise UpdaterError(f"the board is in {info['state']}; ABORT first")
         a = self.dev.bootstrap()
@@ -763,9 +858,9 @@ class Rejects:
 
         print("session 1: unwrapped packets, a second client, wrong nonces, order")
         self.expect("unwrapped INFO", self.dev.unwrapped_op(INFO), OK, ST_IDLE)
-        self.expect("unwrapped MANIFEST", self.dev.unwrapped_op(MANIFEST, bytes([0, MANIFEST_PIECE]) + self.blob[:MANIFEST_PIECE], hand=self.hand), INVALID, ST_IDLE)
+        self.expect("unwrapped MANIFEST", self.dev.unwrapped_op(MANIFEST, bytes([0, self.mp]) + self.blob[:self.mp], hand=self.hand), INVALID, ST_IDLE)
         self.load(a)
-        self.expect("MANIFEST from a second client", self.dev.op(MANIFEST, bytes([0, MANIFEST_PIECE]) + self.blob[:MANIFEST_PIECE], hand=self.hand, client=b), OTHER_CLIENT, ST_MANIFEST_LOADING)
+        self.expect("MANIFEST from a second client", self.dev.op(MANIFEST, bytes([0, self.mp]) + self.blob[:self.mp], hand=self.hand, client=b), OTHER_CLIENT, ST_MANIFEST_LOADING)
         self.expect("ARM from a second client", self.dev.op(ARM, hand=self.hand, client=b), OTHER_CLIENT, ST_MANIFEST_LOADING)
         self.expect("unwrapped ARM", self.dev.unwrapped_op(ARM, hand=self.hand), INVALID, ST_MANIFEST_LOADING)
         self.expect("ABORT from a second client", self.nonce_op(ABORT, 0, b), OTHER_CLIENT, ST_MANIFEST_LOADING)
@@ -775,13 +870,13 @@ class Rejects:
         self.expect("BEGIN from a second client", self.nonce_op(BEGIN, nonce, b), OTHER_CLIENT, ST_CONFIRM_WAIT)
         self.expect("BEGIN before the chord", self.nonce_op(BEGIN, nonce, a), NOT_CONFIRMED, ST_CONFIRM_WAIT)
         self.chord(a, nonce)
-        r = self.expect("CHUNK ahead of the next offset", self.chunk(a, CHUNK_PIECE, CHUNK_PIECE), OUT_OF_ORDER, ST_RECEIVING)
+        r = self.expect("CHUNK ahead of the next offset", self.chunk(a, self.cp, self.cp), OUT_OF_ORDER, ST_RECEIVING)
         if r[0] | r[1] << 8 | r[2] << 16:
             self.failed += 1
             print("  FAIL  ... and it did not report offset 0 as the next one")
         self.expect("END too early", self.nonce_op(END, nonce, a), OUT_OF_ORDER, ST_RECEIVING)
-        self.expect("CHUNK from a second client", self.chunk(b, 0, CHUNK_PIECE), OTHER_CLIENT, ST_RECEIVING)
-        self.expect("unwrapped CHUNK", self.dev.unwrapped_op(CHUNK, bytes([0, 0, 0, CHUNK_PIECE]) + self.image[:CHUNK_PIECE], hand=self.hand), INVALID, ST_RECEIVING)
+        self.expect("CHUNK from a second client", self.chunk(b, 0, self.cp), OTHER_CLIENT, ST_RECEIVING)
+        self.expect("unwrapped CHUNK", self.dev.unwrapped_op(CHUNK, bytes([0, 0, 0, self.cp]) + self.image[:self.cp], hand=self.hand), INVALID, ST_RECEIVING)
         self.expect("ABORT with the wrong nonce", self.nonce_op(ABORT, nonce ^ 1, a), OTHER_CLIENT, ST_RECEIVING)
         self.expect("ABORT from a second client", self.nonce_op(ABORT, nonce, b), OTHER_CLIENT, ST_RECEIVING)
         self.send_image(a, len(self.image))
@@ -823,6 +918,9 @@ def main():
     rj.add_argument("svup", type=Path, help="an image this half accepts")
     up = sub.add_parser("update")
     up.add_argument("svup", type=Path)
+    up.add_argument("--half", choices=("usb", "other"),
+                    help="the half to update (default: the image's own hand picks it); for an MCU moved between hands")
+    up.add_argument("--yes", action="store_true", help="flash an image built for another hand or pointing device without asking")
     up.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
     up.add_argument("--rebind-every", type=float, default=50.0, help="renew the client ID and REBIND every S seconds (0: never)")
     up.add_argument("--min-rebinds", type=int, default=0, help="fail before COMMIT unless at least N renewals happened (M1 #16)")
@@ -833,6 +931,7 @@ def main():
     up.add_argument("--halt-unfed", action="store_true", help="with --halt: let the watchdog reset the board (M1 #9)")
     pr = sub.add_parser("pair", help="update both halves: the other one through this one, then this one (M2)")
     pr.add_argument("svup", type=Path, nargs=2, help="one image for each half, in any order")
+    pr.add_argument("--yes", action="store_true", help="flash images built for another pointing device without asking")
     pr.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
     pr.add_argument("--rebind-every", type=float, default=50.0, help="renew the client ID and REBIND every S seconds (0: never)")
     pr.add_argument("--keep", action="store_true", help="on failure, leave the session for inspection instead of ABORTing")

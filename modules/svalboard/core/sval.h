@@ -90,6 +90,7 @@ enum sval_command_id {
     sval_cmd_storage_reset_clear  = 0x2A, // host has told the user about a storage reset (GET_INFO byte 18)
     sval_cmd_default_layer_set    = 0x2B, // advertised by sval_flag2_default_layer_set
     sval_cmd_pointing_hardware    = 0x2C, // advertised by sval_flag2_pointing_hardware
+    sval_cmd_pointing_motion      = 0x2D, // advertised by sval_flag2_pointing_motion
     sval_cmd_error                = 0xFF,
 };
 
@@ -110,6 +111,7 @@ enum sval_feature_flags2 {
     sval_flag2_default_layer_set = (1 << 0), // 0x2B sets the saved default layer
     sval_flag2_pointing_hardware = (1 << 1), // 0x2C reports each half's side and pointing sensor
     sval_flag2_modifier_state    = (1 << 2), // 0x16 appends the board's modifiers, Caps Word and Caps Lock
+    sval_flag2_pointing_motion   = (1 << 3), // 0x2D reports pointing motion since the last read
 };
 
 // Status byte after the modifiers in the 0x16 reply (sval_flag2_modifier_state).
@@ -118,7 +120,8 @@ enum sval_modifier_status {
     sval_status_caps_lock = (1 << 1), // the host's Caps Lock LED is on
 };
 
-// Keyboard definition chunk size (fits in 32-byte HID packet with header)
+// Keyboard definition chunk size (fits a wrapped 32-byte report with its header,
+// so a host written for those keeps working; 64-byte reports have room to spare)
 #define SVAL_DEFINITION_CHUNK_SIZE 22
 
 // Entry counts - set by sval_config.h from sval.json
@@ -357,6 +360,11 @@ void sval_host_packet_kb(void);
 // POINTING_HARDWARE (0x2C): the keyboard fills out[0..length-1] (already zeroed)
 // with its report. Weak no-op in the module; out[0] = 0 means nothing to report.
 void sval_pointing_hardware_kb(uint8_t *out, uint8_t length);
+
+// POINTING_MOTION (0x2D): the keyboard fills out[0..length-1] (already zeroed) with
+// the motion since the previous read, then clears it. Weak no-op in the module;
+// out[0] = 0 means no data.
+void sval_pointing_motion_kb(uint8_t *out, uint8_t length);
 
 void sval_keycode_down(uint16_t keycode);
 void sval_keycode_up(uint16_t keycode);

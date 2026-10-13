@@ -6,9 +6,9 @@
 // The build-info record (M3): one record in .rodata of every updater build,
 // so the image itself says what kind of build it is. make_update.py takes
 // fw_version and the version string for the manifest from it (they cannot
-// disagree with what the firmware reports) and refuses a manifest whose side,
-// pointing device or keymap is not the image's; tools/check_release_elf.py
-// lints it. INFO page 1 returns the version. Version 2 added hand,
+// disagree with what the firmware reports) and warns about a manifest whose
+// side or pointing device is not the image's (refuses it with --release);
+// tools/check_release_elf.py lints it. INFO page 1 returns the version. Version 2 added hand,
 // pointing_id and keymap_id; version 3 retired the key fields (byte 6 and
 // flags 0x02 and 0x20 are reserved, always 0).
 

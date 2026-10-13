@@ -32,3 +32,7 @@ sval_probe_result_t sval_probe_pointers(uint8_t skip_buses);
 
 // Which trackball sensor a PMW Product_ID / Inverse_Product_ID pair names.
 uint8_t sval_pmw33xx_classify(uint8_t product_id, uint8_t inverse_product_id);
+
+// Called with the probe's result; a build with every driver in starts that module's driver
+// (pointing_auto/pointing_auto.c). The default does nothing.
+void sval_pointer_select(const sval_probe_result_t *found);

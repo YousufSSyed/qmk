@@ -35,6 +35,11 @@ QMK_ENABLE_MAP = {
 }
 
 
+def macro_tail(name):
+    """A JSON id as the upper-case tail of a C macro name."""
+    return ''.join(ch if ch.isalnum() else '_' for ch in name).upper()
+
+
 def generate_config(json_path, header_path, mk_path=None):
     """Generate sval_config.h from sval.json."""
 
@@ -66,6 +71,16 @@ def generate_config(json_path, header_path, mk_path=None):
         if instances:
             f.write(f"// Fragment composition\n")
             f.write(f"#define SVAL_FRAGMENT_INSTANCE_COUNT {len(instances)}\n\n")
+            # Instance positions (the 0x18/0x19 byte index) and fragment ids, so firmware
+            # code names them instead of hard-coding numbers.
+            for idx, instance in enumerate(instances):
+                f.write(f"#define SVAL_FRAGMENT_IDX_{macro_tail(instance['id'])} {idx}\n")
+            f.write("\n")
+            for frag_name, frag in data.get('fragments', {}).items():
+                if macro_tail(frag_name) == 'NONE':
+                    continue  # SVAL_FRAGMENT_ID_NONE is sval.h's "no fragment" (0xFF)
+                f.write(f"#define SVAL_FRAGMENT_ID_{macro_tail(frag_name)} {frag['id']}\n")
+            f.write("\n")
 
     # Generate make fragment if requested
     if mk_path:

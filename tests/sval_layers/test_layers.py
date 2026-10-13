@@ -36,6 +36,9 @@ def harness():
 #include <stdbool.h>
 #include <string.h>
 #include "client_wrapper.h"
+#ifndef REPORT
+#define REPORT 64 // the raw HID report (RAW_EPSIZE, keyboards/svalboard/config.h)
+#endif
 #define SVAL_PREFIX 0xDF
 #define SVAL_KEYBOARD_UID {1,2,3,4,5,6,7,8}
 #define QMK_KEYCODES_VERSION_MAJOR 0
@@ -69,9 +72,9 @@ static led_t host_keyboard_led_state(void) { led_t led = { caps_lock_now }; retu
 static bool caps_word_now;
 static bool is_caps_word_on(void) { return caps_word_now; }
 #endif
-static uint8_t sent[32];
+static uint8_t sent[REPORT];
 static uint32_t timer_read32(void) { return 100; }
-static void host_raw_hid_send(uint8_t *p,uint8_t n) { assert(n==32); memcpy(sent,p,n); }
+static void host_raw_hid_send(uint8_t *p,uint8_t n) { assert(n==REPORT); memcpy(sent,p,n); }
 ''' + declarations + '\n' + version + '\n' + function(source, 'sval_get_feature_flags') + '\n' + function(
         source, 'sval_get_feature_flags2'
     ) + '''
@@ -86,7 +89,7 @@ static uint32_t get32(uint8_t *p) {
  return (uint32_t)p[0] | ((uint32_t)p[1]<<8) | ((uint32_t)p[2]<<16) | ((uint32_t)p[3]<<24);
 }
 static void request_with(uint8_t command, int arg) {
- uint8_t packet[32]; memset(packet,0xA5,sizeof(packet));
+ uint8_t packet[REPORT]; memset(packet,0xA5,sizeof(packet));
  packet[0]=0xDD;packet[1]=1;packet[2]=packet[3]=packet[4]=0;
  packet[5]=0xDF;packet[6]=command;
  if(arg>=0)packet[7]=(uint8_t)arg;
@@ -135,7 +138,7 @@ int main(void) {
    assert(get32(sent+11)==masks[d]);
    assert(layer_state==masks[a] && default_layer_state==masks[d]);
    assert(sent[15]==0 && sent[16]==0); // No modifiers held.
-   for(int i=17;i<32;i++)assert(sent[i]==0xA5);
+   for(int i=17;i<REPORT;i++)assert(sent[i]==0xA5);
   }
  }
  // Modifiers: held, one-shot pending and one-shot locked, in the HID modifier byte.
@@ -152,18 +155,18 @@ int main(void) {
  // Ten or eleven inner bytes: the masks fit, the modifier bytes are left alone.
  mods_now=0x02;
  for(uint8_t length=10;length<12;length++) {
-  uint8_t buffer[32];memset(buffer,0xA5,sizeof(buffer));
+  uint8_t buffer[REPORT];memset(buffer,0xA5,sizeof(buffer));
   buffer[0]=0xDF;buffer[1]=0x16;
   assert(sval_handle_command(buffer,length));
   assert(buffer[1]==0x16 && buffer[10]==0xA5 && buffer[11]==0xA5);
  }
  mods_now=0;
  for(uint8_t length=2;length<10;length++) {
-  uint8_t short_packet[32];memset(short_packet,0xA5,sizeof(short_packet));
+  uint8_t short_packet[REPORT];memset(short_packet,0xA5,sizeof(short_packet));
   short_packet[0]=0xDF;short_packet[1]=0x16;
   assert(!sval_handle_command(short_packet,length));
   assert(short_packet[1]==0xFF);
-  for(int i=2;i<32;i++)assert(short_packet[i]==0xA5);
+  for(int i=2;i<REPORT;i++)assert(short_packet[i]==0xA5);
  }
  // Setting the default layer saves it, like a PDF key. 0x2A stays the storage-reset clear.
  assert(sval_cmd_default_layer_set==0x2B && sval_cmd_storage_reset_clear==0x2A);
@@ -178,8 +181,8 @@ int main(void) {
  // Pointing hardware: the keyboard fills a zeroed reply after the command byte.
  assert(sval_cmd_pointing_hardware==0x2C && sval_flag2_pointing_hardware==0x02);
  request(sval_cmd_pointing_hardware);
- assert(pointing_report_len==25 && sent[7]==1 && sent[8]==0x07 && sent[13]==0x01);
- for(int i=14;i<32;i++)assert(sent[i]==0);
+ assert(pointing_report_len==REPORT-7 && sent[7]==1 && sent[8]==0x07 && sent[13]==0x01);
+ for(int i=14;i<REPORT;i++)assert(sent[i]==0);
 }
 '''
 
@@ -190,7 +193,9 @@ class LayerReportingTests(unittest.TestCase):
             path = Path(directory)
             source = path / 'layers.c'
             source.write_text(harness())
-            for flags in ([], ['-DCAPS_WORD_ENABLE', '-DLAYER_LOCK_ENABLE', '-DONESHOT_ENABLE', '-DLEADER_ENABLE']):
+            # 64-byte reports (Svalboard), and 32 (the QMK default) as before
+            features = ['-DCAPS_WORD_ENABLE', '-DLAYER_LOCK_ENABLE', '-DONESHOT_ENABLE', '-DLEADER_ENABLE']
+            for flags in ([], features, ['-DREPORT=32'], ['-DREPORT=32', *features]):
                 with self.subTest(flags=flags):
                     subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-fsanitize=undefined', '-I', str(CORE), *flags, str(source), '-o', str(path / 'layers')], check=True)
                     subprocess.run([str(path / 'layers')], check=True)

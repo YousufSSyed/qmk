@@ -49,6 +49,42 @@
                 [{"w": 1.5}, "T1", "T2", {"w": 1.5}, "T3"],
                 [{"w": 1.5}, "T4", "T5", {"w": 2}, "T6"]
             ]
+        },
+        "pointing_none": {
+            "id": 4,
+            "description": "No pointing module",
+            "kle": [],
+            "widget": {"kind": "pointing", "module": "none", "w": 2.5, "h": 2.5}
+        },
+        "pointing_trackball_pmw3360": {
+            "id": 5,
+            "description": "PMW3360 trackball",
+            "kle": [],
+            "widget": {"kind": "pointing", "module": "trackball", "sensor": "pmw3360", "w": 2.5, "h": 2.5}
+        },
+        "pointing_trackball_pmw3389": {
+            "id": 6,
+            "description": "PMW3389 trackball",
+            "kle": [],
+            "widget": {"kind": "pointing", "module": "trackball", "sensor": "pmw3389", "w": 2.5, "h": 2.5}
+        },
+        "pointing_touchpad_azoteq": {
+            "id": 7,
+            "description": "Azoteq touchpad",
+            "kle": [],
+            "widget": {"kind": "pointing", "module": "touchpad", "sensor": "azoteq", "w": 2.5, "h": 2.5}
+        },
+        "pointing_trackpoint": {
+            "id": 8,
+            "description": "TrackPoint",
+            "kle": [],
+            "widget": {"kind": "pointing", "module": "trackpoint", "sensor": "trackpoint", "w": 2.5, "h": 2.5}
+        },
+        "pointing_unknown": {
+            "id": 9,
+            "description": "Unrecognised pointing module",
+            "kle": [],
+            "widget": {"kind": "pointing", "module": "unknown", "w": 2.5, "h": 2.5}
         }
     },
     "composition": {
@@ -230,6 +266,30 @@
                     }
                 ],
                 "hardware_detect": false
+            },
+            {
+                "id": "left_pointing",
+                "hardware_detect": true,
+                "fragment_options": [
+                    {"fragment": "pointing_none",              "placement": {"x": 4.2, "y": 5.25}, "matrix_map": [], "default": true, "allow_override": false},
+                    {"fragment": "pointing_trackball_pmw3360", "placement": {"x": 4.2, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_trackball_pmw3389", "placement": {"x": 4.2, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_touchpad_azoteq",   "placement": {"x": 4.2, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_trackpoint",        "placement": {"x": 4.2, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_unknown",           "placement": {"x": 4.2, "y": 5.25}, "matrix_map": [], "allow_override": false}
+                ]
+            },
+            {
+                "id": "right_pointing",
+                "hardware_detect": true,
+                "fragment_options": [
+                    {"fragment": "pointing_none",              "placement": {"x": 18.3, "y": 5.25}, "matrix_map": [], "default": true, "allow_override": false},
+                    {"fragment": "pointing_trackball_pmw3360", "placement": {"x": 18.3, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_trackball_pmw3389", "placement": {"x": 18.3, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_touchpad_azoteq",   "placement": {"x": 18.3, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_trackpoint",        "placement": {"x": 18.3, "y": 5.25}, "matrix_map": [], "allow_override": false},
+                    {"fragment": "pointing_unknown",           "placement": {"x": 18.3, "y": 5.25}, "matrix_map": [], "allow_override": false}
+                ]
             }
         ]
     },

@@ -17,15 +17,19 @@ image's first page last. A power cut at any point leaves either the new image
 or a board that comes up in BOOTSEL. It never leaves a half-written image that
 the boot ROM would run.
 
-This first version (updater protocol 2) does not sign updates. See "Security"
+This version (updater protocol 3) does not sign updates. See "Security"
 below. Signing was built and tested in M3 and then deferred; that code is kept
 under the tag `archive/fw-updater-signed`.
 
 ## Security
 
 The updater checks that an image arrived intact (SHA-512 against the manifest
-the user approved) and that the right image goes to the right half (side and
-pointing device). It does not check who built the image. Anyone who can get a
+the user approved) and that it is structurally a firmware image it can boot
+(manifest format and version, length, boot2, initial SP, reset vector, the
+security epoch and storage floors). It does not check the image's side or
+pointing device (D33): moving an MCU between hands or modules is a valid use,
+so the host tools warn about a mismatch and ask instead. It does not check who
+built the image. Anyone who can get a
 user to make the chord can install any image, exactly as anyone who can get
 them to drag a UF2 onto the board can.
 
@@ -40,9 +44,9 @@ them to drag a UF2 onto the board can.
   updater builds of the same release (see "One release on both halves").
 
 ```
-make svalboard/trackball/pmw3389/right:sval SVAL_UPDATER=yes
-N=svalboard_trackball_pmw3389_right_sval
-K=svalboard/trackball/pmw3389/right
+make svalboard/right:sval SVAL_UPDATER=yes
+N=svalboard_right_sval
+K=svalboard/right
 MU=keyboards/svalboard/tools/make_update.py
 python3 -I $MU $N.uf2 -o $N.svup --kb $K
 ```
@@ -53,7 +57,8 @@ python3 -I $MU $N.uf2 -o $N.svup --kb $K
 |---|---|
 | `SVAL_UPDATER=yes` | The updater: VIA channel `0x55`, staging slot, commit routine, LED states |
 | `SVAL_UPDATE_TEST_HOOKS=yes` | Adds the `TEST_HALT` op and the commit halt points (hardware tests only) |
-| `SVAL_UPDATE_RELEASE=yes` | Release updater build: DIAGNOSTIC images refused. Cannot be combined with the test hooks, `SVAL_KEYTEST` or `SVAL_HOST_BOOTLOADER`. Release CI builds every release keymap this way |
+| `SVAL_UPDATE_RELEASE=yes` | Release updater build: DIAGNOSTIC images refused. Cannot be combined with the test hooks, `SVAL_KEYTEST` or `SVAL_HOST_BOOTLOADER`. Release CI builds its two images this way (see "Releases") |
+| `SVAL_TEST_WIPE=yes` | Bench builds only, never released: a settings magic (`0xB1A0`) no release uses, so the first boot after flashing over other firmware resets every setting to the build's defaults |
 | `SVAL_FW_VERSION=N` | The numeric version (D17), reported by INFO and presence. Default: `kb/updater/fw_version.txt` (D32). The older `EXTRAFLAGS=-DSVAL_FW_VERSION=N` still works |
 | `SVAL_FW_VERSION_STRING=S` | The version string, at most 16 of `A-Z a-z 0-9 . _ + -` (INFO page 1). Default empty; release CI passes the tag |
 
@@ -64,9 +69,10 @@ hooks, bit3 keytest, bit4 host bootloader; bits 1 and 5 reserved, always 0), a
 reserved byte, the updater protocol, `SVAL_FW_VERSION`,
 `SVAL_FW_VERSION_STRING`, and the build's side, pointing device and keymap
 (`sval` 1, `blank` 2, any other 0). `make_update.py` takes the manifest's
-version from it, and refuses a `--kb` whose side or pointing device
-contradicts it; with `--release` it also refuses a record that is not a clean
-release build or does not match the manifest. `update_build_info.c` refuses to
+version from it, and warns about a `--kb` whose side or pointing device
+contradicts it, asking before it writes the `.svup` (D33); with `--release` it
+also refuses a record that is not a clean release build or whose version or
+keymap does not match the manifest. `update_build_info.c` refuses to
 compile a release build with test hooks, keytest or the host bootloader.
 
 `SVAL_UPDATER` cannot be combined with `SVAL_KEYTEST` (keytest injects key
@@ -113,8 +119,8 @@ them and nothing follows. The manifest (`kb/updater/update_manifest.h`):
 | 0 | magic u32 | `SVUP` |
 | 4 | manifest version u16 | 2. Version 1 (protocol 1, signed, never released) is refused with UNSUPPORTED |
 | 6 | reserved u8 | 0, else INVALID (it was `key_id` in version 1) |
-| 7 | hand | 0 left, 1 right; must be the half's |
-| 8 | pointing ID | must be the half's build (D18) |
+| 7 | hand | 0 left, 1 right. Reported, not checked (D33): the request's hand picks the half |
+| 8 | pointing ID | 0 none, 1 TrackPoint, 2 PMW3360, 3 PMW3389, 4 Azoteq, 5 auto (every driver, `pointing_auto`). Reported, not checked (D33) |
 | 9 | keymap ID | 1 sval, 2 blank; display only |
 | 10 | flags u16 | bit0 RELEASE, bit1 DIAGNOSTIC; others 0. A release build refuses DIAGNOSTIC |
 | 12 | security epoch u16 | at or above the device's floor (D19) |
@@ -132,8 +138,17 @@ The updater is a keyboard-local VIA custom-value channel (`0x55`, `'U'`) inside
 the Sval client wrapper:
 
 ```
-[0xDD][client_id:4][0xFE] [id_custom_set_value 0x07 | get 0x08][0x55][op][value_data:23]
+[0xDD][client_id:4][0xFE] [id_custom_set_value 0x07 | get 0x08][0x55][op][value_data:55]
 ```
+
+Each packet is one 64-byte raw HID report (`RAW_EPSIZE` in `kb/config.h`), so
+`value_data` is 64 - 6 - 3 = 55 bytes. Protocol 3 is protocol 2 (32-byte
+reports, 23 value bytes) in 64-byte reports: the same ops and fields, larger
+MANIFEST and CHUNK pieces, and the piece sizes at the end of INFO. A host sizes
+its pieces from INFO and refuses any other protocol; a protocol 2 host cannot
+talk to a protocol 3 board (its 32-byte reports don't fit the descriptor), and
+`sval_update.py` refuses a protocol 2 board. The relay over the split cable is
+unchanged, so either protocol's half can be updated through the other.
 
 The reply is the same packet with `value_data` rewritten. `value_data[0]` is
 always a status. Every request starts with `[hand]`: this half (0 left, 1 right),
@@ -144,11 +159,11 @@ byte layouts are in the comment at the top of `kb/updater/updater.c`. In short:
 
 | Op | Request after `[hand]` | Reply after `[status]` / rule |
 |---|---|---|
-| `0x00 INFO` | page (0, the default) | state, protocol (2), slot base/size and max image (4 KiB units), JEDEC ID, pointing ID, hand, fw version, storage format, security epoch, flags (bit0 16 MiB die, bit1 settings writes failing, bit2 release build, bit3 test hooks, bit4 reserved, bit5 the other half's version differs, bit6 reserved), last error. Page 1 (this half only): `1`, fw version u32, the 16-character version string from the build-info record. Other pages: INVALID |
-| `0x01 MANIFEST` | off, n ≤ 20, bytes | bytes filled, of 108. In order; offset 0 restarts. Bytes past 108 are INVALID. Ties the load to this client |
+| `0x00 INFO` | page (0, the default) | state, protocol (3), slot base/size and max image (4 KiB units), JEDEC ID, pointing ID, hand, fw version, storage format, security epoch, flags (bit0 16 MiB die, bit1 settings writes failing, bit2 release build, bit3 test hooks, bit4 reserved, bit5 the other half's version differs, bit6 reserved), last error, then the largest CHUNK data (50), the largest MANIFEST piece (52) and the report size (64), for either half. Page 1 (this half only): `1`, fw version u32, the 16-character version string from the build-info record. Other pages: INVALID |
+| `0x01 MANIFEST` | off, n ≤ 52, bytes | bytes filled, of 108. In order; offset 0 restarts. Bytes past 108 are INVALID. Ties the load to this client |
 | `0x02 ARM` | - | nonce u32 and the first 4 bytes of SHA-512(manifest), which the host shows. Needs all 108 bytes. Checks the manifest fields, binds the session to client ID + nonce, starts the 30 s chord window. BUSY, with nothing changed, while a Scan Lab sweep runs |
 | `0x03 BEGIN` | nonce | ACCEPTED once the chord is made: the manifest is checked again, then the erase, one 4 KiB sector per main-loop pass |
-| `0x04 CHUNK` | off u24, n ≤ 18, bytes | next offset. Strictly in order; an earlier chunk is acknowledged and not written again |
+| `0x04 CHUNK` | off u24, n ≤ 50, bytes | next offset. Strictly in order; an earlier chunk is acknowledged and not written again |
 | `0x05 END` | nonce | ACCEPTED: SHA-512, structure checks and CRC of the staged image, 2 KiB per pass |
 | `0x06 STATUS` | - | state, bytes staged, image length, erase progress, last error, reserved u16 (0), verify ms, longest sector erase ms, CRC low 16 bits once VERIFIED, flags, the other half by split presence (see below) |
 | `0x07 COMMIT` | nonce, CRC low 16 | ACCEPTED; the commit runs from housekeeping 100 ms later. The CRC (CRC-32/MPEG-2 over image bytes `[0x100, len)`) must match the verified image |
@@ -166,7 +181,8 @@ Status codes: `OK 0, INVALID 1, UNAVAILABLE 2, FLASH_ERR 3, ACCEPTED 4, BUSY 5,
 NOT_CONFIRMED 6, WRONG_HW 7, BAD_HASH 9, BAD_IMAGE 10, EPOCH 11,
 OUT_OF_ORDER 12, OVERRUN 13, TOO_LARGE 14, TIMEOUT 15, OTHER_CLIENT 16,
 UNSUPPORTED 17, STORAGE 18` (`kb/updater/update_manifest.h`). Code 8 was
-protocol 1's signature failure: it is retired and never returned, and the
+protocol 1's signature failure and code 7 (WRONG_HW) the pointing check
+before D33: both are retired and never returned, and the
 codes after it keep their numbers. A refused request (another client, a wrong
 nonce, a request out of order) changes nothing. A failed update (a check
 fails, a flash error, OVERRUN, a timeout, a refused commit) latches ERROR until
@@ -200,9 +216,10 @@ Magenta: writing. Red at 1 Hz: error, until ABORT.
 
 **Manifest checks** (at ARM, again at BEGIN, and at commit step 0). Magic
 `SVUP`, version 2, reserved fields 0, known flags; a release build refuses
-DIAGNOSTIC; the hand and pointing device match this build; the security epoch
+DIAGNOSTIC; the security epoch
 and storage format are at or above this device's floors; `image_len` is between
-`0x200` and `SVAL_UPDATE_MAX_IMAGE` and a multiple of 256. On the staged image:
+`0x200` and `SVAL_UPDATE_MAX_IMAGE` and a multiple of 256. The hand and
+pointing device are not checked (D33). On the staged image:
 SHA-512 equals the manifest's, the boot2 CRC of page 0 is valid, the initial SP
 is in `[0x20000000, 0x20042000]`, and the reset vector is odd and inside the
 image. `kb/tools/make_update.py` refuses to build an image that would fail any
@@ -385,7 +402,9 @@ with its own build and reports the result in STATUS byte 22
 
 For 2-4, INFO flags bit5 is set and, while the updater is idle, the half with
 USB blinks the red error LED (1 Hz) until the halves match (V). The pointing
-device may differ between halves (D18).
+device may differ between halves (D18). Code 3 is what an image for the wrong
+hand leads to (the firmware takes it, D33): the half with USB cannot reach the
+other half through the updater until one of them is flashed for its hand.
 
 **The split pause (D15).** `kb/split_pause.c` overrides QMK's weak
 `matrix_scan()`. While the half with USB is paused, it skips the whole split
@@ -414,8 +433,8 @@ whose cached answer is gone is acknowledged again (one verify, one commit).
 **From the host.** `hand` = the other half's side makes a session for the
 other half. It runs on the half with USB, where the chord is made (D4). The
 other half must answer presence as the same release or a different version
-(else MANIFEST and ARM get UNAVAILABLE): its side and pointing device from
-presence are what ARM checks the manifest against, with this build's floors.
+(else MANIFEST and ARM get UNAVAILABLE). ARM checks the manifest against this
+build's floors; its side and pointing device are not checked (D33).
 BEGIN, CHUNK and END then stage and verify the image in this half's slot
 exactly as in M1. Then:
 
@@ -425,12 +444,12 @@ exactly as in M1. Then:
 3. COMMIT again: state SUBSIDE_COMMITTING. The other half commits and resets;
    this half keeps the link paused for its commit and reboot (2 s + 2.5 s,
    R18), probes it, and goes back to IDLE. This half never commits that
-   image: the session never reaches COMMITTING, and commit step 0 would refuse
-   its hand anyway.
+   image: the request's hand, not the manifest's, made it a session for the
+   other half, and such a session never reaches COMMITTING.
 
 ABORT works up to the second COMMIT, and tells the other half. A relay
 failure latches ERROR with the reason: the other half's own refusal (INVALID,
-UNSUPPORTED, BAD_HASH, EPOCH, WRONG_HW, FLASH_ERR, ...), or UNAVAILABLE when it
+UNSUPPORTED, BAD_HASH, EPOCH, FLASH_ERR, ...), or UNAVAILABLE when it
 stopped answering for 2 s, or TIMEOUT when it stayed in COMMITTING past the
 probes. The 30 s session timeout still applies while relaying and while
 RELAYED (D23: a host that went away stops the relay before the copy). While a
@@ -498,15 +517,21 @@ would otherwise look like an unplugged cable (V).
 `sval_on_reconnect` (a settings write) is skipped while an update runs (D21).
 
 **From `sval_update.py`.** `update FILE.svup` picks the half from the image's
-hand. It refuses a version-1 `.svup` and a board that reports another updater
-protocol, before sending anything. For the other half it waits for presence,
+hand, or from `--half usb|other` (an MCU moved between hands). It refuses a
+version-1 `.svup` and a board that reports another updater protocol, before
+sending anything. An image built for another hand or pointing device than the
+half runs (an auto image on a single-module build, or the reverse, included)
+is never refused (D33): the tool prints a warning for each mismatch and asks
+`[y/N]` before sending anything; `--yes` skips the question, and no answer
+sends nothing. For the other half it waits for presence,
 prints the other half's INFO, stages and verifies as in M1, relays (printing
 the phases), commits the other half, then waits up to 10 s for it to answer
 again and prints its version and presence; a fw that differs from the
-manifest's (both nonzero) is an error. `pair A.svup B.svup` first checks both
-images against both halves' INFO (protocol, hand, pointing device, release
-build, epoch, storage format, size) and sends nothing if either would be
-refused; then it does the other half, then this half over USB (the chord
+manifest's (both nonzero) is an error. `pair A.svup B.svup` picks each image
+by the hand each half reports, checks both against both halves' INFO
+(protocol, release build, epoch, storage format, size) and sends nothing if
+either would be refused, and asks once (or `--yes`) if either image names
+another pointing device than its half runs; then it does the other half, then this half over USB (the chord
 twice, both on this half), waits for the board to come back, and requires
 presence to show the same release on both halves within 10 s and each half's
 fw to equal its manifest's (when both are set). `relay` prints the RELAY op;
@@ -522,16 +547,19 @@ build twice with `SVAL_FW_VERSION=2101` and `2102`.
 
 ```
 MU=keyboards/svalboard/tools/make_update.py
-python3 -I $MU IN.uf2 -o OUT.svup --kb svalboard/trackball/pmw3389/right
+python3 -I $MU IN.uf2 -o OUT.svup --kb svalboard/right
 python3 -I $MU verify OUT.svup --build plain
 ```
 
-- `--kb` sets the side and pointing device. `--keymap` (display only)
-  defaults to the image's build-info record, else `sval`.
+- `--kb` sets the side and pointing device: `svalboard/left` and
+  `svalboard/right` are the auto builds (pointing ID 5); the single-module
+  paths (`svalboard/trackball/pmw3389/right`, ...) still work. `--keymap`
+  (display only) defaults to the image's build-info record, else `sval`.
 - `--fw-version` and `--version-string` default to the record; a value that
   contradicts a set record is refused.
-- A manifest whose side or pointing device is not the record's is refused:
-  the right image for the right half.
+- A `--kb` whose side or pointing device is not the record's is a warning,
+  not a refusal (D33): the tool asks `[y/N]` before writing, `--yes` skips
+  the question, and no answer (no terminal) writes nothing.
 - `--diagnostic` sets DIAGNOSTIC (Scan Lab, keytest or host-bootloader
   images). `--epoch` and `--storage-format` set the floors' fields.
 - `--release` sets RELEASE and refuses anything that is not a clean release
@@ -539,8 +567,8 @@ python3 -I $MU verify OUT.svup --build plain
   than `sval` or `blank`, another updater protocol or an older storage format;
   an image without a build-info record, or whose record is not a release
   build, has test hooks, keytest, the host bootloader or a reserved bit set,
-  reports another version than the manifest, or names another side, pointing
-  device or keymap. `--expect-version`, `--expect-fw-version` and
+  reports another version than the manifest, or names another keymap (another
+  side or pointing device is the warning above). `--expect-version`, `--expect-fw-version` and
   `--expect-sha512` (release only) also check the tag, the number and the
   image's hash.
 - `--unsafe-allow-bad-image` builds an image that fails the structure checks,
@@ -564,26 +592,39 @@ one-shot forms agree.
 
 ## Release CI
 
+**What a release is (D34).** Two images: `svalboard/left:sval` and
+`svalboard/right:sval`, the auto builds, which carry every pointing driver and
+start whichever module is attached (pointing ID 5). The per-module builds
+(`svalboard/trackball/...`, `trackpoint`, `azoteq`) and the `blank` keymap
+still build but are not released. `SVAL_TEST_WIPE` is for bench builds only:
+a release updater build refuses to compile with it.
+
 **Versions (D17, D32).** Launch tags are names (`vLaunch2`), so the number is
 committed in `kb/updater/fw_version.txt` and the version string is the tag
 name. Raise the number in the commit you tag. Release CI's first job
 (`kb/tools/release_version.py`) fails unless the tag is a valid version string
 (at most 16 of `A-Z a-z 0-9 . _ + -`) and the committed number is greater
-than the one committed at the previous published release: the newest release
-on the repository that is neither a draft nor a prerelease and is not this
-tag (a release from before the file existed counts as 0). Prereleases are not
-compared, so dry runs never use up a number. A tag whose name contains
-`dryrun` or `dry-run` (any case), such as `vLaunch3-dryrun1`, is a dry run:
-its release is always a prerelease.
+than the highest one committed at any published release that is not a draft,
+a dry run or this tag (a release from before the file existed counts as 0).
+Dry runs are not compared, so they never use up a number. A tag whose name
+contains `dryrun` or `dry-run` (any case), such as `vLaunch3-dryrun1`, is a
+dry run: its release is always a prerelease.
+
+**Bleeding edge (D36).** A `vNext` tag with a number, such as `vNext1`, is a
+bleeding-edge release, for use with next.keybard.svalboard.com. It is
+published as a prerelease, so it never becomes the latest release, but its
+number counts: each `vNext` raises it, and the next stable release must be
+higher than every `vNext` before it. Any other tag starting with `vNext` (any
+case) is refused.
 
 **The jobs** (`.github/workflows/release.yml`, on `v*` tags):
 
 | Job | What it does |
 |---|---|
 | version | The check above. Outputs the version, the number and whether the release is a prerelease |
-| build | The 12 release keymap builds as **release updater builds** (`SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes SVAL_FW_VERSION_STRING=<tag>`), through `build-firmware.yml` with `updater: true`, in the pinned image with the pinned toolchain (below). Each runs `check_ram_funcs.py`, then `make_update.py --release --expect-version <tag> --expect-fw-version <N>`, which writes the `.svup` next to the `.uf2`. It uploads the `.uf2`, the `.svup` and the ELF. No build job can write to the repository (`contents: read`, no Git credentials kept) |
-| lint | `check_tag_commit.sh`: the tag still names the run's commit. `check_release_artifacts.py`: exactly the 12 builds' files; each `.svup`'s image is its ELF's flash contents (as `objcopy -O binary` writes them) and its `.uf2`'s image; each manifest's hash, version, side, pointing device and keymap, and each image's build-info record, match the build's name, and the release checks pass. `check_release_elf.py` on the 12 ELFs: an updater build whose build-info record says RELEASE and nothing else, for a release keymap, with no test-hook, keytest or host-bootloader symbols. `check_split_tables.py --golden`: every left/right pairing has the same split message table, and every build's table equals `kb/tools/split_table_golden.json` |
-| publish | Creates the release for the tag directly (not a draft; a prerelease for a dry run) with the 12 `.uf2` and 12 `.svup` files. Refuses if the tag already has a release |
+| build | The 2 release builds as **release updater builds** (`SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes SVAL_FW_VERSION_STRING=<tag>`), through `build-firmware.yml` with `updater: true`, in the pinned image with the pinned toolchain (below). Each runs `check_ram_funcs.py`, then `make_update.py --release --expect-version <tag> --expect-fw-version <N>`, which writes the `.svup` next to the `.uf2`. It uploads the `.uf2`, the `.svup` and the ELF. No build job can write to the repository (`contents: read`, no Git credentials kept) |
+| lint | `check_tag_commit.sh`: the tag still names the run's commit. `check_release_artifacts.py`: exactly the 2 builds' files; each `.svup`'s image is its ELF's flash contents (as `objcopy -O binary` writes them) and its `.uf2`'s image; each manifest's hash, version, side, pointing device and keymap, and each image's build-info record, match the build's name, and the release checks pass. `check_release_elf.py` on the 2 ELFs: an updater build whose build-info record says RELEASE and nothing else, the auto pointing build and the `sval` keymap, with no test-hook, keytest or host-bootloader symbols. `check_split_tables.py --golden`: the left/right pairing has the same split message table, and each build's table equals `kb/tools/split_table_golden.json` |
+| publish | Creates the release for the tag directly (not a draft; a prerelease for a dry run or a `vNext` tag) with the 2 `.uf2` and 2 `.svup` files. Refuses if the tag already has a release |
 
 Every job checks out the run's commit (`github.sha`), never the tag by name,
 and `check_tag_commit.sh` stops the run from publishing under a tag that now
@@ -622,7 +663,7 @@ python3 -I $T --write-golden $G BUILD.elf
 
 **Checking a published release.** `kb/tools/m3/check_release.sh TAG [REPO]`
 downloads its assets and runs `check_release_assets.py`: not a draft (and a
-prerelease for a dry-run tag), exactly 12 `.uf2` and 12 `.svup`, each `.svup`
+prerelease for a dry-run tag), exactly 2 `.uf2` and 2 `.svup`, each `.svup`
 holds its `.uf2`'s image with the build's side, pointing device and keymap,
 and a release build accepts it.
 

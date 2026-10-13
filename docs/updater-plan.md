@@ -103,7 +103,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  reserved0;       // 0 (key_id in version 1: 0 = test, 1/2 = release keys)
     uint8_t  hand;            // 0 left, 1 right
     uint8_t  pointing_id;     // this half's pointing device only (D18): 0 none, 1 TrackPoint,
-                              // 2 trackball PMW3360, 3 trackball PMW3389, 4 Azoteq; append-only
+                              // 2 trackball PMW3360, 3 trackball PMW3389, 4 Azoteq, 5 any (one build
+                              // with every driver, pointing_auto); append-only
     uint8_t  keymap_id;       // 1 sval, 2 blank: display only, never checked (D18)
     uint16_t flags;           // bit0 RELEASE, bit1 DIAGNOSTIC (scanlab/keytest/host-bootloader)
     uint16_t security_epoch;  // refuse < device epoch (D19)
@@ -295,13 +296,15 @@ Results after the fixes (WSL, Arm GNU 13.2.1, `SOURCE_DATE_EPOCH` pinned as befo
 
 **M3 for v1: signing deferred.** v1 ships unsigned. Removed: the Ed25519 check and the rest of Monocypher (only SHA-512 stays, in `vendor/sha512.c/.h`), the test key and `SVAL_UPDATE_TEST_KEY`, the release keys header and the retired-keys list, the signing job, its environment and secret, `make_update.py`'s key options and its `unsigned` and `sign` steps, and the fork-setup and secret scripts. The format moved to protocol 2: the manifest travels alone (108 B), byte 6 is reserved and must be 0, version-1 manifests are refused as UNSUPPORTED, status 8 is retired, INFO flags bits 4 and 6 and STATUS bytes 13-14 are reserved. The build-info record moved to `kb/updater/update_build_info.c/.h` as version 3 (byte 6 reserved; flags 0x02 and 0x20 reserved). Kept: the manifest checks, the chord on the manifest hash, the image SHA-512 at verify, at commit step 0 and on the half without USB, the CRC bound to COMMIT, the structure checks, the RAM commit, the split pause, the LEDs, the `SVAL_UPDATE_RELEASE` guards and the build-info lint. `docs/updater.md`, "Security", says what this does and does not protect.
 
-Release CI for v1 (`release.yml`): version (`release_version.py` and `kb/updater/fw_version.txt`; dry-run tags are prereleases; no key checks) → 12 release updater builds in the pinned image with the pinned toolchain, each running `check_ram_funcs.py` and `make_update.py --release`, which writes the `.svup` next to the `.uf2` → lint (`check_tag_commit.sh`, `check_release_artifacts.py`, `check_release_elf.py`, `check_split_tables.py --golden`) → publish: one job creates the release directly (not a draft) with the 12 `.uf2` and 12 `.svup` files. No signing job, environment or secret. `kb/tools/m3/check_release.sh` checks a published release's assets.
+Release CI for v1 (`release.yml`): version (`release_version.py` and `kb/updater/fw_version.txt`; dry-run tags are prereleases; no key checks) → 12 release updater builds (2 since D34: `svalboard/left:sval` and `svalboard/right:sval`, the auto builds) in the pinned image with the pinned toolchain, each running `check_ram_funcs.py` and `make_update.py --release`, which writes the `.svup` next to the `.uf2` → lint (`check_tag_commit.sh`, `check_release_artifacts.py`, `check_release_elf.py`, `check_split_tables.py --golden`) → publish: one job creates the release directly (not a draft) with the 12 `.uf2` and 12 `.svup` files. No signing job, environment or secret. `kb/tools/m3/check_release.sh` checks a published release's assets.
 
 ### M4: Keybard UI (fork `morganvenable/keybard`, PR to `svalboard/keybard`)
 
 - New `src/services/updater.service.ts`, a sibling of `scanlab.service.ts`.
 - A send path with **no** silent re-bootstrap retry (`usb.service.ts:700-722`). Client-ID renewal keeps its normal 50 s period (`usb.service.ts:17,490,586-596`); after each renewal the updater service sends `REBIND [hand][nonce]` before its next op (D3).
 - UF2 unpacking, browser-side signature check (deferred with signing), the manifest hash shown before the gesture, progress from STATUS, subside first, ≥ 10 s reconnect wait.
+- An image built for another hand or pointing device than the half reports is a warning the user confirms, never a refusal (D33).
+- **Layout backup (D35):** before flashing, Keybard saves the board's layout (keymap, macros, combos, tap dances, overrides and the other stored settings it can read). After the update it offers to restore that backup or to start from the new firmware's defaults.
 - Test on [keybard-test](https://morganvenable.github.io/keybard-test/) before production.
 
 ---
@@ -315,7 +318,7 @@ Your answers from the [decision page](https://claude.ai/artifact/WsV3uM75FY2iQ1p
 | # | Decision |
 |---|---|
 | **V** | **Both halves always run the same release.** Mixed versions are not a supported configuration. The half without USB is updated first. Straight after its commit, the half with USB updates itself over USB without waiting to hear from the other half; both are checked once both have rebooted. On a version mismatch, Keybard warns and the half with USB shows the red error LED until it's fixed. Consequences: no transaction-table freeze (old D16 dropped), no buffer-size negotiation, no RPC bounds-check patch. |
-| **P1** (new, follows from D18) | Halves of one board can run **different builds** of the same release (e.g. left trackball, right TrackPoint). CI checks that every supported left/right pairing of builds produces an identical split message table (`NUM_TOTAL_TRANSACTIONS`, the order of IDs, and each entry's buffer sizes and shmem offsets). Each side uses its own table's sizes on the wire (`serial_protocol.c:75-76,87-88,142-150`), so a struct size change with the same IDs would desync the halves. A pointing-device option that adds a split message on one side would fail this check. All 12 release builds match today. |
+| **P1** (new, follows from D18) | Halves of one board can run **different builds** of the same release (e.g. left trackball, right TrackPoint). CI checks that every supported left/right pairing of builds produces an identical split message table (`NUM_TOTAL_TRANSACTIONS`, the order of IDs, and each entry's buffer sizes and shmem offsets). Each side uses its own table's sizes on the wire (`serial_protocol.c:75-76,87-88,142-150`), so a struct size change with the same IDs would desync the halves. A pointing-device option that adds a split message on one side would fail this check. All 12 release builds matched; since D34 a release has one left and one right build, so this is the one pairing. |
 
 ### Answered
 
@@ -335,7 +338,7 @@ Your answers from the [decision page](https://claude.ai/artifact/WsV3uM75FY2iQ1p
 | D14 | Relay model | Store and forward |
 | D15 | Pausing the split link | **Svalboard overrides the weak `matrix_scan()`** and skips the split exchange while paused. No QMK core change. Pause entry clears the slave rows once; resume calls `split_watchdog_update(false)` so a rebooted slave is re-pinged |
 | D17 | Version in presence | 4-byte version number plus short git hash in presence; full string through INFO |
-| D18 | Hardware ID | **One field per component, per half.** Each half's image names only its own pointing device (`pointing_id`) plus its side, and each half's image drives only its own device. Switching to a different pointing device is allowed after a Keybard confirmation naming both. The keymap (`sval`/`blank`) is recorded for display only and never checked |
+| D18 | Hardware ID | **One field per component, per half.** Each half's image names only its own pointing device (`pointing_id`) plus its side, and each half's image drives only its own device. Switching to a different pointing device is allowed after a Keybard confirmation naming both. The keymap (`sval`/`blank`) is recorded for display only and never checked. **Revised by D33:** the firmware checks neither field; the confirmation is the host's |
 | D19 | Downgrades | Any signed image at or above the security floor and the v2 settings format (v1: any image, signing deferred) |
 | D20 | LED takeover | A quick experiment in M1 decides between holding off rgblight output and overriding the WS2812 flush. First build check: `RGBLIGHT_DRIVER = custom` (`common_features.mk:312`; `rgblight_drivers.c:6-14`); fallback `rgblight_disable_noeeprom()` (`rgblight.h:326`) |
 | D21 | Settings write on reconnect | Skipped during an update; the general flash-wear fix becomes a separate issue |
@@ -365,6 +368,15 @@ D29, D30 and D31 are about signing and are **deferred for v1**; the answers are 
 | D29 | Where the signing key lives in CI | (Deferred for v1: no signing job, environment or secret.) A secret (`SVAL_UPDATE_SIGNING_KEY`) in a GitHub environment named `release-signing` that needs Morgan's approval for each run. The build jobs never see it; only a separate signing job in that environment does, and it signs only release keymaps (D22) with `flags.DIAGNOSTIC` clear, refusing anything else |
 | D30 | Keys for M3 | (Deferred for v1: no keys in any build.) Throwaway DRY RUN keys in both release slots (`key_id 1`, `2`), compiled into release updater builds; the production keys are generated later and swapped in (the public keys in `kb/updater/update_release_keys.h`, and the secret). Release builds carry no test key. The swap is a one-file change, documented in `docs/updater.md` |
 | D31 | Fork setup | (Deferred for v1 with signing; dry-run tags as prereleases remain.) Done by the main session from the runbook in `docs/updater.md`: the environment, the secret, and a dry-run `v*` tag (such as `vM3-dryrun1`) whose release is a prerelease. Dry-run tags never produce a normal release |
+
+### Answered 2026-10-12 (pointing_auto, svalboard/qmk#21)
+
+| # | Question | Answer |
+|---|---|---|
+| D33 | Should the firmware refuse an image whose hand or pointing device differs from the running build (UNSUPPORTED, WRONG_HW)? | **No: warn, don't refuse.** The firmware enforces integrity and structure only (hash, manifest format and version, length, boot2, SP and reset vector, epoch and storage floors), on the half with USB and on the half reached over the split cable. Moving an MCU between hands, or between pointing modules, is a valid use case. The manifest keeps `hand` and `pointing_id`, and INFO and presence still report them; the request's hand picks the half. `sval_update.py` and `make_update.py` print a warning for every mismatch (auto against a single-module build, either way, included) and ask (y/N); `--yes` skips the question. `pair` still picks each image by the hand each half reports. WRONG_HW (7) is retired, like BAD_SIG |
+| D34 | Release matrix | **Two images:** `svalboard/left:sval` and `svalboard/right:sval`, the auto builds with every pointing driver, as release updater builds. The per-module and `blank` builds are no longer released (they still build). `SVAL_TEST_WIPE` is for bench builds only, never a release |
+| D36 | Bleeding-edge firmware | `vNext<N>` tags (`vNext1`) publish as prereleases, for next.keybard, so they never become the latest release. Their numbers count: the next stable release must be higher than every `vNext` before it. Dry runs still use up no number. The 64-byte build goes out this way first, and becomes a stable release after user feedback on flashing |
+| D35 | Settings across an update (M4) | Keybard backs up the board's layout before flashing, and afterwards offers to restore it or to start from the defaults |
 
 ### Proposed, needs your confirmation
 

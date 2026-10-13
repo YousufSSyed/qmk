@@ -215,7 +215,7 @@ class InstrumentationTests(unittest.TestCase):
 
         def exchange(request):
             requests.append(bytes(request))
-            packet = bytes(request).ljust(32, b"\0")
+            packet = bytes(request).ljust(keytest.REPORT, b"\0")
             if packet[1:5] == bytes(4):
                 return packet[:25] + bytes([42, 0, 0, 0, 120, 0, 0])
             return packet
@@ -255,7 +255,7 @@ class InstrumentationTests(unittest.TestCase):
         def exchange(request):
             requests.append(bytes(request))
             # Older board handler echoes with zero protocol version.
-            return bytes(request).ljust(32, b"\0")
+            return bytes(request).ljust(keytest.REPORT, b"\0")
 
         device.exchange = exchange
         with self.assertRaisesRegex(RuntimeError, "Unsupported keytest"):
