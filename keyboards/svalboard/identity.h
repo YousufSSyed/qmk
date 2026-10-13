@@ -43,3 +43,8 @@ identity_status_t   identity_set_name(const char *name, uint8_t len);
 enum { IDENTITY_OP_INFO = 0, IDENTITY_OP_NAME = 1, IDENTITY_OP_COMMIT = 2, IDENTITY_OP_REBOOT = 3 };
 void identity_via_command(uint8_t *data, uint8_t length);
 void identity_task(void); // from housekeeping: carries out a requested reboot
+
+// The build reset record (build_reset.c): writes len bytes at the start of
+// BUILD_RESET_SECTOR, erasing it first. False if the region is missing or the
+// bytes did not read back.
+bool identity_build_record_write(const void *data, uint32_t len);

@@ -35,6 +35,7 @@ The launch firmware speaks Sval protocol version 3:
 - 32-bit macro offsets reach past 64 KiB.
 - 32-bit layer masks report active and default layers.
 - `GET_INFO` reports the protocol version, feature flags and the QMK keycode numbering the board uses.
+- `GET_INFO` byte 18 reports storage events: bit 0, settings were reset because storage could not be read; bit 1, a change could not be saved since this boot; bit 2, settings were reset to the build's defaults because a different firmware build was installed. Bits 0 and 2 stay set until the host sends `0x2A`. Older firmware never sets bit 2.
 
 Check feature flags before using an extension, send one request at a time per connection, and check the client ID and command in every reply.
 

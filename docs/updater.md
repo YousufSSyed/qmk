@@ -58,7 +58,7 @@ python3 -I $MU $N.uf2 -o $N.svup --kb $K
 | `SVAL_UPDATER=yes` | The updater: VIA channel `0x55`, staging slot, commit routine, LED states |
 | `SVAL_UPDATE_TEST_HOOKS=yes` | Adds the `TEST_HALT` op and the commit halt points (hardware tests only) |
 | `SVAL_UPDATE_RELEASE=yes` | Release updater build: DIAGNOSTIC images refused. Cannot be combined with the test hooks, `SVAL_KEYTEST` or `SVAL_HOST_BOOTLOADER`. Release CI builds its two images this way (see "Releases") |
-| `SVAL_TEST_WIPE=yes` | Bench builds only, never released: a settings magic (`0xB1A0`) no release uses, so the first boot after flashing over other firmware resets every setting to the build's defaults |
+| `SVAL_TEST_WIPE=yes` | Bench builds only, never released: a settings magic (`0xB1A0`) no release uses. Every build now resets settings on its first boot anyway (D39); the wipe magic also resets when the same image is flashed over a normal one |
 | `SVAL_FW_VERSION=N` | The numeric version (D17), reported by INFO and presence. Default: `kb/updater/fw_version.txt` (D32). The older `EXTRAFLAGS=-DSVAL_FW_VERSION=N` still works |
 | `SVAL_FW_VERSION_STRING=S` | The version string, at most 16 of `A-Z a-z 0-9 . _ + -` (INFO page 1). Default empty; release CI passes the tag |
 
@@ -598,6 +598,8 @@ start whichever module is attached (pointing ID 5). The per-module builds
 (`svalboard/trackball/...`, `trackpoint`, `azoteq`) and the `blank` keymap
 still build but are not released. `SVAL_TEST_WIPE` is for bench builds only:
 a release updater build refuses to compile with it.
+
+**Settings (D39).** The first boot of a different firmware build resets every stored setting to that build's defaults, on each half, whether it arrived through the updater or a `.uf2` (`kb/build_reset.c`; `keyboards/svalboard/docs/settings-storage.md`). Flashing the identical image keeps them. GET_INFO byte 18 bit 2 tells the host. Keybard and a command-line tool will save a `.svil` before flashing and load it afterwards (D35).
 
 **Versions (D17, D32).** Launch tags are names (`vLaunch2`), so the number is
 committed in `kb/updater/fw_version.txt` and the version string is the tag

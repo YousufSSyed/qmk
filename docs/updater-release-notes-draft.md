@@ -25,6 +25,10 @@ From this release on, Keybard can install new firmware for you over USB.
 4. Do the same for the other half. **Both halves must run this release:** a
    half on this release cannot talk to a half on an older one.
 
+**Flashing resets your settings.** Each half starts from the default layout
+after new firmware. Export your layout in Keybard before you flash, and load
+it again afterwards.
+
 ### What's new compared with Svalboard's Vial firmware
 
 - **Firmware updates from Keybard.** Keybard sends the new firmware over USB,
@@ -64,8 +68,8 @@ Notes for whoever publishes this (delete before publishing):
 
 - Check the release's `.uf2` and `.svup` names against the list above before
   posting.
-- Say whether keymaps and settings carry over from the release people are
-  coming from; this draft makes no claim either way.
+- Settings reset on every new build (D39); the install steps say so. Keep
+  that line until Keybard saves and restores the layout around flashing.
 - The approval chord and LED colors are from `docs/updater.md` (D4, D24); if
   either changes before the release, update the text.
 - The in-Keybard update flow is milestone M4 (Keybard UI). Until it ships, the
