@@ -2,7 +2,8 @@ name: Svalboard updater host tests
 
 # Host tests for the in-firmware updater (util/updater_test/run.sh: the state
 # machine, commit, relay, split link and tools under ASan and UBSan; no QMK
-# build, no submodules). Runs only when updater files change.
+# build, no submodules). Runs only when updater files change; tag pushes do
+# not run it (release.yml lints release builds itself).
 
 permissions:
   contents: read
@@ -18,6 +19,8 @@ on:
     - 'keyboards/svalboard/config.h'
     - 'keyboards/svalboard/tools/make_update.py'
     - 'keyboards/svalboard/tools/sval_update.py'
+    - 'keyboards/svalboard/tools/release_version.py'
+    - 'keyboards/svalboard/tools/check_release_artifacts.py'
     - 'tests/sval_updater/**'
     - 'util/updater_test/**'
     - '.github/workflows/updater-tests.yml'
@@ -29,6 +32,8 @@ on:
     - 'keyboards/svalboard/config.h'
     - 'keyboards/svalboard/tools/make_update.py'
     - 'keyboards/svalboard/tools/sval_update.py'
+    - 'keyboards/svalboard/tools/release_version.py'
+    - 'keyboards/svalboard/tools/check_release_artifacts.py'
     - 'tests/sval_updater/**'
     - 'util/updater_test/**'
     - '.github/workflows/updater-tests.yml'
