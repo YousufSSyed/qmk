@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+"""Build and check Svalboard updates (.svup) from QMK .uf2 files.
+
+A .svup is the 108-byte manifest, then the raw image the updater stages and
+copies to flash offset 0. Nothing is signed: the manifest's SHA-512 ties it to
+the image, and the chord on the keyboard confirms the manifest. The manifest
+layout and the image rules match keyboards/svalboard/updater/update_manifest.h
+and update_image.c; see docs/updater.md.
+
+    make_update.py IN.uf2 -o OUT.svup --kb svalboard/trackball/pmw3389/right \\
+        [--keymap sval] [--version-string S] [--fw-version N]
+
+Release CI adds --release, which also checks that the image is a release
+updater build (SVAL_UPDATE_RELEASE) for a release keymap, with no test hooks,
+keytest or host bootloader, and that its build-info record says the same
+version, side, pointing device and keymap as the manifest:
+
+    make_update.py IN.uf2 -o OUT.svup --kb svalboard/right --keymap sval \\
+        --release [--expect-version vLaunch3] [--expect-fw-version N]
+
+    make_update.py verify FILE.svup [--build release|plain]
+
+checks a .svup offline the way a build of that kind would before erasing
+anything: the manifest rules, the hash and the image structure.
+
+fw_version and the version string default to the image's build-info record
+(SVAL_FW_VERSION, SVAL_FW_VERSION_STRING), so a manifest always says what the
+firmware reports, and a manifest whose side or pointing device is not the
+image's is refused. Refuses, with exit status 2: a UF2 that is malformed, for
+another chip family, not starting at 0x10000000, with gaps or overlaps, or
+ending beyond 0x10160000; an image whose boot2 CRC, initial SP or reset vector
+is wrong; and flag and field combinations the firmware would refuse anyway.
+"""
+import argparse
+import hashlib
+import re
+import struct
+import sys
+from pathlib import Path
+
+# ---- format (update_manifest.h) ----------------------------------------------------
+
+MANIFEST_MAGIC = 0x50555653  # "SVUP"
+MANIFEST_VERSION = 2  # 1: protocol 1, signed (never released); refused
+UPDATER_PROTO = 2
+MANIFEST_FMT = "<IHBBBBHHBBIII16s64s"
+MANIFEST_BYTES = 108
+assert struct.calcsize(MANIFEST_FMT) == MANIFEST_BYTES
+
+HAND = {"left": 0, "right": 1}
+POINTING = {"none": 0, "trackpoint": 1, "pmw3360": 2, "pmw3389": 3, "azoteq": 4}
+KEYMAP = {"sval": 1, "blank": 2}  # the release keymaps (D22)
+FLAG_RELEASE, FLAG_DIAGNOSTIC = 0x0001, 0x0002
+STORAGE_FORMAT = 2  # SVAL_UPDATE_STORAGE_FORMAT in keyboards/svalboard/config.h
+
+# ---- build info (update_build_info.h) ----------------------------------------------
+
+BUILD_INFO_MAGIC = b"SVBI\x03"  # magic, then info_ver 3
+BUILD_INFO_FMT = "<4sBBBBI16sBBBB"  # magic, ver, flags, reserved0, proto, fw, version, hand, pointing_id, keymap_id, reserved
+BUILD_INFO_BYTES = 32
+BI_HOST_TEST = 0xFF  # hand and pointing_id of a host-test build
+assert struct.calcsize(BUILD_INFO_FMT) == BUILD_INFO_BYTES
+BI_RELEASE, BI_TEST_HOOKS, BI_KEYTEST, BI_HOST_BOOTLOADER = 0x01, 0x04, 0x08, 0x10
+BI_RESERVED = 0x02 | 0x20 | 0x40 | 0x80  # 0x02 and 0x20: protocol 1's key flags, retired
+BI_NOT_IN_RELEASE = {BI_TEST_HOOKS: "test hooks", BI_KEYTEST: "SVAL_KEYTEST", BI_HOST_BOOTLOADER: "SVAL_HOST_BOOTLOADER"}
+VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]{0,16}$")
+
+# ---- image rules (update_image.c, config.h) ---------------------------------------
+
+XIP_BASE = 0x10000000
+MAX_IMAGE = 0x160000  # SVAL_UPDATE_MAX_IMAGE; also the linker cap (flash_reservation.ld)
+IMAGE_MIN, IMAGE_ALIGN = 0x200, 0x100
+SP_MIN, SP_MAX = 0x20000000, 0x20042000
+RP2040_FAMILY = 0xE48BFF56
+UF2_MAGIC0, UF2_MAGIC1, UF2_MAGIC_END = 0x0A324655, 0x9E5D5157, 0x0AB16F30
+UF2_FLAG_NOT_MAIN_FLASH, UF2_FLAG_FAMILY = 0x00000001, 0x00002000
+
+
+class Refused(Exception):
+    pass
+
+
+def crc32_mpeg2(data):
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF if crc & 0x80000000 else (crc << 1) & 0xFFFFFFFF
+    return crc
+
+
+def boot2_valid(page0):
+    return len(page0) >= 256 and crc32_mpeg2(page0[:252]) == struct.unpack_from("<I", page0, 252)[0]
+
+
+def image_problems(image):
+    """The device's structure checks (update_image_head_check). Empty when fine."""
+    problems = []
+    n = len(image)
+    if n < IMAGE_MIN or n % IMAGE_ALIGN:
+        problems.append(f"length {n:#x} is not a multiple of 256 of at least {IMAGE_MIN:#x}")
+    if n > MAX_IMAGE:
+        problems.append(f"length {n:#x} is above the maximum {MAX_IMAGE:#x}")
+    if n < 0x108:
+        return problems + ["too short for a vector table"]
+    if not boot2_valid(image):
+        problems.append("boot2 CRC (CRC-32/MPEG-2 over bytes 0-251) does not match the word at 252")
+    sp, reset = struct.unpack_from("<II", image, 0x100)
+    if not SP_MIN <= sp <= SP_MAX:
+        problems.append(f"initial SP {sp:#010x} is outside [{SP_MIN:#x}, {SP_MAX:#x}]")
+    if not reset & 1 or not XIP_BASE + 0x100 <= reset < XIP_BASE + n:
+        problems.append(f"reset vector {reset:#010x} is not odd and inside the image")
+    return problems
+
+
+def uf2_to_image(data):
+    """Raw image from a UF2, refusing anything but one contiguous run at XIP_BASE."""
+    if not data or len(data) % 512:
+        raise Refused(f"UF2 length {len(data)} is not a positive multiple of 512")
+    count = len(data) // 512
+    image = bytearray()
+    for i in range(count):
+        block = data[i * 512:(i + 1) * 512]
+        m0, m1, flags, addr, size, block_no, num_blocks, family = struct.unpack_from("<8I", block, 0)
+        (m_end,) = struct.unpack_from("<I", block, 508)
+        if (m0, m1, m_end) != (UF2_MAGIC0, UF2_MAGIC1, UF2_MAGIC_END):
+            raise Refused(f"block {i}: bad UF2 magic")
+        if flags & UF2_FLAG_NOT_MAIN_FLASH:
+            raise Refused(f"block {i}: marked not-main-flash")
+        if not flags & UF2_FLAG_FAMILY or family != RP2040_FAMILY:
+            raise Refused(f"block {i}: family {family:#010x} is not RP2040 ({RP2040_FAMILY:#010x})")
+        if size != 256:
+            raise Refused(f"block {i}: payload {size} bytes, expected 256")
+        if block_no != i or num_blocks != count:
+            raise Refused(f"block {i}: numbered {block_no} of {num_blocks}, expected {i} of {count}")
+        expected = XIP_BASE + 256 * i
+        if addr != expected:
+            what = "starts" if i == 0 else "has a gap or overlap"
+            raise Refused(f"block {i}: address {addr:#010x}, expected {expected:#010x} (image {what})")
+        image += block[32:32 + 256]
+    if XIP_BASE + len(image) > XIP_BASE + MAX_IMAGE:
+        raise Refused(f"image ends at {XIP_BASE + len(image):#010x}, beyond {XIP_BASE + MAX_IMAGE:#010x}")
+    return bytes(image)
+
+
+def build_info(image):
+    """The image's build-info record (update_build_info.h) as a dict, or None if it
+    has none (a build without the updater)."""
+    hits = []
+    at = image.find(BUILD_INFO_MAGIC)
+    while at >= 0:
+        hits.append(at)
+        at = image.find(BUILD_INFO_MAGIC, at + 1)
+    if not hits:
+        for old in (1, 2):
+            if image.find(b"SVBI" + bytes([old])) >= 0:
+                raise Refused(f"the image has a version-{old} build-info record (an updater build from before "
+                              "protocol 2): rebuild it")
+        return None
+    if len(hits) > 1:
+        raise Refused(f"the image has {len(hits)} build-info records (SVBI), expected one")
+    if hits[0] + BUILD_INFO_BYTES > len(image):
+        raise Refused("the build-info record runs past the end of the image")
+    _, ver, flags, reserved0, proto, fw, version, hand, pointing_id, keymap_id, reserved = struct.unpack_from(
+        BUILD_INFO_FMT, image, hits[0])
+    text = version.rstrip(b"\0")
+    if b"\0" in text or not VERSION_RE.match(text.decode("latin-1")):
+        raise Refused(f"the build-info record's version string {version!r} is malformed")
+    return dict(offset=hits[0], flags=flags, reserved0=reserved0, updater_proto=proto, fw_version=fw,
+                version=text.decode("ascii"), hand=hand, pointing_id=pointing_id, keymap_id=keymap_id,
+                reserved=reserved)
+
+
+def build_info_identity_problems(info, m, fields=("hand", "pointing_id", "keymap_id")):
+    """Where the manifest's fields disagree with the image's build-info record (a
+    record from a host-test build, 0xFF, says nothing)."""
+    problems = []
+    for field in fields:
+        if info[field] != BI_HOST_TEST and info[field] != m[field]:
+            problems.append(f"the manifest says {field} {m[field]}, the image was built with {info[field]}")
+    return problems
+
+
+# ---- manifest ---------------------------------------------------------------------------
+
+
+def build_manifest(image, *, hand, pointing_id, keymap_id, flags, epoch, storage_format, fw_version, version):
+    vbytes = version.encode("ascii")
+    if len(vbytes) > 16 or b"\0" in vbytes:
+        raise Refused("--version-string must be at most 16 ASCII characters")
+    return struct.pack(MANIFEST_FMT, MANIFEST_MAGIC, MANIFEST_VERSION, 0, hand, pointing_id, keymap_id, flags, epoch,
+                       storage_format, UPDATER_PROTO, len(image), fw_version, 0, vbytes.ljust(16, b"\0"),
+                       hashlib.sha512(image).digest())
+
+
+def parse_manifest(raw):
+    f = struct.unpack(MANIFEST_FMT, raw[:MANIFEST_BYTES])
+    names = ("magic", "manifest_ver", "reserved0", "hand", "pointing_id", "keymap_id", "flags", "security_epoch",
+             "storage_format", "updater_proto", "image_len", "fw_version", "reserved", "version", "sha512")
+    return dict(zip(names, f))
+
+
+def parse_svup(data):
+    """(manifest bytes, image) from a .svup, checking only its framing."""
+    if len(data) < MANIFEST_BYTES:
+        raise Refused(".svup is too short")
+    manifest, image = data[:MANIFEST_BYTES], data[MANIFEST_BYTES:]
+    m = parse_manifest(manifest)
+    if m["magic"] == MANIFEST_MAGIC and m["manifest_ver"] == 1:
+        raise Refused("a version-1 .svup (protocol 1, never released): rebuild it with this make_update.py")
+    if m["image_len"] != len(image):
+        raise Refused(".svup image length does not match its manifest")
+    return manifest, image
+
+
+def manifest_version(m):
+    return m["version"].rstrip(b"\0").decode("latin-1")
+
+
+def kb_fields(kb):
+    """hand and pointing_id from a keyboard path such as svalboard/trackball/pmw3389/right."""
+    parts = kb.strip("/").split("/")
+    if not parts or parts[0] != "svalboard" or parts[-1] not in HAND:
+        raise Refused(f"--kb {kb!r}: expected svalboard/.../left or svalboard/.../right")
+    middle = parts[1:-1]
+    table = {(): "none", ("trackpoint",): "trackpoint", ("trackball", "pmw3360"): "pmw3360",
+             ("trackball", "pmw3389"): "pmw3389", ("azoteq",): "azoteq"}
+    if tuple(middle) not in table:
+        raise Refused(f"--kb {kb!r}: unknown variant")
+    return HAND[parts[-1]], POINTING[table[tuple(middle)]]
+
+
+def versions_for(info, args):
+    """fw_version and version string for the manifest: the image's build-info record
+    unless given. A given value that contradicts a set record is refused: the
+    firmware reports the record's (INFO, split presence)."""
+    fw, text = args.fw_version, args.version_string
+    if info:
+        if fw is not None and info["fw_version"] and fw != info["fw_version"]:
+            raise Refused(f"--fw-version {fw} but the image reports {info['fw_version']} (SVAL_FW_VERSION)")
+        if text is not None and info["version"] and text != info["version"]:
+            raise Refused(f"--version-string {text!r} but the image reports {info['version']!r} (SVAL_FW_VERSION_STRING)")
+        fw = info["fw_version"] if fw is None else fw
+        text = info["version"] if text is None else text
+    return (0 if fw is None else fw), ("" if text is None else text)
+
+
+def keymap_id_for(info, args):
+    """keymap_id (display only, D18): --keymap-id, else --keymap, else the image's
+    record, else sval."""
+    if args.keymap_id is not None:
+        return args.keymap_id
+    if args.keymap is not None:
+        return KEYMAP.get(args.keymap, 0)
+    if info and info["keymap_id"] != BI_HOST_TEST:
+        return info["keymap_id"]
+    return KEYMAP["sval"]
+
+
+def manifest_from_args(image, args):
+    """The manifest for IN and the options."""
+    if args.kb:
+        hand, pointing_id = kb_fields(args.kb)
+    else:
+        hand, pointing_id = None, None
+    if args.hand is not None:
+        hand = HAND[args.hand]
+    if args.pointing is not None:
+        pointing_id = POINTING[args.pointing]
+    if hand is None or pointing_id is None:
+        raise Refused("give --kb, or both --hand and --pointing")
+
+    flags = (FLAG_RELEASE if args.release else 0) | (FLAG_DIAGNOSTIC if args.diagnostic else 0)
+    if args.release and args.diagnostic:
+        raise Refused("a RELEASE image cannot be DIAGNOSTIC")
+    info = build_info(image)
+    keymap_id = keymap_id_for(info, args)
+    if args.release and keymap_id not in KEYMAP.values():
+        raise Refused(f"RELEASE images are release keymaps only ({', '.join(KEYMAP)})")
+    fw_version, version = versions_for(info, args)
+    if not 0 <= fw_version <= 0xFFFFFFFF or not 0 <= args.epoch <= 0xFFFF or not 0 <= args.storage_format <= 0xFF:
+        raise Refused("--fw-version, --epoch or --storage-format out of range")
+    manifest = build_manifest(image, hand=hand, pointing_id=pointing_id, keymap_id=keymap_id, flags=flags,
+                              epoch=args.epoch, storage_format=args.storage_format, fw_version=fw_version,
+                              version=version)
+    if info:
+        # The right image for the right half: the record says what the image was built for.
+        problems = build_info_identity_problems(info, parse_manifest(manifest), ("hand", "pointing_id"))
+        if problems:
+            raise Refused("; ".join(problems) + " (--kb is not this image's)")
+    return manifest
+
+
+def read_image(args):
+    data = Path(args.input).read_bytes()
+    image = data if args.raw else uf2_to_image(data)
+    if args.raw and (len(image) > MAX_IMAGE):
+        raise Refused(f"image is {len(image):#x} bytes, above {MAX_IMAGE:#x}")
+    return image
+
+
+def check_structure(image, allow_bad):
+    problems = image_problems(image)
+    if problems:
+        if not allow_bad:
+            raise Refused("; ".join(problems))
+        print("warning: building a structurally bad TEST image: " + "; ".join(problems), file=sys.stderr)
+
+
+def describe(out, manifest, image):
+    m = parse_manifest(manifest)
+    return (f"{out}: {len(image)} B image, hand {m['hand']}, pointing {m['pointing_id']}, "
+            f"flags {m['flags']:#x}, version {manifest_version(m)!r} ({m['fw_version']}), "
+            f"manifest sha512 {hashlib.sha512(manifest).hexdigest()[:8]}, image sha512 {m['sha512'].hex()[:16]}")
+
+
+def release_image_problems(manifest, image):
+    """Why a manifest and image are not a release update, or [] (make --release)."""
+    m = parse_manifest(manifest)
+    problems = []
+    if m["magic"] != MANIFEST_MAGIC or m["manifest_ver"] != MANIFEST_VERSION or m["reserved0"] or m["reserved"]:
+        problems.append(f"not a version-{MANIFEST_VERSION} manifest (magic, version or reserved fields)")
+    if m["flags"] != FLAG_RELEASE:
+        problems.append(f"flags {m['flags']:#x}: a release image has RELEASE set and DIAGNOSTIC (and all else) clear")
+    if m["keymap_id"] not in KEYMAP.values():
+        problems.append(f"keymap_id {m['keymap_id']} is not a release keymap ({', '.join(KEYMAP)})")
+    if m["hand"] not in HAND.values() or m["pointing_id"] not in POINTING.values():
+        problems.append(f"hand {m['hand']} or pointing_id {m['pointing_id']} is unknown")
+    if m["updater_proto"] != UPDATER_PROTO or m["storage_format"] < STORAGE_FORMAT:
+        problems.append(f"updater_proto {m['updater_proto']} or storage_format {m['storage_format']} is not this release's")
+    if m["image_len"] != len(image):
+        problems.append(f"image_len {m['image_len']} but the image is {len(image)} B")
+    elif hashlib.sha512(image).digest() != m["sha512"]:
+        problems.append("the image's SHA-512 does not match the manifest")
+    problems += image_problems(image)
+    try:
+        info = build_info(image)
+    except Refused as e:
+        info, problems = None, problems + [str(e)]
+    if info is None:
+        problems.append("the image has no build-info record: not an updater build")
+    else:
+        if not info["flags"] & BI_RELEASE:
+            problems.append("the image is not a release updater build (SVAL_UPDATE_RELEASE)")
+        for bit, what in BI_NOT_IN_RELEASE.items():
+            if info["flags"] & bit:
+                problems.append(f"the image has {what}")
+        if info["flags"] & BI_RESERVED or info["reserved0"] or info["reserved"]:
+            problems.append(f"the build-info record has reserved bits set (flags {info['flags']:#x})")
+        if info["updater_proto"] != UPDATER_PROTO:
+            problems.append(f"the image's updater protocol is {info['updater_proto']}, expected {UPDATER_PROTO}")
+        if info["fw_version"] != m["fw_version"] or info["version"] != manifest_version(m):
+            problems.append(f"the manifest says {manifest_version(m)!r} ({m['fw_version']}), the image reports "
+                            f"{info['version']!r} ({info['fw_version']})")
+        if BI_HOST_TEST in (info["hand"], info["pointing_id"]) or info["keymap_id"] not in KEYMAP.values():
+            problems.append(f"the image's build-info record has hand {info['hand']}, pointing_id {info['pointing_id']}, "
+                            f"keymap_id {info['keymap_id']}: not a release keymap build for one half")
+        problems += build_info_identity_problems(info, m)
+    return problems
+
+
+# ---- make -----------------------------------------------------------------------------
+
+
+def make(args):
+    image = read_image(args)
+    manifest = manifest_from_args(image, args)
+    if args.release and args.unsafe_allow_bad_image:
+        raise Refused("--unsafe-allow-bad-image is for test images, never --release")
+    check_structure(image, args.unsafe_allow_bad_image)
+    if args.release:
+        m = parse_manifest(manifest)
+        problems = release_image_problems(manifest, image)
+        if args.expect_version is not None and manifest_version(m) != args.expect_version:
+            problems.append(f"version {manifest_version(m)!r}, expected {args.expect_version!r}")
+        if args.expect_fw_version is not None and m["fw_version"] != args.expect_fw_version:
+            problems.append(f"fw_version {m['fw_version']}, expected {args.expect_fw_version}")
+        if problems:
+            raise Refused("not a release update: " + "; ".join(problems))
+    elif args.expect_version is not None or args.expect_fw_version is not None:
+        raise Refused("--expect-* go with --release")
+    out = Path(args.output)
+    out.write_bytes(manifest + image)
+    print(describe(out, manifest, image))
+
+
+# ---- verify ----------------------------------------------------------------------------------
+
+
+def verify_svup(args):
+    """A .svup checked as a build of the given kind would before it erases anything."""
+    manifest, image = parse_svup(Path(args.svup).read_bytes())
+    m = parse_manifest(manifest)
+    release_build = args.build == "release"
+    problems = []
+    if m["magic"] != MANIFEST_MAGIC:
+        problems.append("INVALID: bad magic")
+    elif m["manifest_ver"] != MANIFEST_VERSION:
+        problems.append(f"UNSUPPORTED: manifest version {m['manifest_ver']}, this build takes {MANIFEST_VERSION}")
+    elif m["reserved0"] or m["reserved"] or m["flags"] & ~(FLAG_RELEASE | FLAG_DIAGNOSTIC):
+        problems.append("INVALID: a reserved field or flag is set")
+    if release_build and m["flags"] & FLAG_DIAGNOSTIC:
+        problems.append("BAD_IMAGE: a DIAGNOSTIC image on a release build")
+    if hashlib.sha512(image).digest() != m["sha512"]:
+        problems.append("BAD_HASH: the image does not match the manifest's SHA-512")
+    problems += ["BAD_IMAGE: " + p for p in image_problems(image)]
+    info = build_info(image)
+    what = (f"hand {m['hand']}, pointing {m['pointing_id']}, flags {m['flags']:#x}, "
+            f"version {manifest_version(m)!r} ({m['fw_version']}), image {len(image)} B, "
+            f"build info {'none' if info is None else hex(info['flags'])}")
+    if problems:
+        raise Refused(f"{args.svup}: a {args.build} build refuses it ({what}): " + "; ".join(problems))
+    print(f"{args.svup}: a {args.build} build accepts it ({what})")
+
+
+# ---- command line ---------------------------------------------------------------------------
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        if argv and argv[0] == "verify":
+            ap = argparse.ArgumentParser(prog="make_update.py verify", description=verify_svup.__doc__, allow_abbrev=False)
+            ap.add_argument("svup")
+            ap.add_argument("--build", choices=("release", "plain"), default="release",
+                            help="release: SVAL_UPDATE_RELEASE (no DIAGNOSTIC images); plain: SVAL_UPDATER alone")
+            verify_svup(ap.parse_args(argv[1:]))
+            return 0
+        ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], allow_abbrev=False)
+        ap.add_argument("input", help="QMK .uf2 (or raw .bin with --raw)")
+        ap.add_argument("-o", "--output", required=True, help="output .svup")
+        ap.add_argument("--raw", action="store_true", help="input is a raw image starting at 0x10000000")
+        ap.add_argument("--kb", help="keyboard path, e.g. svalboard/trackball/pmw3389/right (sets hand and pointing)")
+        ap.add_argument("--hand", choices=sorted(HAND))
+        ap.add_argument("--pointing", choices=sorted(POINTING))
+        ap.add_argument("--keymap", help="keymap name, display only (default: the image's record, else sval)")
+        ap.add_argument("--keymap-id", type=int)
+        ap.add_argument("--version-string", help="display version, at most 16 ASCII characters "
+                        "(default: the image's SVAL_FW_VERSION_STRING)")
+        ap.add_argument("--fw-version", type=lambda s: int(s, 0), help="numeric version, u32 (default: the image's SVAL_FW_VERSION)")
+        ap.add_argument("--epoch", type=lambda s: int(s, 0), default=0, help="security epoch (u16)")
+        ap.add_argument("--storage-format", type=int, default=STORAGE_FORMAT)
+        ap.add_argument("--release", action="store_true", help="set flags.RELEASE and run the release checks")
+        ap.add_argument("--diagnostic", action="store_true", help="set flags.DIAGNOSTIC (scanlab/keytest/host-bootloader images)")
+        ap.add_argument("--expect-version", help="--release: refuse unless the version string is this (the tag)")
+        ap.add_argument("--expect-fw-version", type=int, help="--release: refuse unless fw_version is this")
+        ap.add_argument("--unsafe-allow-bad-image", action="store_true",
+                        help="build an image that fails the structure checks (for rejection tests)")
+        make(ap.parse_args(argv))
+    except Refused as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
