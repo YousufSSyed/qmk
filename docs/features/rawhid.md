@@ -51,7 +51,7 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
 ```
 
 ::: warning
-Because the HID specification does not support variable length reports, all reports in both directions must be exactly `RAW_EPSIZE` (currently 32) bytes long, regardless of actual payload length. However, variable length payloads can potentially be implemented on top of this by creating your own data structure that may span multiple reports.
+Because the HID specification does not support variable length reports, all reports in both directions must be exactly `RAW_EPSIZE` (32 by default; a keyboard may set it up to 64 in its `config.h`) bytes long, regardless of actual payload length. However, variable length payloads can potentially be implemented on top of this by creating your own data structure that may span multiple reports.
 :::
 
 ## Receiving Data from the Keyboard {#receiving-data-from-the-keyboard}
