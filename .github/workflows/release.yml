@@ -2,21 +2,69 @@ name: Release QMK Firmware
 
 # Builds and publishes firmware only when a v* tag is pushed. Branch pushes and
 # PRs do not build, so each release uses the runners once.
+#
+# Every release keymap is built as a release updater build (SVAL_UPDATER=yes
+# SVAL_UPDATE_RELEASE=yes; docs/updater.md, "Releases"), so the published .uf2
+# files carry the in-firmware updater, and each comes with a .svup for it:
+#
+#   version  the tag and keyboards/svalboard/updater/fw_version.txt (D32):
+#            the number must go up; dry-run tags (vLaunch3-dryrun1) are
+#            prereleases and use up no number
+#   build    12 release updater builds (pinned image and toolchain); each
+#            checks its RAM commit code and uploads its .uf2, its .svup
+#            (make_update.py --release) and its ELF. No build job can write
+#            to the repository
+#   lint     the tag still names this run's commit; each .svup holds its ELF's
+#            flash contents and its .uf2's image, with a manifest and
+#            build-info record that match the build; the release ELFs have no
+#            test hooks, keytest or host bootloader; the split message table
+#            of every left/right pairing matches the committed golden table
+#            (P1)
+#   publish  the release, with the 12 .uf2 and 12 .svup files (a prerelease
+#            for a dry run)
+#
+# Every job checks out the run's commit (github.sha), never the tag by name.
 on:
   push:
     tags:
       - 'v*'
 
-
-permissions: write-all
+permissions:
+  contents: read
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      fw_version: ${{ steps.check.outputs.fw_version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # the previous release's tag
+        persist-credentials: false
+
+    - name: Check the version (D32)
+      id: check
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python3 -I keyboards/svalboard/tools/release_version.py "$GITHUB_REF_NAME" \
+          --repo "$GITHUB_REPOSITORY" --github-output "$GITHUB_OUTPUT"
+
   build_sval:
+    needs: version
+    permissions:
+      contents: read
     uses: ./.github/workflows/build-firmware.yml
     with:
       keyboard: ${{ matrix.keyboard }}
       keymap: ${{ matrix.keymap }}
       side: ${{ matrix.side }}
+      updater: true
+      version_string: ${{ needs.version.outputs.version }}
+      fw_version: ${{ needs.version.outputs.fw_version }}
 
     strategy:
       matrix:
@@ -25,14 +73,86 @@ jobs:
         side: [ left, right ]
 
   build_blank:
+    needs: version
+    permissions:
+      contents: read
     uses: ./.github/workflows/build-firmware.yml
     with:
       keyboard: ${{ matrix.keyboard }}
       keymap: ${{ matrix.keymap }}
       side: ${{ matrix.side }}
+      updater: true
+      version_string: ${{ needs.version.outputs.version }}
+      fw_version: ${{ needs.version.outputs.fw_version }}
 
     strategy:
       matrix:
         keyboard: [ svalboard ]
         keymap: [ blank ]
         side: [ left, right ]
+
+  lint:
+    needs: [ version, build_sval, build_blank ]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: The tag still names this run's commit
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash keyboards/svalboard/tools/check_tag_commit.sh
+
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: release-*
+        path: release
+        merge-multiple: true
+
+    - name: Each .svup holds its ELF's and its .uf2's image; manifests match the builds
+      env:
+        VERSION: ${{ needs.version.outputs.version }}
+      run: |
+        ls -l release
+        python3 -I keyboards/svalboard/tools/check_release_artifacts.py release --version "$VERSION"
+
+    - name: Lint the release updater ELFs
+      run: |
+        test "$(find release -name "*.elf" | wc -l)" -eq 12
+        python3 -I keyboards/svalboard/tools/check_release_elf.py release/*.elf
+
+    - name: Split message table of every pairing, and the golden table (P1)
+      run: |
+        python3 -I keyboards/svalboard/tools/check_split_tables.py --dir release \
+          --golden keyboards/svalboard/tools/split_table_golden.json
+
+  publish:
+    needs: [ version, lint ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: release-*
+        path: release
+        merge-multiple: true
+
+    - name: Release with the .uf2 and .svup files
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+        PRE: ${{ needs.version.outputs.prerelease }}
+      run: |
+        R="$GITHUB_REPOSITORY"
+        test "$(find release -name "*.uf2" | wc -l)" -eq 12
+        test "$(find release -name "*.svup" | wc -l)" -eq 12
+        args=(--verify-tag --title "$TAG" --notes "")
+        if [ "$PRE" = true ]; then args+=(--prerelease); fi
+        if gh release view "$TAG" -R "$R" >/dev/null 2>&1; then
+          echo "::error::$TAG already has a release: delete it, then re-run all jobs"
+          exit 1
+        fi
+        gh release create "$TAG" -R "$R" "${args[@]}" release/*.uf2 release/*.svup
+        gh release view "$TAG" -R "$R" --json isDraft,isPrerelease,assets -q '{isDraft, isPrerelease, assets: (.assets | length)}'

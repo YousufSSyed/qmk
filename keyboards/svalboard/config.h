@@ -60,6 +60,69 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 #define WEAR_LEVELING_COPIES 2
 
+// In-firmware updater (updater/, built with SVAL_UPDATER=yes). Offsets from the
+// start of the flash die. The staging slot sits in the free space between the
+// settings (ending 0x260000) and the identity sectors (0xFFE000), and an image
+// is at most the firmware area; updater/update_flash.c asserts both.
+#define SVAL_UPDATE_BASE 0x800000
+#define SVAL_UPDATE_SIZE 0x160000
+#define SVAL_UPDATE_MAX_IMAGE 0x160000
+// Downgrade floors (D19): an image whose manifest is below either is refused.
+// Raise SVAL_UPDATE_SECURITY_EPOCH in a release that fixes a security problem,
+// and SVAL_UPDATE_STORAGE_FORMAT when stored settings change incompatibly.
+#ifndef SVAL_UPDATE_SECURITY_EPOCH
+#    define SVAL_UPDATE_SECURITY_EPOCH 0
+#endif
+#define SVAL_UPDATE_STORAGE_FORMAT 2
+// Confirmation chord (D4): Index South + Middle South, held, on the half with
+// USB. Local matrix rows (each half scans five): right [6,0]+[7,0], left
+// [1,0]+[2,0], which is local rows 1 and 2, column 0 on either side.
+#define SVAL_UPDATE_CHORD_ROW_A 1
+#define SVAL_UPDATE_CHORD_ROW_B 2
+#define SVAL_UPDATE_CHORD_COL 0
+#define SVAL_UPDATE_CHORD_HOLD_MS 1000
+// While the chord is awaited, rows are scanned with at least these waits, Scan
+// Lab's safe reference timing (scanlab.h; kb/matrix.c asserts it): the saved
+// timings and Scan Lab sweeps are set by the host, and a short pre-wait can
+// misread keys.
+#define SVAL_UPDATE_CHORD_PREWAIT_US 500
+#define SVAL_UPDATE_CHORD_POSTWAIT_US 500
+#define SVAL_UPDATE_CONFIRM_WINDOW_MS 30000 // from ARM; NOT_CONFIRMED after it
+#define SVAL_UPDATE_SESSION_TIMEOUT_MS 30000 // no op from the session for this long: TIMEOUT
+#define SVAL_UPDATE_LED_VAL 96               // LED brightness while the updater shows its states (D24)
+// M2, the relay to the other half (updater/update_split.c). The half without
+// USB drops a session after this long with no KEYBOARD_UPDATE traffic.
+#define SVAL_UPDATE_SPLIT_SLAVE_TIMEOUT_MS 5000
+// It erases a sector (interrupts off for about 50 ms) only after a request
+// from the master since the last one, and this long after it: the master
+// gets an answer between every two sectors.
+#define SVAL_UPDATE_SPLIT_ERASE_GAP_MS 5
+// The half with USB: relay work per main-loop pass while the link runs (its
+// own keys keep scanning between passes), how long it retries a request with
+// no valid answer before the relay fails, how often it polls the other half
+// while that half erases or verifies, and how often it pings a verified other
+// half (so its timeout does not fire while the host decides to commit).
+#define SVAL_UPDATE_RELAY_PASS_MS 4
+#define SVAL_UPDATE_RELAY_LINK_TIMEOUT_MS 2000
+#define SVAL_UPDATE_RELAY_POLL_MS 20
+#define SVAL_UPDATE_RELAY_KEEPALIVE_MS 1000
+// After the other half accepts COMMIT, the link stays paused for its commit
+// (M1 #13: about 1-2 s from COMMIT to the reset) plus 2.5 s for its reboot
+// (R18: the 500 ms double-tap window and the 2 s USB detect).
+#define SVAL_UPDATE_SPLIT_COMMIT_MS 2000
+#define SVAL_UPDATE_SPLIT_REBOOT_MS 2500
+// A probe after the hold that finds the other half still COMMITTING probes
+// again this much later (still paused).
+#define SVAL_UPDATE_RELAY_PROBE_MS 500
+#if defined(SVAL_UPDATER) && defined(SVAL_KEYTEST)
+#    error "SVAL_UPDATER and SVAL_KEYTEST cannot be combined: keytest injects key events (R11)"
+#endif
+// Updater builds drive rgblight through a custom driver (updater/update_led.c),
+// so drivers/led/ws2812.h no longer derives the WS2812 LED count from rgblight.
+#if defined(SVAL_UPDATER) && !defined(WS2812_LED_COUNT)
+#    define WS2812_LED_COUNT RGBLIGHT_LED_COUNT
+#endif
+
 // Identity (identity.c): the USB serial is "sval:" + the board's stored 8-byte
 // serial as 16 hex digits, and the product string is the user's name when set.
 // Every keymap uses it, so drop the module's fixed SERIAL_NUMBER literal.
@@ -205,7 +268,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define RGBLIGHT_VAL_STEP 10
 #define RGBLIGHT_LED_COUNT 2
 
-#define SPLIT_TRANSACTION_IDS_KB KEYBOARD_SYNC_A, KEYBOARD_SYNC_B
+#ifdef SVAL_UPDATER
+// KEYBOARD_UPDATE: the updater's split relay (updater/update_split_wire.h).
+// Appended, so the IDs before it keep their numbers; but the transaction
+// count changes, and both halves fold it into every split handshake, so an
+// SVAL_UPDATER half and a half without it cannot talk at all (P1:
+// keyboards/svalboard/tools/check_split_tables.py).
+#    define SPLIT_TRANSACTION_IDS_KB KEYBOARD_SYNC_A, KEYBOARD_SYNC_B, KEYBOARD_UPDATE
+#else
+#    define SPLIT_TRANSACTION_IDS_KB KEYBOARD_SYNC_A, KEYBOARD_SYNC_B
+#endif
 
 #define PERMISSIVE_HOLD
 
