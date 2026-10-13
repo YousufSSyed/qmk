@@ -16,6 +16,14 @@
 #include "pointing_motion.h" // after sval.h: needs the generated fragment ids
 #include "identity.h"
 #include "nvm_via.h"
+#ifdef SVAL_UPDATER
+#    include "updater/updater.h"
+#    include "updater/update_split.h"
+#    include "split_pause.h"
+#    include "split_common/transport.h"
+_Static_assert(sizeof(((presence_rsp_t *)0)->update) == UPDATE_PRESENCE_BYTES, "presence reply: update_presence_t");
+_Static_assert(sizeof(presence_rsp_t) <= RPC_S2M_BUFFER_SIZE, "presence reply fits the split RPC buffer");
+#endif
 
 // USB remote wakeup status bit (from USB spec, not exported by QMK headers)
 #ifndef USB_GETSTATUS_REMOTE_WAKEUP_ENABLED
@@ -494,6 +502,10 @@ void kb_sync_listener(uint8_t in_buflen, const void* in_data, uint8_t out_buflen
         out->magic[0]       = SVAL_PRESENCE_RSP_MAGIC0;
         out->magic[1]       = SVAL_PRESENCE_RSP_MAGIC1;
         sval_local_pointer_identity(&out->pointer);
+#ifdef SVAL_UPDATER
+        // And this build's version, for the master's mismatch check (D17, V).
+        update_split_presence_fill(out->update, sizeof(out->update));
+#endif
     }
 }
 
@@ -513,6 +525,9 @@ void keyboard_post_init_kb(void) {
     set_dpi_from_eeprom();
     keyboard_post_init_user();
     scanlab_init();
+#ifdef SVAL_UPDATER
+    update_split_init(); // before kb_sync_listener can answer a presence ping
+#endif
     transaction_register_rpc(KEYBOARD_SYNC_A, kb_sync_listener);
     transaction_register_rpc(KEYBOARD_SYNC_B, scanlab_rpc_listener);
     if (is_keyboard_master()) {
@@ -644,12 +659,30 @@ void housekeeping_task_kb(void) {
 #ifdef SVAL_KEYTEST
     keytest_task();
 #endif
+#ifdef SVAL_UPDATER
+    // The updater owns the LEDs and the flash while active: no idle dimming,
+    // and no identity reboot. On the half without USB, the session the other
+    // half runs over KEYBOARD_UPDATE does its slow work here first (M2).
+    if (!is_keyboard_master()) update_split_slave_task();
+    updater_task();
+    if (!updater_active()) identity_task();
+#else
     identity_task();
+#endif
 
     if (is_keyboard_master()) {
+#ifdef SVAL_UPDATER
+        if (!updater_active())
+#endif
         sval_rgb_idle_task();
         static uint32_t last_ping = 0;
+#ifdef SVAL_UPDATER
+        // No presence ping while the split link is paused (D15); the first
+        // pass after the resume pings.
+        if (timer_elapsed(last_ping) > 500 && !sval_split_paused()) {
+#else
         if (timer_elapsed(last_ping) > 500) {
+#endif
             presence_rpc_t rpcout = {global_saved_values.turbo_scan, global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us,
                                      global_saved_values.scan_period_us, global_saved_values.scan_idle_period_ms, global_saved_values.scan_idle_after_ms,
                                      global_saved_values.scan_deep_after_s, global_saved_values.scan_deep_period_ms, global_saved_values.idle_flags,
@@ -661,11 +694,24 @@ void housekeeping_task_kb(void) {
                 } else {
                     memset(&other_pointer, 0, sizeof(other_pointer));
                 }
+#ifdef SVAL_UPDATER
+                // The other half's update_presence_t, after the pointer block.
+                update_split_presence_result(true, rpcin.update, sizeof(rpcin.update));
+#endif
                 if (!is_connected) {
                     is_connected = true;
+#ifdef SVAL_UPDATER
+                    // D21: no settings write while an update runs (the other
+                    // half reconnects after its commit, while this one may be
+                    // staging its own update).
+                    if (!updater_active())
+#endif
                     sval_on_reconnect();
                 }
             } else {
+#ifdef SVAL_UPDATER
+                update_split_presence_result(false, NULL, 0);
+#endif
                 is_connected = false;
             }
             last_ping = timer_read32();
@@ -772,6 +818,12 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
         identity_via_command(data, length);
         return;
     }
+#ifdef SVAL_UPDATER
+    if (data[1] == UPDATE_CHANNEL) {
+        updater_via_command(data, length);
+        return;
+    }
+#endif
     uint8_t command = data[0];
     uint8_t *value_id = &data[2];
     uint8_t *value_data = &data[3];

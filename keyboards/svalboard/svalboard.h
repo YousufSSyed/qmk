@@ -114,6 +114,9 @@ void sval_pointing_modes(sval_pointing_modes_t *m);
 typedef struct __attribute__((__packed__)) {
     uint8_t                 magic[2];
     sval_pointer_identity_t pointer;
+#ifdef SVAL_UPDATER
+    uint8_t update[17]; // the updater's update_presence_t (D17), appended
+#endif
 } presence_rsp_t;
 
 #define SVAL_TURBO_CHOICES 7
