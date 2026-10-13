@@ -120,7 +120,7 @@ The Python `Device` methods can also be imported for custom assertions. `events(
 
 ## Diagnostic protocol v1
 
-Channel `0x54`. INFO uses read-only VIA custom-get `0x08`; all other operations use custom-set `0x07`. The runner requires a successful INFO probe before sending a diagnostic write, so probing older firmware cannot change its settings. Write request: `[07 54 op args...]`, padded to 32 bytes. Reply: `[07 54 op status result...]`. Multi-byte diagnostic fields are little-endian; ordinary VIA keycodes retain their existing big-endian format. All diagnostic reads and writes fit the 26 usable bytes of wrapped VIA. Invalid/short packets never consume its stale tail.
+Channel `0x54`. INFO uses read-only VIA custom-get `0x08`; all other operations use custom-set `0x07`. The runner requires a successful INFO probe before sending a diagnostic write, so probing older firmware cannot change its settings. Write request: `[07 54 op args...]`, padded to the 64-byte report. Reply: `[07 54 op status result...]`. Multi-byte diagnostic fields are little-endian; ordinary VIA keycodes retain their existing big-endian format. All diagnostic reads and writes fit 26 bytes, which wrapped VIA had in 32-byte reports (it has 58 in 64-byte ones). Invalid/short packets never consume its stale tail.
 
 Statuses: 0 OK, 1 invalid request/transition, 2 inactive, 3 busy, 4 queue full, 5 missing record, 6 aborted.
 

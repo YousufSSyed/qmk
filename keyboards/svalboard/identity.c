@@ -255,8 +255,9 @@ const char *usb_product_string(void) {
 //                    [7] serial source, [8..15] serial
 // get op 1 NAME   req [3] offset -> [3] status 0, [4] count, [5..] bytes
 // set op 1 STAGE  req [3] offset, [4] count, [5..] bytes  -> [3] status
-// A name chunk is at most 27 bytes in a bare report and 21 when the host sends
-// VIA inside the client wrapper, which costs 6 bytes of the reply.
+// A name chunk is at most the report less 5 bytes: 59 in a bare 64-byte report
+// and 53 when the host sends VIA inside the client wrapper, which costs 6 bytes
+// of the reply (27 and 21 with 32-byte reports).
 // set op 2 COMMIT req [3] total length -> [3] identity_status_t
 // set op 3 REBOOT -> [3] 0; reboots ~100 ms later so the new name enumerates
 // Status 0 = OK, 1 = bad request / invalid, 2 = unavailable, 3 = write failed.

@@ -40,6 +40,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // saved_values_t (~54 bytes) + 3 bytes magic = ~60 bytes, round to 100
 #define VIA_EEPROM_CUSTOM_CONFIG_SIZE 100
 
+// The raw HID interface (VIA, the Sval protocol and the client wrapper) uses
+// 64-byte reports, the full-speed interrupt maximum, both ways. Hosts size their
+// reports from the HID descriptor; the updater derives its packet layout from
+// this (updater/updater.c).
+#define RAW_EPSIZE 64
+
 
 #define FLASH_LEN (16 * 1024 * 1024)
 // Settings: QMK wear leveling, 128 KB logical on two mirrored 512 KB copies,

@@ -99,13 +99,15 @@ Bootstrap is indicated by `client_id = 0x00000000`, not a protocol byte.
 
 ## Frame Size
 
-- Total HID frame: 32 bytes
+- Total HID frame: one raw HID report, `RAW_EPSIZE` bytes: 64 on Svalboard (32 is
+  QMK's default). Hosts take it from the HID descriptor.
 - Wrapper overhead: 6 bytes (`[0xDD] [client_id:4] [protocol:1]`)
-- Available for inner protocol: 26 bytes
+- Available for inner protocol: the frame less 6: 58 bytes (26 in a 32-byte frame)
 
-For buffer/chunk operations, subtract command overhead from 26 bytes:
-- Sval definition_chunk: `[0x0E] [offset:2] [size:1]` = 4 bytes → 22 bytes for data
-- VIA keymap buffer: `[cmd] [offset:2] [size:1]` = 4 bytes → 22 bytes for data
+For buffer/chunk operations, subtract command overhead from what is available:
+- Sval definition_chunk: `[0x0E] [offset:2] [size:1]` = 4 bytes; the firmware returns at most 22
+  bytes of data per chunk (`SVAL_DEFINITION_CHUNK_SIZE`) whatever the frame
+- VIA keymap buffer: `[cmd] [offset:2] [size:1]` = 4 bytes → 54 bytes for data (22 in a 32-byte frame)
 
 ---
 

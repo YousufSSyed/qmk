@@ -114,16 +114,18 @@ Error codes:
 
 **Don't ask, just do:** Don't pre-check if your ID is valid. Send the request. If you get "invalid ID" error, re-bootstrap and retry.
 
-**Payload size:** The wrapper uses 6 bytes of the 32-byte HID frame:
+**Payload size:** The wrapper uses 6 bytes of the HID frame (one raw HID report: 64 bytes on
+Svalboard, 32 by QMK's default; take the size from the HID descriptor):
 - `[0xDD]` - 1 byte
 - `[client_id]` - 4 bytes
 - `[protocol]` - 1 byte
 
-This leaves 26 bytes for your inner protocol. For buffer operations, subtract command overhead:
+This leaves 58 bytes for your inner protocol in a 64-byte frame (26 in a 32-byte one). For
+buffer operations, subtract command overhead:
 - Command structure typically uses 4 bytes (cmd + offset + size)
-- Leaving 22 bytes for actual data
-- Without wrapper: firmware allows 28-byte chunks
-- With wrapper: request 22-byte chunks
+- Leaving 54 bytes for actual data (22 in a 32-byte frame)
+- Without wrapper: firmware allows 60-byte chunks (28)
+- With wrapper: request 54-byte chunks (22)
 
 **VIA backward compatibility:** Legacy VIA commands (`[0xFE]...` without wrapper) still work for compatibility with existing apps. However, they won't benefit from client ID isolation.
 

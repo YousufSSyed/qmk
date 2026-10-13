@@ -4,7 +4,7 @@ This additive extension keeps Sval protocol version **3**, the command registry,
 
 ## Wire contract
 
-All requests use the existing mandatory client wrapper and a 32-byte HID report (hidapi writes prepend report ID zero). No new command or setter is introduced.
+All requests use the existing mandatory client wrapper and one HID report, 64 bytes on Svalboard (hidapi writes prepend report ID zero). No new command or setter is introduced.
 
 - `GET_INFO`: `DD <client:u32 LE> DF 00 ...`. The existing feature byte at full-report offset **19** includes `0x40` when the appended default mask is supported. The version at offset 7 remains 3; UID at offset 11 is unchanged.
 - `LAYER_STATE_GET`: `DD <client:u32 LE> DF 16 ...`, no arguments.

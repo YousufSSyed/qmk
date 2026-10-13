@@ -12,6 +12,8 @@ import secrets
 import time
 
 CHANNEL = 0x54
+REPORT = 64  # raw HID report bytes each way (RAW_EPSIZE, keyboards/svalboard/config.h)
+WRAPPED_SVAL_MAX = REPORT - 5  # a Sval packet after the client wrapper's [0xDD][client_id:4]
 INFO, BEGIN, ENQUEUE, RUN, READ, CLEAR, ABORT, REBOOT, STATE, SELECT_LAYER, ACK = range(11)
 ERRORS = {1: "invalid request/transition", 2: "capture inactive", 3: "busy/physical key held", 4: "event queue full", 5: "capture record missing", 6: "session aborted"}
 
@@ -44,13 +46,13 @@ class Device:
             self.handle = None
 
     def _exchange(self, request):
-        if not 1 <= len(request) <= 32:
-            raise ValueError("Raw HID request must contain 1..32 bytes")
-        packet = bytes(request).ljust(32, b"\0")
-        if self.handle.write(b"\0" + packet) != 33:
-            raise RuntimeError("Incomplete HID write")
-        reply = bytes(self.handle.read(32, 2000))
-        if len(reply) != 32:
+        if not 1 <= len(request) <= REPORT:
+            raise ValueError(f"Raw HID request must contain 1..{REPORT} bytes")
+        packet = bytes(request).ljust(REPORT, b"\0")
+        if self.handle.write(b"\0" + packet) != REPORT + 1:
+            raise RuntimeError(f"Incomplete HID write (firmware with {REPORT}-byte raw HID reports needed)")
+        reply = bytes(self.handle.read(REPORT, 2000))
+        if len(reply) != REPORT:
             raise RuntimeError("Missing/short HID reply")
         if reply[0] != packet[0]:
             raise RuntimeError(f"Unexpected/unsupported reply: {reply.hex()}")
@@ -58,8 +60,8 @@ class Device:
 
     def exchange(self, request):
         if request and request[0] == 0xDF:
-            if len(request) > 27:
-                raise ValueError("Wrapped Sval payload must fit 27 bytes")
+            if len(request) > WRAPPED_SVAL_MAX:
+                raise ValueError(f"Wrapped Sval payload must fit {WRAPPED_SVAL_MAX} bytes")
             nonce = secrets.token_bytes(20)
             boot = self._exchange(b"\xDD" + bytes(4) + nonce)
             if boot[1:5] != bytes(4) or boot[5:25] != nonce or boot[25:29] in (bytes(4), b"\xFF" * 4):

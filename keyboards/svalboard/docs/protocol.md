@@ -12,7 +12,7 @@ Host apps can read and control layer state.
 
 ## Sharing the keyboard between apps
 
-Every message is a 32-byte report:
+Every message is one 64-byte report (it was 32 bytes before this release; apps take the size from the HID descriptor):
 
 | `0xDD` | client ID (4 bytes) | `0xDF` Sval or `0xFE` VIA | payload |
 | --- | --- | --- | --- |

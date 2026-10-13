@@ -118,7 +118,8 @@ enum sval_modifier_status {
     sval_status_caps_lock = (1 << 1), // the host's Caps Lock LED is on
 };
 
-// Keyboard definition chunk size (fits in 32-byte HID packet with header)
+// Keyboard definition chunk size (fits a wrapped 32-byte report with its header,
+// so a host written for those keeps working; 64-byte reports have room to spare)
 #define SVAL_DEFINITION_CHUNK_SIZE 22
 
 // Entry counts - set by sval_config.h from sval.json
