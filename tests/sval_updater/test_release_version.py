@@ -75,8 +75,31 @@ def main():
     # the newest published non-prerelease counts, not a prerelease or draft, and not this tag itself
     rc, _, o = run(out, "vLaunch3", history + [("vLaunch3", False, False, "2026-12-01T00:00:00Z")], {"vLaunch2": fw - 1, "vLaunch3": fw})
     check(rc == 0 and o.get("previous") == "vLaunch2", f"this tag's own release is skipped: {o}")
-    rc, _, o = run(out, "vLaunch3", history, {"vRC2": fw + 9, "vLaunch2": fw - 1})
-    check(rc == 0, "a prerelease's number is not compared")
+    rc, _, o = run(out, "vLaunch3", history + [("vLaunch3-dryrun1", False, True, "2026-11-01T00:00:00Z")],
+                   {"vLaunch3-dryrun1": fw + 9, "vLaunch2": fw - 1})
+    check(rc == 0 and o.get("previous") == "vLaunch2", f"a dry run's number is not compared: {o}")
+    rc, _, o = run(out, "vLaunch3", history, {"vDraft": fw + 9, "vLaunch2": fw - 1})
+    check(rc == 0, "a draft's number is not compared")
+    rc, text, _ = run(out, "vLaunch3", history, {"vRC2": fw, "vLaunch2": fw - 1})
+    check(rc == 1 and "vRC2" in text, f"another prerelease's number is compared: {text}")
+
+    # bleeding edge: vNext tags are prereleases whose numbers count
+    nxt = history + [("vNext1", False, True, "2026-10-20T00:00:00Z")]
+    rc, text, o = run(out, "vNext1", history, {"vLaunch2": fw - 1})
+    check(rc == 0 and o.get("prerelease") == "true" and o.get("previous") == "vLaunch2", f"vNext1 is a prerelease: {rc} {o} {text}")
+    rc, text, o = run(out, "vNext2", nxt, {"vLaunch2": fw - 2, "vNext1": fw - 1})
+    check(rc == 0 and o.get("prerelease") == "true" and o.get("previous") == "vNext1", f"vNext2 follows vNext1: {o} {text}")
+    rc, text, _ = run(out, "vNext2", nxt, {"vLaunch2": fw - 2, "vNext1": fw})
+    check(rc == 1 and "not greater" in text, f"vNext2 must raise the number: {text}")
+    rc, text, _ = run(out, "vLaunch3", nxt, {"vLaunch2": fw - 1, "vNext1": fw})
+    check(rc == 1 and "vNext1" in text, f"a stable release must come after the vNext before it: {text}")
+    rc, _, o = run(out, "vLaunch3", nxt, {"vLaunch2": fw - 2, "vNext1": fw - 1})
+    check(rc == 0 and o.get("prerelease") == "false" and o.get("previous") == "vNext1", f"stable after vNext: {o}")
+    rc, _, o = run(out, "vNext2-dryrun1", nxt, {})
+    check(rc == 0 and o.get("prerelease") == "true", f"a vNext dry run: {o}")
+    for tag in ("vNext", "vnext1", "vNext1a", "vNextLaunch"):
+        rc, text, o = run(out, tag, history, {})
+        check(rc == 1 and "bleeding-edge tags" in text and not o, f"near-miss tag {tag!r} refused: {text}")
     rc, _, o = run(out, "vLaunch3-dryrun1", [], {})
     check(rc == 0 and o.get("previous") == "", "no previous release")
 

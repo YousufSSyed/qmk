@@ -604,12 +604,18 @@ committed in `kb/updater/fw_version.txt` and the version string is the tag
 name. Raise the number in the commit you tag. Release CI's first job
 (`kb/tools/release_version.py`) fails unless the tag is a valid version string
 (at most 16 of `A-Z a-z 0-9 . _ + -`) and the committed number is greater
-than the one committed at the previous published release: the newest release
-on the repository that is neither a draft nor a prerelease and is not this
-tag (a release from before the file existed counts as 0). Prereleases are not
-compared, so dry runs never use up a number. A tag whose name contains
-`dryrun` or `dry-run` (any case), such as `vLaunch3-dryrun1`, is a dry run:
-its release is always a prerelease.
+than the highest one committed at any published release that is not a draft,
+a dry run or this tag (a release from before the file existed counts as 0).
+Dry runs are not compared, so they never use up a number. A tag whose name
+contains `dryrun` or `dry-run` (any case), such as `vLaunch3-dryrun1`, is a
+dry run: its release is always a prerelease.
+
+**Bleeding edge (D36).** A `vNext` tag with a number, such as `vNext1`, is a
+bleeding-edge release, for use with next.keybard.svalboard.com. It is
+published as a prerelease, so it never becomes the latest release, but its
+number counts: each `vNext` raises it, and the next stable release must be
+higher than every `vNext` before it. Any other tag starting with `vNext` (any
+case) is refused.
 
 **The jobs** (`.github/workflows/release.yml`, on `v*` tags):
 
@@ -618,7 +624,7 @@ its release is always a prerelease.
 | version | The check above. Outputs the version, the number and whether the release is a prerelease |
 | build | The 2 release builds as **release updater builds** (`SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes SVAL_FW_VERSION_STRING=<tag>`), through `build-firmware.yml` with `updater: true`, in the pinned image with the pinned toolchain (below). Each runs `check_ram_funcs.py`, then `make_update.py --release --expect-version <tag> --expect-fw-version <N>`, which writes the `.svup` next to the `.uf2`. It uploads the `.uf2`, the `.svup` and the ELF. No build job can write to the repository (`contents: read`, no Git credentials kept) |
 | lint | `check_tag_commit.sh`: the tag still names the run's commit. `check_release_artifacts.py`: exactly the 2 builds' files; each `.svup`'s image is its ELF's flash contents (as `objcopy -O binary` writes them) and its `.uf2`'s image; each manifest's hash, version, side, pointing device and keymap, and each image's build-info record, match the build's name, and the release checks pass. `check_release_elf.py` on the 2 ELFs: an updater build whose build-info record says RELEASE and nothing else, the auto pointing build and the `sval` keymap, with no test-hook, keytest or host-bootloader symbols. `check_split_tables.py --golden`: the left/right pairing has the same split message table, and each build's table equals `kb/tools/split_table_golden.json` |
-| publish | Creates the release for the tag directly (not a draft; a prerelease for a dry run) with the 2 `.uf2` and 2 `.svup` files. Refuses if the tag already has a release |
+| publish | Creates the release for the tag directly (not a draft; a prerelease for a dry run or a `vNext` tag) with the 2 `.uf2` and 2 `.svup` files. Refuses if the tag already has a release |
 
 Every job checks out the run's commit (`github.sha`), never the tag by name,
 and `check_tag_commit.sh` stops the run from publishing under a tag that now

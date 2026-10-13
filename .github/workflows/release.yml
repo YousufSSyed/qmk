@@ -12,7 +12,8 @@ name: Release QMK Firmware
 #
 #   version  the tag and keyboards/svalboard/updater/fw_version.txt (D32):
 #            the number must go up; dry-run tags (vLaunch3-dryrun1) are
-#            prereleases and use up no number
+#            prereleases and use up no number; bleeding-edge tags (vNext1,
+#            D36) are prereleases whose numbers count
 #   build    2 release updater builds (pinned image and toolchain); each
 #            checks its RAM commit code and uploads its .uf2, its .svup
 #            (make_update.py --release) and its ELF. No build job can write
@@ -24,7 +25,7 @@ name: Release QMK Firmware
 #            of the left/right pairing matches the committed golden table
 #            (P1)
 #   publish  the release, with the 2 .uf2 and 2 .svup files (a prerelease
-#            for a dry run)
+#            for a dry run or a vNext tag)
 #
 # Every job checks out the run's commit (github.sha), never the tag by name.
 on:
