@@ -1,6 +1,8 @@
-// One firmware for every pointing module. Nothing runs until svalboard.c's boot probe
-// (pointing_detect.h, ~1.5 s after boot) says what's attached; then that module's
-// driver starts and handles everything. Changing modules takes a reset.
+// One firmware for every pointing module. The trackpad is looked for at boot with its own
+// driver over the I2C hardware, as the trackpad-only build does; the bit-banged I2C probe
+// missed it. Otherwise nothing runs until svalboard.c's boot probe (pointing_detect.h,
+// ~1.5 s after boot) says what's attached on the other buses; then that module's driver
+// starts and handles everything. Changing modules takes a reset.
 #include "quantum.h"
 #include "pointing_device.h"
 #include "pointing_detect.h"
@@ -22,7 +24,16 @@ void sval_pointer_select(const sval_probe_result_t *found) {
 }
 
 bool pointing_device_driver_init(void) {
-    return true; // the module starts once the probe has found it
+    sval_pointer_identity_t id = {0};
+    sval_driver_azoteq.init();
+    sval_driver_azoteq.identity(&id);
+    if (id.detected == SVAL_SENSOR_AZOTEQ) driver = &sval_driver_azoteq;
+    return true; // any other module starts once the probe has found it
+}
+
+// The I2C pins belong to the hardware driver from boot, and the trackpad check has run there.
+uint8_t sval_pointer_own_bus(void) {
+    return driver ? SVAL_BUS_PS2 | SVAL_BUS_I2C | SVAL_BUS_SPI : SVAL_BUS_I2C;
 }
 
 report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
