@@ -16,6 +16,16 @@ python3 -I "$tests/test_make_update.py" "$out/cross" "$@"
 python3 -I "$tests/test_release_version.py" "$out/release_version"
 python3 -I "$tests/test_release_artifacts.py" "$out/release_artifacts"
 
+# Settings reset on the first boot of a different firmware build (kb/build_reset.c).
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -DBUILD_RESET_HOST_TEST -I"$kb" "$tests/test_build_reset.c" "$kb/build_reset.c" -o "$out/test_build_reset"
+"$out/test_build_reset"
+
+# Raw HID framing (tmk_core/protocol/chibios/usb_packet.h) against ChibiOS's
+# real input buffers queue: a short packet never misframes the next report.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_rawhid" -I"$root/lib/chibios/os/hal/include" -I"$root/tmk_core/protocol/chibios"     "$root/tests/sval_rawhid/test_packet.c" "$root/lib/chibios/os/hal/src/hal_buffers.c"     -o "$out/test_packet"
+"$out/test_packet"
+
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
     -DSVAL_UPDATER_HOST_TEST -include "$kb/config.h" \

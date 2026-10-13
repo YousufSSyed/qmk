@@ -12,7 +12,8 @@
 #include <stddef.h>
 #include <string.h>
 #include "update_flash.h"
-#include "identity.h" // IDENTITY_SECTOR_A
+#include "identity.h"    // IDENTITY_SECTOR_A
+#include "build_reset.h" // BUILD_RESET_SECTOR
 
 #ifdef SVAL_UPDATER_HOST_TEST
 #    include "update_flash_host.h" // tests/sval_updater: flash and ROM mocks
@@ -34,7 +35,8 @@ _Static_assert(SVAL_UPDATE_BASE % UPDATE_FLASH_BLOCK == 0, "slot base is 64 KiB 
 _Static_assert(SVAL_UPDATE_SIZE % UPDATE_FLASH_BLOCK == 0, "slot size is whole 64 KiB blocks");
 _Static_assert(SVAL_UPDATE_SIZE >= SVAL_UPDATE_MAX_IMAGE, "the slot holds the largest image");
 _Static_assert(SVAL_UPDATE_BASE >= SETTINGS_END, "slot starts after both settings copies");
-_Static_assert(SVAL_UPDATE_BASE + SVAL_UPDATE_SIZE <= IDENTITY_SECTOR_A, "slot ends before the identity sectors");
+_Static_assert(SVAL_UPDATE_BASE + SVAL_UPDATE_SIZE <= BUILD_RESET_SECTOR, "slot ends before the build reset sector (D39)");
+_Static_assert(BUILD_RESET_SECTOR + 0x1000 <= IDENTITY_SECTOR_A, "the build reset sector is below the identity sectors");
 _Static_assert(IDENTITY_SECTOR_A < FLASH_LEN, "identity is on the die");
 
 #define SLOT_END (SVAL_UPDATE_BASE + SVAL_UPDATE_SIZE)
@@ -87,7 +89,7 @@ static void __no_inline_not_in_flash_func(slot_flash_op)(uint32_t abs, const uin
 
 static uint8_t read_jedec(uint8_t id[UPDATE_JEDEC_BYTES]) {
     uint8_t  tx[4] = {0x9F, 0, 0, 0}, rx[4] = {0};
-    uint32_t irq   = save_and_disable_interrupts();
+    uint32_t irq = save_and_disable_interrupts();
     flash_do_cmd(tx, rx, sizeof(tx));
     restore_interrupts(irq);
     memcpy(id, &rx[1], UPDATE_JEDEC_BYTES);

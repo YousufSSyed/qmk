@@ -51,13 +51,11 @@ def main():
     check(1 <= fw <= rv.MAX_FW, f"committed fw_version {fw}")
     check(not hasattr(rv, "mu"), "release_version.py has no key checks")
 
-    history = [("vLaunch", False, False, "2026-10-07T04:37:07Z"), ("vLaunch2", False, False, "2026-10-08T20:20:35Z"),
-               ("vRC2", False, True, "2026-10-09T00:00:00Z"), ("vDraft", True, False, "")]
+    history = [("vLaunch", False, False, "2026-10-07T04:37:07Z"), ("vLaunch2", False, False, "2026-10-08T20:20:35Z"), ("vRC2", False, True, "2026-10-09T00:00:00Z"), ("vDraft", True, False, "")]
 
     # a dry run: a prerelease, compared with vLaunch2 (before the updater: 0)
     rc, text, o = run(out, "vLaunch3-dryrun1", history, {})
-    check(rc == 0 and o == dict(version="vLaunch3-dryrun1", fw_version=str(fw), prerelease="true", previous="vLaunch2"),
-          f"dry run passes as a prerelease: {rc} {o} {text}")
+    check(rc == 0 and o == dict(version="vLaunch3-dryrun1", fw_version=str(fw), prerelease="true", previous="vLaunch2"), f"dry run passes as a prerelease: {rc} {o} {text}")
     for tag in ("vM3-DryRun2", "vdry-run", "vLaunch3-dryrun"):
         rc, _, o = run(out, tag, history, {})
         check(rc == 0 and o.get("prerelease") == "true", f"{tag} is a dry run")
@@ -75,8 +73,7 @@ def main():
     # the newest published non-prerelease counts, not a prerelease or draft, and not this tag itself
     rc, _, o = run(out, "vLaunch3", history + [("vLaunch3", False, False, "2026-12-01T00:00:00Z")], {"vLaunch2": fw - 1, "vLaunch3": fw})
     check(rc == 0 and o.get("previous") == "vLaunch2", f"this tag's own release is skipped: {o}")
-    rc, _, o = run(out, "vLaunch3", history + [("vLaunch3-dryrun1", False, True, "2026-11-01T00:00:00Z")],
-                   {"vLaunch3-dryrun1": fw + 9, "vLaunch2": fw - 1})
+    rc, _, o = run(out, "vLaunch3", history + [("vLaunch3-dryrun1", False, True, "2026-11-01T00:00:00Z")], {"vLaunch3-dryrun1": fw + 9, "vLaunch2": fw - 1})
     check(rc == 0 and o.get("previous") == "vLaunch2", f"a dry run's number is not compared: {o}")
     rc, _, o = run(out, "vLaunch3", history, {"vDraft": fw + 9, "vLaunch2": fw - 1})
     check(rc == 0, "a draft's number is not compared")
@@ -102,6 +99,14 @@ def main():
         check(rc == 1 and "bleeding-edge tags" in text and not o, f"near-miss tag {tag!r} refused: {text}")
     rc, _, o = run(out, "vLaunch3-dryrun1", [], {})
     check(rc == 0 and o.get("previous") == "", "no previous release")
+
+    # stable tags are vLaunch<N> only; anything else would publish as the latest release
+    for tag in ("vLaunch10", "vLaunch3"):
+        rc, text, o = run(out, tag, history, {})
+        check(rc == 0 and o.get("prerelease") == "false", f"{tag} is a stable tag: {rc} {text}")
+    for tag in ("vLaunch2.3", "vLaunch3-rc1", "vLaunch", "vlaunch3", "vLaunch3a", "Launch3", "vtest", "v3", "vRC3"):
+        rc, text, o = run(out, tag, history, {})
+        check(rc == 1 and "stable firmware tags" in text and not o, f"non-stable tag {tag!r} refused: {text}")
 
     # tag names that cannot be a version string
     for tag in ("vLaunch2-with-a-long-name", "v Launch", "v/1"):

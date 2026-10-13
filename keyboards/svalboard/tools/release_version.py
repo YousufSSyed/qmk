@@ -19,7 +19,11 @@ fw_version.txt and the version string is the tag name. This checks, and exits
 A dry-run tag is one whose name contains "dryrun" or "dry-run" (any case),
 such as vLaunch3-dryrun1: a trial of the release run. A bleeding-edge tag is
 vNext followed by a number, such as vNext1. Both are always published as
-prereleases, so neither becomes the repository's latest release.
+prereleases, so neither becomes the repository's latest release. Every other
+tag must be a stable firmware tag, vLaunch followed by a number (vLaunch3);
+anything else is refused, since it would publish as the latest release.
+Names with a point release (vLaunch2.3) belong to Keybard and Keybard Host
+only (D38).
 
 Writes version=, fw_version=, prerelease= and previous= lines to
 --github-output (release CI passes $GITHUB_OUTPUT), and prints them. The list
@@ -38,6 +42,7 @@ VERSION_FILE = "keyboards/svalboard/updater/fw_version.txt"
 REPO_ROOT = HERE.parents[2]
 DRY_RUN_RE = re.compile(r"dry-?run", re.IGNORECASE)
 NEXT_RE = re.compile(r"^vNext[0-9]+$")  # bleeding edge, for next.keybard
+STABLE_RE = re.compile(r"^vLaunch[0-9]+$")  # stable; vLaunch2.3 etc. are Keybard/Host-only names
 MAX_FW = 999999999  # rules.mk takes at most 9 digits
 VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]{1,16}$")  # SVAL_FW_VERSION_STRING (rules.mk, make_update.py)
 
@@ -51,11 +56,9 @@ def parse_version_file(text, where):
 
 def committed_at(tag):
     """The number committed at a tag, or 0 if the file did not exist there yet."""
-    p = subprocess.run(["git", "-C", str(REPO_ROOT), "show", f"refs/tags/{tag}:{VERSION_FILE}"],
-                       capture_output=True, text=True)
+    p = subprocess.run(["git", "-C", str(REPO_ROOT), "show", f"refs/tags/{tag}:{VERSION_FILE}"], capture_output=True, text=True)
     if p.returncode != 0:
-        exists = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"],
-                                capture_output=True, text=True)
+        exists = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"], capture_output=True, text=True)
         if exists.returncode != 0:
             raise ValueError(f"the previous release's tag {tag} is not in this checkout (fetch tags: fetch-depth 0)")
         return 0
@@ -66,9 +69,7 @@ def releases(repo, path):
     if path:
         text = Path(path).read_text()
     else:
-        text = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/releases", "--jq",
-                               '.[] | [.tag_name, .draft, .prerelease, .published_at] | @tsv'],
-                              capture_output=True, text=True, check=True).stdout
+        text = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/releases", "--jq", '.[] | [.tag_name, .draft, .prerelease, .published_at] | @tsv'], capture_output=True, text=True, check=True).stdout
     out = []
     for line in text.splitlines():
         if line.strip():
@@ -104,6 +105,10 @@ def main(argv=None):
     if tag.lower().startswith("vnext") and not pre:
         # a near miss would publish as the latest release
         errors.append(f"tag {tag!r}: bleeding-edge tags are vNext and a number, such as vNext1")
+    elif not pre and not STABLE_RE.match(tag):
+        # any other tag would publish as the latest release
+        errors.append(f"tag {tag!r}: stable firmware tags are vLaunch and a number, such as vLaunch3 "
+                      "(vLaunch2.3 and the like name Keybard and Keybard Host releases only)")
     try:
         fw = parse_version_file((REPO_ROOT / VERSION_FILE).read_text(), VERSION_FILE)
     except (OSError, ValueError) as e:
