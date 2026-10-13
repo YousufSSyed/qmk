@@ -53,9 +53,9 @@ python3 -I $MU $N.uf2 -o $N.svup --kb $K
 |---|---|
 | `SVAL_UPDATER=yes` | The updater: VIA channel `0x55`, staging slot, commit routine, LED states |
 | `SVAL_UPDATE_TEST_HOOKS=yes` | Adds the `TEST_HALT` op and the commit halt points (hardware tests only) |
-| `SVAL_UPDATE_RELEASE=yes` | Release updater build: DIAGNOSTIC images refused. Cannot be combined with the test hooks, `SVAL_KEYTEST` or `SVAL_HOST_BOOTLOADER`. |
+| `SVAL_UPDATE_RELEASE=yes` | Release updater build: DIAGNOSTIC images refused. Cannot be combined with the test hooks, `SVAL_KEYTEST` or `SVAL_HOST_BOOTLOADER`. Release CI builds every release keymap this way |
 | `SVAL_FW_VERSION=N` | The numeric version (D17), reported by INFO and presence. Default: `kb/updater/fw_version.txt` (D32). The older `EXTRAFLAGS=-DSVAL_FW_VERSION=N` still works |
-| `SVAL_FW_VERSION_STRING=S` | The version string, at most 16 of `A-Z a-z 0-9 . _ + -` (INFO page 1). Default empty; a release build passes the tag |
+| `SVAL_FW_VERSION_STRING=S` | The version string, at most 16 of `A-Z a-z 0-9 . _ + -` (INFO page 1). Default empty; release CI passes the tag |
 
 Every updater build carries a 32-byte build-info record,
 `sval_update_build_info` (`kb/updater/update_build_info.h`, version 3): magic
@@ -562,6 +562,70 @@ CC0-1.0 license in `LICENCE.md`. The rest of Monocypher is not in the tree.
 file. The host tests check the FIPS 180-2 vectors and that the incremental and
 one-shot forms agree.
 
+## Release CI
+
+**Versions (D17, D32).** Launch tags are names (`vLaunch2`), so the number is
+committed in `kb/updater/fw_version.txt` and the version string is the tag
+name. Raise the number in the commit you tag. Release CI's first job
+(`kb/tools/release_version.py`) fails unless the tag is a valid version string
+(at most 16 of `A-Z a-z 0-9 . _ + -`) and the committed number is greater
+than the one committed at the previous published release: the newest release
+on the repository that is neither a draft nor a prerelease and is not this
+tag (a release from before the file existed counts as 0). Prereleases are not
+compared, so dry runs never use up a number. A tag whose name contains
+`dryrun` or `dry-run` (any case), such as `vLaunch3-dryrun1`, is a dry run:
+its release is always a prerelease.
+
+**The jobs** (`.github/workflows/release.yml`, on `v*` tags):
+
+| Job | What it does |
+|---|---|
+| version | The check above. Outputs the version, the number and whether the release is a prerelease |
+| build | The 12 release keymap builds as **release updater builds** (`SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes SVAL_FW_VERSION_STRING=<tag>`), through `build-firmware.yml` with `updater: true`, in the pinned image with the pinned toolchain (below). Each runs `check_ram_funcs.py`, then `make_update.py --release --expect-version <tag> --expect-fw-version <N>`, which writes the `.svup` next to the `.uf2`. It uploads the `.uf2`, the `.svup` and the ELF. No build job can write to the repository (`contents: read`, no Git credentials kept) |
+| lint | `check_tag_commit.sh`: the tag still names the run's commit. `check_release_artifacts.py`: exactly the 12 builds' files; each `.svup`'s image is its ELF's flash contents (as `objcopy -O binary` writes them) and its `.uf2`'s image; each manifest's hash, version, side, pointing device and keymap, and each image's build-info record, match the build's name, and the release checks pass. `check_release_elf.py` on the 12 ELFs: an updater build whose build-info record says RELEASE and nothing else, for a release keymap, with no test-hook, keytest or host-bootloader symbols. `check_split_tables.py --golden`: every left/right pairing has the same split message table, and every build's table equals `kb/tools/split_table_golden.json` |
+| publish | Creates the release for the tag directly (not a draft; a prerelease for a dry run) with the 12 `.uf2` and 12 `.svup` files. Refuses if the tag already has a release |
+
+Every job checks out the run's commit (`github.sha`), never the tag by name,
+and `check_tag_commit.sh` stops the run from publishing under a tag that now
+names another commit.
+
+**Toolchain.** Updater builds in release CI use a pinned image,
+`ghcr.io/qmk/qmk_cli@sha256:b7d7fa8f…` (`build-firmware.yml`), and download
+Arm GNU Toolchain 13.2.rel1 (`arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi`,
+SHA-256 `6cd1bbc1…5fdbb`, checked) and put it first on `PATH`; the build step
+fails unless `arm-none-eabi-gcc -dumpversion` is `13.2.1`. That is the
+toolchain every M1, M2b and M3 test used. The image's own GCC (15.2 in that
+digest) turns `commit_ram_main` into an IPA-SRA clone (`commit_ram_main.isra.0`),
+which `check_ram_funcs.py` refuses, and makes different images. Changing the
+toolchain means rerunning the hardware commit tests (R28). Builds without
+`updater: true` keep the unpinned image they always used.
+
+**This changes what release CI publishes:** every `.uf2` on a release is now an
+updater build, not a default build: larger images, still far below the
+1,408 KiB cap. A default `make` (no flags) is unchanged. Halves running a
+default build cannot talk to halves running an updater build (see "One
+release on both halves"), so both halves must move to the same release, which
+they always do.
+
+**The golden split table** (`kb/tools/split_table_golden.json`) is the table of
+the release updater builds: 15 transactions (QMK's 12, plus the three keyboard
+RPCs `KEYBOARD_SYNC_A`, `KEYBOARD_SYNC_B`, `KEYBOARD_UPDATE`), each with its
+buffer sizes and shared-memory offsets. A change to the split table in a
+release must regenerate it in the same commit, and the release notes must say
+that both halves need the new release:
+
+```
+T=keyboards/svalboard/tools/check_split_tables.py
+G=keyboards/svalboard/tools/split_table_golden.json
+python3 -I $T --write-golden $G BUILD.elf
+```
+
+**Checking a published release.** `kb/tools/m3/check_release.sh TAG [REPO]`
+downloads its assets and runs `check_release_assets.py`: not a draft (and a
+prerelease for a dry-run tag), exactly 12 `.uf2` and 12 `.svup`, each `.svup`
+holds its `.uf2`'s image with the build's side, pointing device and keymap,
+and a release build accepts it.
+
 ## Tools and tests
 
 - `kb/tools/make_update.py`: UF2 → `.svup` (manifest, then the raw image), and
@@ -573,6 +637,14 @@ one-shot forms agree.
 - `kb/tools/check_split_tables.py`: the split-table check across left/right
   pairings (P1), above. With `--golden` it also checks a committed golden
   table.
+- `kb/tools/release_version.py`: release CI's version check (D32).
+- `kb/tools/check_release_elf.py`: release CI's lint of the release ELFs.
+- `kb/tools/check_release_artifacts.py`: release CI's check that each `.svup`
+  holds its ELF's and its `.uf2`'s image, with matching manifests.
+- `kb/tools/check_tag_commit.sh`: release CI's check that the tag still names
+  the run's commit.
+- `kb/tools/m3/check_release.sh`, `check_release_assets.py`: the check of a
+  published release's assets.
 - `.github/workflows/updater-tests.yml` runs `util/updater_test/run.sh` on
   pushes and pull requests that touch the updater, its tools or its tests.
 - `util/updater_test/run.sh [UF2 ...]`: host tests under ASan and UBSan. They

@@ -12,21 +12,52 @@ on:
       side:
         required: true
         type: string
+      # In-firmware updater (docs/updater.md, "Releases"). With updater
+      # true the firmware is a release updater build (SVAL_UPDATER=yes
+      # SVAL_UPDATE_RELEASE=yes) carrying version_string, and instead of
+      # publishing its .uf2 the job uploads the .uf2, its .svup and the ELF
+      # as the artifact release-<name>; release.yml publishes them once the
+      # lint passes. fw_version is the number release_version.py read from
+      # updater/fw_version.txt: the .svup must carry it. With updater false
+      # (the default) the job builds and publishes what it always did; a tag
+      # build checks out the run's commit (github.sha) and keeps no Git
+      # credentials.
+      updater:
+        required: false
+        type: boolean
+        default: false
+      version_string:
+        required: false
+        type: string
+        default: ''
+      fw_version:
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: ghcr.io/qmk/qmk_cli
+    # Updater (release) builds use a pinned image and, below, the pinned Arm
+    # GNU 13.2.rel1 toolchain the updater was tested with: the image's own GCC
+    # (15.2 in this digest) builds the commit's RAM code differently, and
+    # check_ram_funcs.py refuses it (docs/updater.md, "Toolchain"). Other
+    # callers keep the image they always had.
+    container: ${{ inputs.updater && 'ghcr.io/qmk/qmk_cli@sha256:b7d7fa8fb4432b569931de5ad59098cb788f440ed61a62c5126746b71aee0f4a' || 'ghcr.io/qmk/qmk_cli' }}
 
     steps:
+    # A tag build checks out the run's commit (github.sha), not the tag by
+    # name: a tag moved while the run runs cannot change what later jobs of
+    # the same run build or publish.
     - name: Checkout code - Non PR
       uses: actions/checkout@v4
       if: ${{ startsWith(github.ref, 'refs/tags') }}
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        ref: ${{ github.ref }}
+        ref: ${{ github.sha }}
         fetch-depth: 0
         submodules: 'recursive'
+        persist-credentials: false
 
     - name: Checkout code - PR
       uses: actions/checkout@v4
@@ -36,19 +67,43 @@ jobs:
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
         submodules: 'recursive'
+        persist-credentials: false
+
+    - name: Pinned Arm toolchain (updater builds)
+      if: ${{ inputs.updater }}
+      run: |
+        T=arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi
+        U=https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel
+        curl -fsSL --retry 3 -o "/tmp/$T.tar.xz" "$U/$T.tar.xz"
+        echo "6cd1bbc1d9ae57312bcd169ae283153a9572bd6a8e4eeae2fedfbc33b115fdbb  /tmp/$T.tar.xz" | sha256sum -c -
+        mkdir -p /opt/arm
+        tar -xJf "/tmp/$T.tar.xz" -C /opt/arm
+        echo "/opt/arm/arm-gnu-toolchain-13.2.Rel1-x86_64-arm-none-eabi/bin" >> "$GITHUB_PATH"
+      shell: bash
 
     - name: Get tag version
       if: ${{ startsWith(github.ref, 'refs/tags/')}}
       id: get_version
-      run: echo ::set-output name=VERSION::${GITHUB_REF#refs/tags/}
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      shell: bash
 
     - name: Build firmware
       id: build_firmware
+      env:
+        UPDATER: ${{ inputs.updater }}
+        VERSION_STRING: ${{ inputs.version_string }}
       run: |
         git config --global --add safe.directory '*'
         pip3 install --break-system-packages -r requirements.txt
         qmk setup -y
-        make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }}
+        if [ "$UPDATER" = "true" ]; then
+          command -v arm-none-eabi-gcc
+          test "$(arm-none-eabi-gcc -dumpversion)" = 13.2.1
+          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }} \
+            SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes "SVAL_FW_VERSION_STRING=$VERSION_STRING"
+        else
+          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }}
+        fi
       shell: bash
 
     - name: Calculate keyboard name
@@ -59,6 +114,34 @@ jobs:
         echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_ENV
         echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_OUTPUT
       shell: bash
+
+    - name: Updater .svup
+      if: ${{ inputs.updater }}
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
+        VERSION_STRING: ${{ inputs.version_string }}
+        FW_VERSION: ${{ inputs.fw_version }}
+      run: |
+        NAME="${{ env.keyboard_name }}_${{ inputs.side }}_${{ inputs.keymap }}"
+        mkdir -p updater-out
+        # The commit's RAM code must not reach flash (plan R2).
+        python3 -I keyboards/svalboard/tools/check_ram_funcs.py ".build/$NAME.elf"
+        python3 -I keyboards/svalboard/tools/make_update.py "$NAME.uf2" \
+          -o "updater-out/${NAME}_${VERSION}.svup" \
+          --kb "${{ inputs.keyboard }}/${{ inputs.side }}" --keymap "${{ inputs.keymap }}" --release \
+          --expect-version "$VERSION_STRING" --expect-fw-version "$FW_VERSION"
+        cp ".build/$NAME.elf" "updater-out/$NAME.elf"
+        cp "$NAME.uf2" "updater-out/${NAME}_${VERSION}.uf2"
+        echo "release_name=$NAME" >> "$GITHUB_ENV"
+      shell: bash
+
+    - name: Upload the .uf2, .svup and ELF
+      uses: actions/upload-artifact@v4
+      if: ${{ inputs.updater }}
+      with:
+        name: release-${{ env.release_name }}
+        path: updater-out/
+        if-no-files-found: error
 
     - name: Add file to PR.
       uses: actions/upload-artifact@v4
@@ -78,7 +161,8 @@ jobs:
 
     - name: Release
       uses: ncipollo/release-action@v1.11.2
-      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      # Updater builds are published by release.yml after the lint.
+      if: ${{ startsWith(github.ref, 'refs/tags/') && !inputs.updater }}
       with:
         allowUpdates: True
         # Every build job updates the same release; keep the title and notes
