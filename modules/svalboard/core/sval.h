@@ -109,6 +109,13 @@ enum sval_feature_flags {
 enum sval_feature_flags2 {
     sval_flag2_default_layer_set = (1 << 0), // 0x2B sets the saved default layer
     sval_flag2_pointing_hardware = (1 << 1), // 0x2C reports each half's side and pointing sensor
+    sval_flag2_modifier_state    = (1 << 2), // 0x16 appends the board's modifiers, Caps Word and Caps Lock
+};
+
+// Status byte after the modifiers in the 0x16 reply (sval_flag2_modifier_state).
+enum sval_modifier_status {
+    sval_status_caps_word = (1 << 0), // Caps Word is on
+    sval_status_caps_lock = (1 << 1), // the host's Caps Lock LED is on
 };
 
 // Keyboard definition chunk size (fits in 32-byte HID packet with header)

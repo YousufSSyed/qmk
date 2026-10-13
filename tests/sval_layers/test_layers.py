@@ -58,6 +58,17 @@ static void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {
  for(int i=0;i<length;i++)assert(out[i]==0); // zeroed before the keyboard fills it
  pointing_report_len=length; out[0]=1; out[1]=0x07; out[6]=0x01;
 }
+static uint8_t mods_now, oneshot_now, oneshot_locked_now;
+static bool caps_lock_now;
+static uint8_t get_mods(void) { return mods_now; }
+static uint8_t get_oneshot_mods(void) { return oneshot_now; }
+static uint8_t get_oneshot_locked_mods(void) { return oneshot_locked_now; }
+typedef struct { bool caps_lock; } led_t;
+static led_t host_keyboard_led_state(void) { led_t led = { caps_lock_now }; return led; }
+#ifdef CAPS_WORD_ENABLE
+static bool caps_word_now;
+static bool is_caps_word_on(void) { return caps_word_now; }
+#endif
 static uint8_t sent[32];
 static uint32_t timer_read32(void) { return 100; }
 static void host_raw_hid_send(uint8_t *p,uint8_t n) { assert(n==32); memcpy(sent,p,n); }
@@ -97,7 +108,7 @@ int main(void) {
 #endif
  assert(sent[20]==0 && sent[21]==0 && sent[22]==9);
  assert(sent[23]==0); // Storage was not reset.
- assert(sent[24]==(sval_flag2_default_layer_set|sval_flag2_pointing_hardware)); // Second feature byte, after the storage flags.
+ assert(sent[24]==(sval_flag2_default_layer_set|sval_flag2_pointing_hardware|sval_flag2_modifier_state)); // Second feature byte, after the storage flags.
  storage_reset=true;
  request(sval_cmd_get_info);
  assert(sent[23]==1);
@@ -123,9 +134,30 @@ int main(void) {
    assert(get32(sent+7)==masks[a]); // Existing Keybard decoder's exact offset.
    assert(get32(sent+11)==masks[d]);
    assert(layer_state==masks[a] && default_layer_state==masks[d]);
-   for(int i=15;i<32;i++)assert(sent[i]==0xA5);
+   assert(sent[15]==0 && sent[16]==0); // No modifiers held.
+   for(int i=17;i<32;i++)assert(sent[i]==0xA5);
   }
  }
+ // Modifiers: held, one-shot pending and one-shot locked, in the HID modifier byte.
+ assert(sval_flag2_modifier_state==0x04);
+ mods_now=0x02; request(sval_cmd_layer_state_get); assert(sent[15]==0x02 && sent[16]==0);
+ oneshot_now=0x20; request(sval_cmd_layer_state_get); assert(sent[15]==0x22);
+ mods_now=0; oneshot_now=0; oneshot_locked_now=0x01; request(sval_cmd_layer_state_get); assert(sent[15]==0x01);
+ oneshot_locked_now=0; caps_lock_now=true; request(sval_cmd_layer_state_get); assert(sent[15]==0 && sent[16]==sval_status_caps_lock);
+ caps_lock_now=false;
+#ifdef CAPS_WORD_ENABLE
+ caps_word_now=true; request(sval_cmd_layer_state_get); assert(sent[16]==sval_status_caps_word);
+ caps_word_now=false;
+#endif
+ // Ten or eleven inner bytes: the masks fit, the modifier bytes are left alone.
+ mods_now=0x02;
+ for(uint8_t length=10;length<12;length++) {
+  uint8_t buffer[32];memset(buffer,0xA5,sizeof(buffer));
+  buffer[0]=0xDF;buffer[1]=0x16;
+  assert(sval_handle_command(buffer,length));
+  assert(buffer[1]==0x16 && buffer[10]==0xA5 && buffer[11]==0xA5);
+ }
+ mods_now=0;
  for(uint8_t length=2;length<10;length++) {
   uint8_t short_packet[32];memset(short_packet,0xA5,sizeof(short_packet));
   short_packet[0]=0xDF;short_packet[1]=0x16;

@@ -173,7 +173,7 @@ uint8_t sval_get_feature_flags(void) {
 }
 
 uint8_t sval_get_feature_flags2(void) {
-    return sval_flag2_default_layer_set | sval_flag2_pointing_hardware;
+    return sval_flag2_default_layer_set | sval_flag2_pointing_hardware | sval_flag2_modifier_state;
 }
 
 // Storage functions - Tap Dance
@@ -684,9 +684,11 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
 
         case sval_cmd_layer_state_get: {
             // Request: [0xDF] [0x16]
-            // Response: [0xDF] [0x16] [active u32 LE] [default u32 LE]
+            // Response: [0xDF] [0x16] [active u32 LE] [default u32 LE] [mods] [status]
             // GET_INFO flag bit 6 advertises the appended default mask. Keep the
             // active mask at its legacy offset for existing Keybard clients.
+            // GET_INFO byte 19 bit 2 advertises the modifier bytes: this board's
+            // own state, so a host can show shifted legends for it alone.
             if (length < 10) {
                 data[1] = sval_cmd_error;
                 return false;
@@ -701,6 +703,19 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             data[7]                 = (defaults >> 8) & 0xFF;
             data[8]                 = (defaults >> 16) & 0xFF;
             data[9]                 = (defaults >> 24) & 0xFF;
+            if (length >= 12) {
+                // HID modifier byte: held mods plus a pending or locked one-shot.
+                uint8_t mods = get_mods();
+#ifndef NO_ACTION_ONESHOT
+                mods |= get_oneshot_mods() | get_oneshot_locked_mods();
+#endif
+                uint8_t status = host_keyboard_led_state().caps_lock ? sval_status_caps_lock : 0;
+#ifdef CAPS_WORD_ENABLE
+                if (is_caps_word_on()) status |= sval_status_caps_word;
+#endif
+                data[10] = mods;
+                data[11] = status;
+            }
             break;
         }
 
