@@ -124,10 +124,13 @@ static bool probe_ps2(sval_probe_result_t *found) {
 
 #define I2C_HALF_US 5
 
-// Releasing SCL waits while the device stretches the clock (the IQS5xx does until its comms window).
+// Releasing SCL waits while the device stretches the clock. An IQS5xx in a low-power mode NACKs the
+// first addressing, then holds SCL after the next until its communication window opens, up to one
+// low-power report cycle later (datasheet 8.8.2), so allow a long stretch. A bare connector never stretches.
+#define I2C_STRETCH_US 300000
 static bool scl_release(void) {
     pin_release(SVAL_DETECT_I2C_SCL);
-    return wait_for(SVAL_DETECT_I2C_SCL, true, 20000);
+    return wait_for(SVAL_DETECT_I2C_SCL, true, I2C_STRETCH_US);
 }
 
 static bool i2c_start(void) {

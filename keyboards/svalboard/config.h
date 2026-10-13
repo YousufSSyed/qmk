@@ -56,7 +56,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Settings any earlier firmware left in this region don't match this magic, so
 // QMK resets them all to defaults on the first boot. Decrement it (never reuse
 // a value, and stay below QMK's own) whenever stored settings must all reset.
-#define EECONFIG_MAGIC_NUMBER (uint16_t)0xFEE2
+#ifdef SVAL_TEST_WIPE
+// Test builds (-e SVAL_TEST_WIPE=yes): a magic no release uses, so the first boot after
+// flashing over any other firmware resets every setting, keymap included, to the
+// build's defaults. A blank build then sends nothing, whatever the MCU stored before.
+#    define EECONFIG_MAGIC_NUMBER (uint16_t)0xB1A0
+#else
+#    define EECONFIG_MAGIC_NUMBER (uint16_t)0xFEE2
+#endif
 #define WEAR_LEVELING_COPIES 2
 
 // In-firmware updater (updater/, built with SVAL_UPDATER=yes). Offsets from the

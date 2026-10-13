@@ -103,7 +103,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  reserved0;       // 0 (key_id in version 1: 0 = test, 1/2 = release keys)
     uint8_t  hand;            // 0 left, 1 right
     uint8_t  pointing_id;     // this half's pointing device only (D18): 0 none, 1 TrackPoint,
-                              // 2 trackball PMW3360, 3 trackball PMW3389, 4 Azoteq; append-only
+                              // 2 trackball PMW3360, 3 trackball PMW3389, 4 Azoteq, 5 any (one build
+                              // with every driver, pointing_auto); append-only
     uint8_t  keymap_id;       // 1 sval, 2 blank: display only, never checked (D18)
     uint16_t flags;           // bit0 RELEASE, bit1 DIAGNOSTIC (scanlab/keytest/host-bootloader)
     uint16_t security_epoch;  // refuse < device epoch (D19)

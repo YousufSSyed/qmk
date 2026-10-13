@@ -21,6 +21,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "keymap_support.h"
 #include "axis_scale.h"
 #include "caps_word.h"
+#include "pointing_motion.h"
+#include <string.h>
 
 // in keymap.c:
 #ifdef POINTING_DEVICE_AUTO_MOUSE_ENABLE
@@ -359,6 +361,23 @@ report_mouse_t pointing_device_task_combined_user(report_mouse_t reportMouse1, r
     }
 
     return pointing_device_task_user(ret_mouse);
+}
+
+// Pointing modes for POINTING_MOTION (Sval 0x2D), from the state above.
+void sval_pointing_modes(sval_pointing_modes_t *m) {
+    memset(m, 0, sizeof(*m));
+    bool axis_lock = global_saved_values.axis_scroll_lock && !is_mac;
+    if (any_sniper_active()) m->global_bits |= SVAL_MOTION_SNIPER;
+    if (any_boost_active()) m->global_bits |= SVAL_MOTION_BOOST;
+    if (mouse_mode_enabled) m->global_bits |= SVAL_MOTION_AUTOMOUSE_ON;
+    if (axis_lock) m->global_bits |= SVAL_MOTION_AXIS_LOCK;
+    if (global_saved_values.natural_scroll) m->global_bits |= SVAL_MOTION_NATURAL_SCROLL;
+    if (scroll_hold || scroll_toggle) m->global_bits |= SVAL_MOTION_SCROLL_KEY;
+    m->axis_state      = axis_lock ? (uint8_t)axis_scroll_mode : 0; // FREE 0, LOCKED_V 1, LOCKED_H 2
+    m->left_scroll     = (global_saved_values.left_scroll != scroll_hold) != scroll_toggle;
+    m->right_scroll    = (global_saved_values.right_scroll != scroll_hold) != scroll_toggle;
+    m->left_automouse  = global_saved_values.left_automouse;
+    m->right_automouse = global_saved_values.right_automouse;
 }
 
 void toggle_axis_scroll_lock(void) {

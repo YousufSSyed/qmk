@@ -48,7 +48,7 @@ MANIFEST_BYTES = 108
 assert struct.calcsize(MANIFEST_FMT) == MANIFEST_BYTES
 
 HAND = {"left": 0, "right": 1}
-POINTING = {"none": 0, "trackpoint": 1, "pmw3360": 2, "pmw3389": 3, "azoteq": 4}
+POINTING = {"none": 0, "trackpoint": 1, "pmw3360": 2, "pmw3389": 3, "azoteq": 4, "auto": 5}
 KEYMAP = {"sval": 1, "blank": 2}  # the release keymaps (D22)
 FLAG_RELEASE, FLAG_DIAGNOSTIC = 0x0001, 0x0002
 STORAGE_FORMAT = 2  # SVAL_UPDATE_STORAGE_FORMAT in keyboards/svalboard/config.h
@@ -223,7 +223,7 @@ def kb_fields(kb):
     if not parts or parts[0] != "svalboard" or parts[-1] not in HAND:
         raise Refused(f"--kb {kb!r}: expected svalboard/.../left or svalboard/.../right")
     middle = parts[1:-1]
-    table = {(): "none", ("trackpoint",): "trackpoint", ("trackball", "pmw3360"): "pmw3360",
+    table = {(): "auto", ("trackpoint",): "trackpoint", ("trackball", "pmw3360"): "pmw3360",
              ("trackball", "pmw3389"): "pmw3389", ("azoteq",): "azoteq"}
     if tuple(middle) not in table:
         raise Refused(f"--kb {kb!r}: unknown variant")

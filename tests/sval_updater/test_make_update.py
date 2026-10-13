@@ -121,7 +121,7 @@ def main():
     make("ok_diagnostic.svup", *common, "--diagnostic", "--keymap", "scanlab")
     (tmp / "good.bin").write_bytes(img)
     make("ok_raw.svup", *common, "--raw", src=tmp / "good.bin")
-    for kb, hand, pointing in (("svalboard/left", 0, 0), ("svalboard/azoteq/right", 1, 4), ("svalboard/trackball/pmw3360/left", 0, 2)):
+    for kb, hand, pointing in (("svalboard/left", 0, 5), ("svalboard/azoteq/right", 1, 4), ("svalboard/trackball/pmw3360/left", 0, 2)):
         check(mu.kb_fields(kb) == (hand, pointing), f"kb_fields {kb}")
 
     # The image no longer matches the manifest's hash: the device refuses it at verify.
@@ -208,7 +208,7 @@ def main():
     make("badimage_boot2.svup", *common, "--unsafe-allow-bad-image", expect="badimage", src=bad)
 
     # ---- the build-info record and --release ------------------------------------------------
-    def release_img(flags=mu.BI_RELEASE, fw=3, version=b"vM3-test", extra=b"", hand=1, pointing_id=0, keymap_id=1,
+    def release_img(flags=mu.BI_RELEASE, fw=3, version=b"vM3-test", extra=b"", hand=1, pointing_id=5, keymap_id=1,
                     info_ver=3, proto=3, reserved0=0):
         body = bytearray(image(0x1800))
         rec = struct.pack(mu.BUILD_INFO_FMT, b"SVBI", info_ver, flags, reserved0, proto, fw, version.ljust(16, b"\0"),
@@ -233,7 +233,7 @@ def main():
     if rc == 0:
         rm, rb = mu.parse_svup(r.read_bytes())
         f = mu.parse_manifest(rm)
-        check((f["reserved0"], f["flags"], f["fw_version"], f["keymap_id"], f["hand"], f["pointing_id"]) == (0, 1, 3, 1, 1, 0),
+        check((f["reserved0"], f["flags"], f["fw_version"], f["keymap_id"], f["hand"], f["pointing_id"]) == (0, 1, 3, 1, 1, 5),
               f"release manifest fields {f}")
         check(mu.manifest_version(f) == "vM3-test" and rb == release_img(), "release: version from the record, raw image")
         for build in ("release", "plain"):
@@ -278,7 +278,7 @@ def main():
     for args in (rel_common, ["--kb", "svalboard/right"]):
         refuse_rel("a right image labeled left", "the manifest says hand 0, the image was built with 1", None,
                    "--kb", "svalboard/left", *args[2:])
-        refuse_rel("a plain image labeled pmw3389", "the manifest says pointing_id 3, the image was built with 0", None,
+        refuse_rel("a plain image labeled pmw3389", "the manifest says pointing_id 3, the image was built with 5", None,
                    "--kb", "svalboard/trackball/pmw3389/right", *args[2:])
     rc, text, _ = rel("fwmismatch", release_img(), *rel_common, "--fw-version", "9")
     check(rc == 2 and "reports 3" in text, f"refuses a --fw-version the image contradicts: {text.strip()}")

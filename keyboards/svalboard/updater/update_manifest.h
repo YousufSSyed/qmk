@@ -37,6 +37,7 @@
 #define UPDATE_POINTING_PMW3360 2
 #define UPDATE_POINTING_PMW3389 3
 #define UPDATE_POINTING_AZOTEQ 4
+#define UPDATE_POINTING_AUTO 5 // one build with every driver, started for whichever module answers
 
 // keymap_id: display only, never checked (D18).
 #define UPDATE_KEYMAP_UNKNOWN 0

@@ -37,7 +37,11 @@ static void pmw_update(void) {
 /* ---- IQS5xx on I2C: SDA GP16, SCL GP17, address 0x74, clock stretching ---- */
 enum { I_IDLE, I_ADDR, I_WRITE, I_READ };
 static struct { bool on; uint16_t product; int state, bits; uint8_t byte; bool rw, ack_slot, master_ack_slot, sda, scl;
-                uint8_t wbuf[8]; int wlen; uint16_t reg; int rindex; bool ended; int stretch_us; } azo;
+                uint8_t wbuf[8]; int wlen; uint16_t reg; int rindex; bool ended; int stretch_us;
+                long lp_cycle_us; bool asleep, window; long window_at; } azo;
+// lp_cycle_us > 0 models a low-power state (datasheet 8.8.2): the first addressing is NACKed and wakes
+// it; the next is ACKed, then SCL is held until the next communication window, up to one cycle later.
+// Ending the session (0xEEEE) lets it sleep again.
 static void azo_put_bit(void) { dev_low[GP16] = !((azo.byte >> (7 - azo.bits)) & 1); }
 static void azo_update(void) {
     if (!azo.on) return;
@@ -45,7 +49,7 @@ static void azo_update(void) {
     if (scl && azo.scl == scl && sda != azo.sda) {
         if (!sda) { azo.state = I_ADDR; azo.bits = 0; azo.byte = 0; azo.ack_slot = false; dev_low[GP16] = false; }   // START
         else {                                                                                                      // STOP
-            if (azo.wlen >= 2 && azo.wbuf[0] == 0xEE && azo.wbuf[1] == 0xEE) azo.ended = true;
+            if (azo.wlen >= 2 && azo.wbuf[0] == 0xEE && azo.wbuf[1] == 0xEE) { azo.ended = true; azo.window = false; azo.asleep = azo.lp_cycle_us > 0; }
             azo.state = I_IDLE; azo.wlen = 0; dev_low[GP16] = false;
         }
     } else if (scl && !azo.scl) { // rising
@@ -65,10 +69,12 @@ static void azo_update(void) {
             } else if (azo.bits == 8) {
                 if (azo.state == I_ADDR) {
                     if ((azo.byte >> 1) != 0x74) { azo.state = I_IDLE; return; }
+                    if (azo.asleep) { azo.asleep = false; azo.window_at = now_us + azo.lp_cycle_us; azo.state = I_IDLE; return; } // NACK
                     azo.rw = azo.byte & 1;
                 } else if (azo.wlen < 8) azo.wbuf[azo.wlen++] = azo.byte;
                 dev_low[GP16] = true; azo.ack_slot = true; azo.bits = 0; azo.byte = 0;
                 azo.stretch_us = 300; // hold SCL low a moment after each byte
+                if (!azo.window) { if (azo.window_at - now_us > 300) azo.stretch_us = azo.window_at - now_us; azo.window = true; }
                 dev_low[GP17] = true;
             }
         } else if (azo.state == I_READ) {
@@ -154,7 +160,7 @@ static void reset(void) {
     for (int i = 0; i < 32; i++) dev_drive[i] = -1;
     memset(&pmw, 0, sizeof(pmw)); memset(&azo, 0, sizeof(azo)); memset(&ps2, 0, sizeof(ps2));
     ps2.clock_low_since = -1; now_us = 0; cs_driven_low = 0;
-    azo.sda = azo.scl = true;
+    azo.sda = azo.scl = true; azo.window = true;
 }
 
 static int failures = 0;
@@ -186,6 +192,16 @@ static void trackpad(void) {
     CHECK(r.detected == SVAL_SENSOR_AZOTEQ && r.id0 == 0 && r.id1 == 40);
     CHECK(azo.ended);          // closed the comms window
     CHECK(cs_driven_low == 0); // never reached the SPI probe
+    all_released();
+}
+
+// Asleep in a low-power mode with a long report cycle, as a trackpad is when nobody touches it.
+static void trackpad_low_power(long cycle_us) {
+    reset(); azo.on = true; azo.product = 40; azo.lp_cycle_us = cycle_us; azo.asleep = true; azo.window = false;
+    sval_probe_result_t r = sval_probe_pointers(0);
+    CHECK(r.detected == SVAL_SENSOR_AZOTEQ && r.id0 == 0 && r.id1 == 40);
+    CHECK(azo.ended);
+    CHECK(cs_driven_low == 0);
     all_released();
 }
 
@@ -221,6 +237,9 @@ int main(void) {
     trackball(0x47, 0xB8, SVAL_SENSOR_PMW3389);
     trackball(0x12, 0x34, SVAL_SENSOR_UNKNOWN);
     trackpad();
+    trackpad_low_power(20000);
+    trackpad_low_power(160000);
+    trackpad_low_power(250000);
     trackpoint();
     skips_own_bus();
     classify();
