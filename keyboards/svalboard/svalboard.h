@@ -97,6 +97,16 @@ void sval_pointer_identity(sval_pointer_identity_t *id);
 // The bus the build's own driver uses (SVAL_BUS_*), which the probes skip; 0 for no module.
 uint8_t sval_pointer_own_bus(void);
 
+// Pointing modes for POINTING_MOTION (Sval 0x2D). global_bits uses SVAL_MOTION_* from
+// pointing_motion.h; axis_state is 0 free, 1 locked vertical, 2 locked horizontal.
+// keymaps/keymap_support.c fills it; the weak default reports nothing active.
+typedef struct {
+    uint8_t global_bits;
+    uint8_t axis_state;
+    bool    left_scroll, right_scroll, left_automouse, right_automouse;
+} sval_pointing_modes_t;
+void sval_pointing_modes(sval_pointing_modes_t *m);
+
 // The other half's reply to the master's KEYBOARD_SYNC_A ping. The magic tells
 // it apart from a stale RPC buffer left by firmware that doesn't fill it.
 #define SVAL_PRESENCE_RSP_MAGIC0 0x53 // 'S'

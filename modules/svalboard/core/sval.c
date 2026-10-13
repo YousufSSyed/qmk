@@ -173,7 +173,11 @@ uint8_t sval_get_feature_flags(void) {
 }
 
 uint8_t sval_get_feature_flags2(void) {
-    return sval_flag2_default_layer_set | sval_flag2_pointing_hardware;
+    uint8_t flags = sval_flag2_default_layer_set | sval_flag2_pointing_hardware;
+#ifdef POINTING_DEVICE_ENABLE
+    flags |= sval_flag2_pointing_motion;
+#endif
+    return flags;
 }
 
 // Storage functions - Tap Dance
@@ -735,6 +739,18 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             break;
         }
 
+        case sval_cmd_pointing_motion: {
+            // Request:  [0xDF] [0x2D]
+            // Response: [0xDF] [0x2D] [format] [report...]
+            // Read-and-clear. format 0: no data. The keyboard defines the report
+            // (Svalboard: keyboards/svalboard/docs/protocol.md).
+            if (length > 2) {
+                memset(&data[2], 0, length - 2);
+                sval_pointing_motion_kb(&data[2], length - 2);
+            }
+            break;
+        }
+
         case sval_cmd_layer_state_set: {
             // Request: [0xDF] [0x17] [state0] [state1] [state2] [state3]
             // Response: [0xDF] [0x17]
@@ -1033,6 +1049,8 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
 __attribute__((weak)) void sval_host_packet_kb(void) {}
 
 __attribute__((weak)) void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {}
+
+__attribute__((weak)) void sval_pointing_motion_kb(uint8_t *out, uint8_t length) {}
 
 // Override via_command_kb to intercept wrapper and Sval protocol
 bool via_command_kb(uint8_t *data, uint8_t length) {

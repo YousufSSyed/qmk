@@ -13,6 +13,7 @@
 #include "scanlab.h"
 #include "keytest.h"
 #include "sval.h"
+#include "pointing_motion.h" // after sval.h: needs the generated fragment ids
 #include "identity.h"
 #include "nvm_via.h"
 
@@ -538,6 +539,82 @@ void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {
     memcpy(&out[1], &mine, sizeof(mine));
     if (is_connected) memcpy(&out[1 + sizeof(mine)], &other_pointer, sizeof(other_pointer));
 }
+
+// The identity block for one hand: this half's, or the other half's while it is connected.
+static inline bool sval_pointer_for_hand(bool left, sval_pointer_identity_t *id, bool *local) {
+    sval_local_pointer_identity(id);
+    *local = true;
+    if (((id->flags & SVAL_POINTER_LEFT) != 0) == left) return true;
+    *local = false;
+    if (is_connected && (other_pointer.flags & SVAL_POINTER_REPORTED) && ((other_pointer.flags & SVAL_POINTER_LEFT) != 0) == left) {
+        *id = other_pointer;
+        return true;
+    }
+    return false;
+}
+
+#ifdef SVAL_FRAGMENT_IDX_LEFT_POINTING
+// Each hand's pointing fragment (Sval 0x18) from the module identity 0x2C reports.
+// 0xFF until that half has settled: not checked yet, or its own module missing before the
+// boot probe of the other buses has run (the other half's probe runs on its own clock, so
+// allow it a second more).
+#    define SVAL_POINTER_SETTLED_MS (SVAL_POINTER_PROBE_AFTER_MS + 1000)
+uint8_t sval_fragment_detect(uint8_t instance_idx) {
+    bool left;
+    if (instance_idx == SVAL_FRAGMENT_IDX_LEFT_POINTING) left = true;
+    else if (instance_idx == SVAL_FRAGMENT_IDX_RIGHT_POINTING) left = false;
+    else return SVAL_FRAGMENT_ID_NONE;
+    sval_pointer_identity_t id;
+    bool                    local;
+    if (!sval_pointer_for_hand(left, &id, &local)) return SVAL_FRAGMENT_ID_NONE;
+    if (id.detected == SVAL_SENSOR_NO_RESPONSE && (local ? !pointer_probed : timer_read32() < SVAL_POINTER_SETTLED_MS)) return SVAL_FRAGMENT_ID_NONE;
+    return sval_pointing_fragment_for_detected(id.detected);
+}
+#endif
+
+__attribute__((weak)) void sval_pointing_modes(sval_pointing_modes_t *m) {
+    memset(m, 0, sizeof(*m));
+}
+
+#if defined(POINTING_DEVICE_ENABLE) && defined(SPLIT_POINTING_ENABLE) && defined(POINTING_DEVICE_COMBINED)
+// Motion since the last POINTING_MOTION (0x2D) read, per physical hand ([0] left).
+static sval_motion_acc_t motion_acc[2];
+static uint32_t          motion_last_read;
+static bool              motion_read_once = false;
+
+// Both halves' reports after rotation and invert, before sniper, boost and scroll
+// conversion (keymap_support.c). Counted only while a host app is talking.
+report_mouse_t pointing_device_task_combined_kb(report_mouse_t left_report, report_mouse_t right_report) {
+    if (sval_host_recent()) {
+        sval_motion_accumulate(&motion_acc[0], left_report.x, left_report.y, left_report.h, left_report.v, left_report.buttons);
+        sval_motion_accumulate(&motion_acc[1], right_report.x, right_report.y, right_report.h, right_report.v, right_report.buttons);
+    }
+    return pointing_device_task_combined_user(left_report, right_report);
+}
+
+void sval_pointing_motion_kb(uint8_t *out, uint8_t length) {
+    if (length < SVAL_MOTION_REPORT_LEN) return;
+    sval_pointing_modes_t modes;
+    sval_pointing_modes(&modes);
+    out[0] = SVAL_MOTION_FORMAT;
+    out[1] = modes.global_bits & 0x3F;
+    out[2] = sval_motion_elapsed(!motion_read_once, timer_elapsed32(motion_last_read));
+    motion_last_read = timer_read32();
+    motion_read_once = true;
+    for (uint8_t hand = 0; hand < 2; hand++) {
+        bool                    left = hand == 0;
+        sval_pointer_identity_t id;
+        bool                    local;
+        if (!sval_pointer_for_hand(left, &id, &local) || !(id.flags & SVAL_POINTER_INIT_OK)) continue; // block stays zero
+        uint8_t flags = SVAL_MOTION_VALID;
+        if (left ? modes.left_scroll : modes.right_scroll) flags |= SVAL_MOTION_SCROLLING;
+        if (left ? modes.left_automouse : modes.right_automouse) flags |= SVAL_MOTION_AUTOMOUSE;
+        sval_motion_pack_hand(&out[left ? SVAL_MOTION_LEFT_OFF : SVAL_MOTION_RIGHT_OFF], &motion_acc[hand], flags);
+    }
+    out[SVAL_MOTION_AXIS_OFF] = modes.axis_state;
+    memset(motion_acc, 0, sizeof(motion_acc));
+}
+#endif
 
 // Custom USB wake handler for split keyboards with NO_USB_STARTUP_CHECK
 // This replaces the wake functionality that NO_USB_STARTUP_CHECK disables
