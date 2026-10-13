@@ -70,9 +70,9 @@
 //
 // The other half (M2, store and forward, D14). With hand = the other side,
 // MANIFEST starts a session for the other half, on this half (the one with
-// USB, where the chord is made, D4). ARM checks the manifest against the
-// other half's side and pointing device by split presence (which must answer
-// MATCH or VERSION, else UNAVAILABLE) and this build's floors; BEGIN, CHUNK and
+// USB, where the chord is made, D4). ARM needs split presence to answer MATCH
+// or VERSION (else UNAVAILABLE) and checks the manifest against this build's
+// floors; BEGIN, CHUNK and
 // END stage and verify the image in this half's slot exactly as for this half.
 // Then:
 //   COMMIT in VERIFIED  -> RELAYING: the image goes to the other half from this
@@ -87,9 +87,11 @@
 // other half (KEYBOARD_UPDATE INFO): the reply has INFO's layout with that
 // half's state, protocol, pointing ID, hand, fw version, storage format, epoch
 // and flags bits 0-3, no JEDEC ID (zeros) and no last error; with no answer it
-// is UNAVAILABLE with state 0xFF (as Scan Lab's relay). This half never
-// commits an image for the other hand: the session never reaches COMMITTING,
-// and the commit's step 0 would refuse its hand anyway.
+// is UNAVAILABLE with state 0xFF (as Scan Lab's relay). The request's hand,
+// not the manifest's, picks the half: a session for the other hand never
+// reaches COMMITTING here. The manifest's hand and pointing device are not
+// checked by either half (D33): an image built for the other side or module
+// is taken, and the host tools warn and ask first.
 //
 // Sessions. MANIFEST from any wrapped client starts loading and ties the load
 // to that client. ARM, from the same client with all 108 bytes, checks the
@@ -248,7 +250,7 @@ static update_status_t fail(update_status_t status) {
 }
 
 // The other half, for a session with its hand: its side and pointing device
-// by split presence, this build's floors (both halves run the same release,
+// by split presence (reported, not checked: D33), this build's floors (both halves run the same release,
 // V; the other half checks the manifest again itself, D7). Only a half that
 // answers presence as MATCH or VERSION can be updated through this one.
 static update_status_t other_device(update_device_t *dev) {

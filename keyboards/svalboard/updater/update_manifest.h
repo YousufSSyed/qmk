@@ -31,7 +31,8 @@
 #define UPDATE_HAND_LEFT 0
 #define UPDATE_HAND_RIGHT 1
 
-// pointing_id: this half's pointing device only (D18). Append-only.
+// pointing_id: this half's pointing device only (D18). Append-only. Reported, and
+// warned about by the host tools, but never checked by the firmware (D33).
 #define UPDATE_POINTING_NONE 0
 #define UPDATE_POINTING_TRACKPOINT 1
 #define UPDATE_POINTING_PMW3360 2
@@ -106,7 +107,7 @@ typedef enum {
     UPDATE_ACCEPTED      = 4,  // slow work started; poll STATUS
     UPDATE_BUSY          = 5,
     UPDATE_NOT_CONFIRMED = 6,  // the gesture was not made in time
-    UPDATE_WRONG_HW      = 7,  // pointing device differs from this build's
+    UPDATE_WRONG_HW      = 7,  // retired: the pointing device is not checked (D33); never returned, kept so codes don't shift
     UPDATE_BAD_SIG       = 8,  // retired: protocol 1's signature check; never returned, kept so codes don't shift
     UPDATE_BAD_HASH      = 9,  // staged image does not match the manifest's SHA-512
     UPDATE_BAD_IMAGE     = 10, // structure checks failed (boot2, SP, reset vector, length, flags)
@@ -116,7 +117,7 @@ typedef enum {
     UPDATE_TOO_LARGE     = 14, // image_len above SVAL_UPDATE_MAX_IMAGE
     UPDATE_TIMEOUT       = 15,
     UPDATE_OTHER_CLIENT  = 16,
-    UPDATE_UNSUPPORTED   = 17, // hand is not this half's, or a manifest/protocol version this build doesn't know
+    UPDATE_UNSUPPORTED   = 17, // the request's hand is neither half's, or a manifest/protocol version this build doesn't know
     UPDATE_STORAGE       = 18, // settings storage format below this device's floor
 } update_status_t;
 

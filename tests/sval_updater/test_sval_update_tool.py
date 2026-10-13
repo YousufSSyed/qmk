@@ -128,6 +128,35 @@ class Args:
     min_rebinds = 0
     no_commit = False
     keep = False
+    yes = False
+    half = None
+
+
+def args_with(**kw):
+    a = Args()
+    for k, v in kw.items():
+        setattr(a, k, v)
+    return a
+
+
+class Answers:
+    """Stands in for the y/N question: each call takes the next answer (EOFError for None)."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.asked = 0
+
+    def __call__(self, prompt):
+        self.asked += 1
+        check("[y/N]" in prompt, f"the question: {prompt!r}")
+        a = self.answers.pop(0) if self.answers else None
+        if a is None:
+            raise EOFError
+        return a
+
+
+def no_question(prompt):
+    raise AssertionError(f"asked {prompt!r} with nothing to ask about")
 
 
 def run_update(svup, commit_available, rebind_every=0.0, min_rebinds=0):
@@ -163,6 +192,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     su.time.sleep = fake_sleep
     su.time.monotonic = fake_monotonic
+    su.ask = no_question  # a matching image is never asked about
 
     img = image(0x5100)
     manifest = mu.build_manifest(img, hand=1, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2,
@@ -365,19 +395,55 @@ def main():
         rc = su.Session(FakeBoard(), a).run(left)
     check(rc == 0 and lib.host_state() == 7 and lib.host_slave_state() == 0, "no-commit: VERIFIED here, nothing relayed")
 
-    # the other half's pointing device is checked at ARM (D18)
+    # Gentle (D33): another pointing device for the other half is a warning and a
+    # question, never a refusal. No, or no answer (EOF): nothing is sent.
     wrong_m = mu.build_manifest(img, hand=0, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2,
                                 fw_version=9, version="left-3389")
     wrong = out / "left3389.svup"
     wrong.write_bytes(wrong_m + img)
+    for answers in (("n",), ("",), (None,)):
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        su.ask = q = Answers(*answers)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as log:
+                su.Session(FakeBoard(), Args()).run(wrong)
+            check(False, f"another pointing device sent without a yes ({answers})")
+        except su.UpdaterError as exc:
+            check("not confirmed" in str(exc) and q.asked == 1, f"no yes: {exc}")
+        text = log.getvalue()
+        check("warning: the image drives pointing pmw3389; the left half's build drives trackpoint" in text, f"warning\n{text}")
+        check(lib.host_state() == 0 and lib.host_slave_state() == 0, "not confirmed: nothing sent")
+    # yes at the question, or --yes: the other half takes it, verifies it and commits it
+    for args, answers in ((Args(), ("y",)), (args_with(yes=True), ())):
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        su.ask = q = Answers(*answers) if answers else no_question
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            rc = su.Session(FakeBoard(), args).run(wrong)
+        text = log.getvalue()
+        check(rc == 0 and lib.host_slave_commits() == 1, f"another pointing device, confirmed: exit {rc}\n{text}")
+        check(("--yes: going ahead" in text) == bool(args.yes), f"--yes noted\n{text}")
+    su.ask = no_question
+
+    # an image for the other hand, sent to the half with USB (--half usb, an MCU moved
+    # between hands): warned, asked, then committed; the auto image is a pointing mismatch too
+    auto_left_m = mu.build_manifest(img, hand=0, pointing_id=5, keymap_id=1, flags=0, epoch=0, storage_format=2,
+                                    fw_version=9, version="left-auto")
+    auto_left = out / "left_auto.svup"
+    auto_left.write_bytes(auto_left_m + img)
     lib.host_lib_reset(1)
-    lib.host_lib_split(1)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            su.Session(FakeBoard(), Args()).run(wrong)
-        check(False, "wrong pointing for the other half accepted")
-    except su.UpdaterError as exc:
-        check("ARM: WRONG_HW" in str(exc), f"wrong pointing: {exc}")
+    su.ask = q = Answers("y")
+    with contextlib.redirect_stdout(io.StringIO()) as log:
+        rc = su.Session(FakeBoard(), args_with(half="usb")).run(auto_left)
+    text = log.getvalue()
+    check(rc == 0 and q.asked == 1, f"--half usb: exit {rc}, asked {q.asked}\n{text}")
+    lib.host_passes(150)
+    check(lib.host_commit_runs() == 1, "--half usb: this half committed the left image")
+    check("warning: the image was built for the left hand; this half runs a right build" in text, f"hand\n{text}")
+    check("the image drives pointing auto (any module); the right half's build drives pmw3389" in text, f"auto\n{text}")
+    check("for the other" not in text, f"--half usb stays on this half\n{text}")
+    su.ask = no_question
 
     # pair: the other half, then this one; the board comes back and presence matches
     lib.host_lib_reset(1)
@@ -397,9 +463,9 @@ def main():
     check("this half fw 9, the other half fw 9" in text and "EXTRAFLAGS=-DSVAL_FW_VERSION=N" not in text, f"pair:\n{text}")
     check("the chord is made twice" in text and text.index("the chord is made twice") < text.index("1/2"), f"pair:\n{text}")
     check(len(sessions) == 2, "pair: two sessions")
-    # pair checks both images against both halves before anything is sent: an
-    # image either half would refuse (here a wrong pointing device) stops it
-    # before the left half is touched
+    # pair asks once, before anything is sent, when an image names another pointing
+    # device than its half runs (D33): no stops it before the left half is touched,
+    # --yes goes ahead with both
     right_wrong_m = mu.build_manifest(img, hand=1, pointing_id=1, keymap_id=1, flags=0, epoch=0,
                                       storage_format=2, fw_version=9, version="right-tp")
     right_wrong = out / "right_tp.svup"
@@ -407,22 +473,39 @@ def main():
     for imgs in ([right_wrong, left], [right, wrong]):
         lib.host_lib_reset(1)
         lib.host_lib_split(1)
+        su.ask = q = Answers("n")
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 su.pair(FakeBoard(), Args(), imgs, [])
-            check(False, f"pair with {imgs[0].name} + {imgs[1].name} accepted")
+            check(False, f"pair with {imgs[0].name} + {imgs[1].name} sent without a yes")
         except su.UpdaterError as exc:
-            check("WRONG_HW" in str(exc) and "nothing was sent" in str(exc), f"pair precheck: {exc}")
+            check("not confirmed" in str(exc) and "nothing was sent" in str(exc) and q.asked == 1, f"pair precheck: {exc}")
         check(lib.host_state() == 0 and lib.host_slave_state() == 0 and lib.host_slave_commits() == 0,
               "pair precheck: nothing started on either half")
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        su.ask = no_question
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            rc = su.pair(FakeBoard(), args_with(yes=True), imgs, [])
+        check(rc == 0 and lib.host_slave_commits() == 1 and lib.host_master_reboots() == 1,
+              f"pair --yes with {imgs[0].name} + {imgs[1].name}: exit {rc}\n{log.getvalue()}")
     # the board's view of an image: the checks update_manifest_check() makes
     base_info = dict(hand_id=1, hand="right", pointing_id=3, pointing="pmw3389", release_build=False, protocol=3,
                      security_epoch=1, storage_format=2, max_image="0x160000")
     base_m = dict(flags=0, hand=1, pointing_id=3, security_epoch=1, storage_format=2, image_len=0x1000,
                   fw_version=5)
     check(su.image_refusal(base_m, base_info) is None, "image_refusal: a fitting image")
-    for change, info_change, want in ((dict(hand=0), {}, "UNSUPPORTED"), (dict(pointing_id=2), {}, "WRONG_HW"),
-                                      ({}, dict(protocol=1), "UNSUPPORTED"), ({}, dict(protocol=2), "UNSUPPORTED"),
+    check(su.image_mismatches(base_m, base_info) == [], "image_mismatches: a fitting image")
+    # another hand or pointing device is never a refusal (D33), only a warning
+    for change, info_change, want in ((dict(hand=0), {}, ["left hand"]), (dict(pointing_id=2), {}, ["pmw3360"]),
+                                      (dict(pointing_id=5), {}, ["auto (any module)"]),
+                                      ({}, dict(pointing_id=5, pointing="auto"), ["build drives auto (any module)"]),
+                                      (dict(hand=0, pointing_id=1), {}, ["left hand", "trackpoint"])):
+        m2, i2 = {**base_m, **change}, {**base_info, **info_change}
+        check(su.image_refusal(m2, i2) is None, f"image_refusal takes {change} {info_change}")
+        got = su.image_mismatches(m2, i2)
+        check(len(got) == len(want) and all(w in g for w, g in zip(want, got)), f"image_mismatches {change} {info_change}: {got}")
+    for change, info_change, want in (({}, dict(protocol=1), "UNSUPPORTED"), ({}, dict(protocol=2), "UNSUPPORTED"),
                                       (dict(flags=2), dict(release_build=True), "BAD_IMAGE"),
                                       (dict(security_epoch=0), {}, "EPOCH"), (dict(storage_format=1), {}, "STORAGE"),
                                       (dict(image_len=0x161000), {}, "TOO_LARGE")):

@@ -1221,6 +1221,11 @@ static void mutate(void (*f)(sval_update_manifest_t *)) {
 
 static void m_hand(sval_update_manifest_t *m) { m->hand = UPDATE_HAND_LEFT; }
 static void m_pointing(sval_update_manifest_t *m) { m->pointing_id = UPDATE_POINTING_PMW3360; }
+static void m_auto(sval_update_manifest_t *m) { m->pointing_id = UPDATE_POINTING_AUTO; }
+static void m_hand_pointing(sval_update_manifest_t *m) {
+    m->hand        = UPDATE_HAND_LEFT;
+    m->pointing_id = UPDATE_POINTING_TRACKPOINT;
+}
 static void m_large(sval_update_manifest_t *m) { m->image_len = SVAL_UPDATE_MAX_IMAGE + 0x100; }
 static void m_unaligned(sval_update_manifest_t *m) { m->image_len = 0x3010; }
 static void m_storage(sval_update_manifest_t *m) { m->storage_format = SVAL_UPDATE_STORAGE_FORMAT - 1; }
@@ -1232,14 +1237,14 @@ static void m_release(sval_update_manifest_t *m) { m->flags = UPDATE_FLAG_RELEAS
 static void m_hash(sval_update_manifest_t *m) { m->sha512[17] ^= 0x20; }
 
 static void test_session_refusals(void) {
-    // refused at ARM, latched: wrong hand, variant, length, floors, magic,
-    // version 1, a nonzero reserved byte
+    // refused at ARM, latched: length, floors, magic, version 1, a nonzero
+    // reserved byte (never the hand or pointing device: D33)
     struct {
         void (*mutate)(sval_update_manifest_t *);
         update_status_t want;
     } const arm_cases[] = {
-        {m_hand, UPDATE_UNSUPPORTED}, {m_pointing, UPDATE_WRONG_HW}, {m_large, UPDATE_TOO_LARGE}, {m_unaligned, UPDATE_BAD_IMAGE},
-        {m_storage, UPDATE_STORAGE},  {m_magic, UPDATE_INVALID},     {m_v1, UPDATE_UNSUPPORTED},  {m_reserved0, UPDATE_INVALID},
+        {m_large, UPDATE_TOO_LARGE}, {m_unaligned, UPDATE_BAD_IMAGE}, {m_storage, UPDATE_STORAGE},
+        {m_magic, UPDATE_INVALID},   {m_v1, UPDATE_UNSUPPORTED},      {m_reserved0, UPDATE_INVALID},
     };
     for (size_t i = 0; i < sizeof(arm_cases) / sizeof(arm_cases[0]); i++) {
         fresh(0x3000);
@@ -1491,6 +1496,35 @@ static void test_session_max_pieces(void) {
     CHECK_EQ(updater_state(), UPDATE_STATE_ERROR);
 }
 
+// Gentle (D33): an image built for the other hand, another pointing device, or
+// auto against a single-module build (and the reverse) goes all the way: ARM,
+// erase, verify and COMMIT, on a plain and on a release build.
+static void test_session_mismatch_accepted(void) {
+    void (*const cases[])(sval_update_manifest_t *) = {m_hand, m_pointing, m_auto, m_hand_pointing};
+    for (int release = 0; release < 2; release++) {
+        for (size_t i = 0; i <= sizeof(cases) / sizeof(cases[0]); i++) {
+            fresh(0x3000);
+            self_dev.release_build = release;
+            if (i < sizeof(cases) / sizeof(cases[0])) {
+                mutate(cases[i]);
+            } else {
+                self_dev.pointing_id = UPDATE_POINTING_AUTO; // a single-module image on an auto build
+            }
+            CHECK(to_verified(CLIENT_A));
+            commit_avail  = true;
+            commit_result = UPDATE_FLASH_ERR; // the mock: any result; it ran
+            uint8_t c[6];
+            put32(c, session_nonce);
+            c[4] = body_crc() & 0xFF;
+            c[5] = (body_crc() >> 8) & 0xFF;
+            CHECK_EQ(send(CLIENT_A, UPDATE_OP_COMMIT, c, 6), UPDATE_ACCEPTED);
+            wait_ms(200);
+            CHECK_EQ(commit_runs, 1);
+            CHECK_EQ(commit_len, img_len);
+        }
+    }
+}
+
 static void test_session(void) {
     int before_failures = failures;
     test_session_info_and_wrapper();
@@ -1503,6 +1537,7 @@ static void test_session(void) {
     test_session_max_pieces();
     test_session_timeouts();
     test_session_refusals();
+    test_session_mismatch_accepted();
     test_session_presence();
     printf("session tests: %s\n", failures == before_failures ? "pass" : "FAIL");
 }

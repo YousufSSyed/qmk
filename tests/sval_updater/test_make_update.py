@@ -57,8 +57,9 @@ def uf2(img, family=mu.RP2040_FAMILY, flags=mu.UF2_FLAG_FAMILY, size=256, addr=N
     return bytes(out)
 
 
-def run(*args):
-    p = subprocess.run([sys.executable, "-I", str(TOOL), *map(str, args)], capture_output=True, text=True)
+def run(*args, answer=""):
+    """The tool with stdin holding answer: empty is no answer (EOF) at its y/N question."""
+    p = subprocess.run([sys.executable, "-I", str(TOOL), *map(str, args)], capture_output=True, text=True, input=answer)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -274,12 +275,33 @@ def main():
     refuse_rel("an image built from another keymap", "not a release keymap build", release_img(keymap_id=0),
                "--kb", "svalboard/right", "--keymap-id", "1", "--release")
     refuse_rel("a host-test record", "not a release keymap build", release_img(hand=0xFF, pointing_id=0xFF))
-    # The right image for the right half, release or not: the record names its side and pointing device.
+    # Gentle (D33), release or not: a --kb that is not the image's side or pointing device
+    # (auto labeled as one module, a right image as left) is a warning the user confirms.
+    # No answer (no terminal) or no writes nothing; y or --yes writes it as labeled.
     for args in (rel_common, ["--kb", "svalboard/right"]):
-        refuse_rel("a right image labeled left", "the manifest says hand 0, the image was built with 1", None,
-                   "--kb", "svalboard/left", *args[2:])
-        refuse_rel("a plain image labeled pmw3389", "the manifest says pointing_id 3, the image was built with 5", None,
-                   "--kb", "svalboard/trackball/pmw3389/right", *args[2:])
+        for kb, needle, hp in (("svalboard/left", "says side left (hand 0), but the image was built for right", (0, 5)),
+                               ("svalboard/trackball/pmw3389/right",
+                                "says pointing device pmw3389 (pointing_id 3), but the image was built for auto", (1, 3))):
+            for answer, extra, ok in (("", [], False), ("n\n", [], False), ("y\n", [], True), ("", ["--yes"], True)):
+                src = tmp / "mis.uf2"
+                src.write_bytes(uf2(release_img()))
+                target = tmp / "mis.svup"
+                if target.exists():
+                    target.unlink()
+                rc, text = run(src, "-o", target, "--kb", kb, *args[2:], *extra, answer=answer)
+                what = f"{kb} {args[2:]} {extra} answer {answer!r}"
+                check(needle in text and "refused: the" not in text, f"{what}: warned: {text.strip()}")
+                if ok:
+                    check(rc == 0 and target.exists(), f"{what}: written: rc {rc}: {text.strip()}")
+                    if target.exists():
+                        g = mu.parse_manifest(target.read_bytes()[:mu.MANIFEST_BYTES])
+                        check((g["hand"], g["pointing_id"]) == hp, f"{what}: labeled as --kb says {g}")
+                    check(("--yes: going ahead" in text) == bool(extra), f"{what}: --yes noted")
+                else:
+                    check(rc == 2 and "not confirmed" in text and not target.exists(), f"{what}: not written: rc {rc}: {text.strip()}")
+    # the matching --kb is never asked about (stdin empty: a question would refuse)
+    rc, text, _ = rel("match", release_img(), *rel_common)
+    check(rc == 0 and "warning" not in text, f"a matching --kb: no question: {text.strip()}")
     rc, text, _ = rel("fwmismatch", release_img(), *rel_common, "--fw-version", "9")
     check(rc == 2 and "reports 3" in text, f"refuses a --fw-version the image contradicts: {text.strip()}")
     rc, text, _ = rel("vmismatch", release_img(), *rel_common, "--version-string", "vOther")

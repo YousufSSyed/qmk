@@ -51,9 +51,10 @@ update_status_t update_manifest_check(const sval_update_manifest_t *m, const upd
     if (m->reserved0 != 0 || m->reserved != 0 || (m->flags & ~UPDATE_FLAGS_KNOWN)) return UPDATE_INVALID;
     // A release build takes no DIAGNOSTIC image.
     if (dev->release_build && (m->flags & UPDATE_FLAG_DIAGNOSTIC)) return UPDATE_BAD_IMAGE;
-    // This half, this build.
-    if (m->hand != dev->hand) return UPDATE_UNSUPPORTED;
-    if (m->pointing_id != dev->pointing_id) return UPDATE_WRONG_HW;
+    // The manifest's hand and pointing_id are not checked (D33): an image built for
+    // the other side or another pointing module is taken, since moving an MCU between
+    // hands or modules is a valid use. The request's hand picks the half; the host
+    // tools warn about a mismatch and ask first.
     // Downgrade floors (D19).
     if (m->security_epoch < dev->security_epoch) return UPDATE_EPOCH;
     if (m->storage_format < dev->storage_format) return UPDATE_STORAGE;

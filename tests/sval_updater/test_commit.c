@@ -315,7 +315,7 @@ static void test_commit_refusals(void) {
         const char     *what;
         update_status_t want;
     } cases[] = {
-        {"settings failing", UPDATE_UNAVAILABLE}, {"die not 16 MiB", UPDATE_UNAVAILABLE}, {"wrong hand", UPDATE_UNSUPPORTED},
+        {"settings failing", UPDATE_UNAVAILABLE}, {"die not 16 MiB", UPDATE_UNAVAILABLE}, {"reserved byte", UPDATE_INVALID},
         {"slot byte changed", UPDATE_BAD_HASH},   {"other CRC", UPDATE_BAD_HASH},         {"bad SP, hashed", UPDATE_BAD_IMAGE},
         {"running boot2 bad", UPDATE_FLASH_ERR},  {"ROM pointer bad", UPDATE_UNAVAILABLE}, {"no watchdog tick", UPDATE_UNAVAILABLE},
         {"epoch floor", UPDATE_EPOCH},            {"manifest hash differs", UPDATE_BAD_HASH},
@@ -325,7 +325,7 @@ static void test_commit_refusals(void) {
         switch (i) {
             case 0: port_failing = true; break;
             case 1: capacity = 0x15; probed = false; break;
-            case 2: blob_manifest()->hand = UPDATE_HAND_LEFT; break;
+            case 2: blob_manifest()->reserved0 = 1; break; // the manifest check runs again
             case 3: update_host_flash[SVAL_UPDATE_BASE + 0x2345] ^= 0x04; break;
             case 4: run_crc_xor = 0x10000; break;
             case 5:
@@ -362,6 +362,13 @@ static void test_commit_refusals(void) {
         CHECK_EQ(latches, 1);
         CHECK(buf_zero());
     }
+    // Gentle (D33): an image for the other hand and another pointing device is
+    // committed; step 0 checks only integrity and structure.
+    commit_setup(0x3000);
+    blob_manifest()->hand        = UPDATE_HAND_LEFT;
+    blob_manifest()->pointing_id = UPDATE_POINTING_AZOTEQ;
+    CHECK_EQ(commit_go(), LAND_RESET);
+    CHECK(image_in_place(0x3000));
     // DMA channels configured but idle are fine.
     commit_setup(0x3000);
     for (uint32_t ch = 0; ch < DMA_CHANNELS; ch++) hw.dma[ch] = 0x00F00021u;

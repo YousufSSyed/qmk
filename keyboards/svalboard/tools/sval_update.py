@@ -12,17 +12,23 @@ open handle.
     sval_update.py relay
     sval_update.py diag [--clear]
     sval_update.py abort [--nonce N]
-    sval_update.py update FILE.svup [--delay S] [--rebind-every S] [--min-rebinds N]
-                                    [--no-commit] [--halt POINT [--halt-unfed]]
-    sval_update.py pair FILE1.svup FILE2.svup [--delay S] [--rebind-every S]
+    sval_update.py update FILE.svup [--half usb|other] [--yes] [--delay S] [--rebind-every S]
+                                    [--min-rebinds N] [--no-commit] [--halt POINT [--halt-unfed]]
+    sval_update.py pair FILE1.svup FILE2.svup [--yes] [--delay S] [--rebind-every S]
     sval_update.py reject FILE.svup
 
 update sends the manifest, prints the manifest hash you confirm, waits for the
 chord (Index South + Middle South held for 1 s on the half with USB), then
 erases, sends the image, verifies and commits.
 
-The image's own hand picks the half. An image for the other half (the one
-without USB) is staged and verified on the half with USB, then relayed to the
+The image's own hand picks the half, unless --half says which: usb (the half
+with USB) or other. The firmware checks only an image's integrity and
+structure (D33), never its hand or pointing device: an image built for the
+other hand or for another pointing module (an any-module "auto" image on a
+single-module build, or the reverse) is taken, since moving an MCU between
+hands or modules is a valid use. So the tool warns about every such mismatch
+and asks before sending anything (y/N); --yes skips the question. An image
+for the other half (the one without USB) is staged and verified on the half with USB, then relayed to the
 other half, which checks the manifest and hash itself (D7); a second COMMIT
 makes it write the image and reset. The link to it pauses while it erases,
 verifies and commits (both halves type while the image streams). The tool
@@ -31,7 +37,9 @@ only one half updated the halves differ, which is not supported (V): the half
 with USB blinks red until both match. pair does both: the other half first,
 then the half with USB over USB (the chord twice, once per image), then waits
 for the board to come back and for presence to show the same release on both
-halves within 10 s. relay prints the relay's progress; info --other asks the
+halves within 10 s. pair picks each image by the hand each half reports, and
+asks once (or --yes) if either image names another pointing device than its
+half runs. relay prints the relay's progress; info --other asks the
 other half. The client ID is renewed every
 --rebind-every seconds (50, as Keybard does) and the session moved to it with
 REBIND; after each REBIND the old ID must be refused. The number of renewals is
@@ -249,17 +257,14 @@ def check_protocol(info):
 
 def image_refusal(m, info, other=False):
     """Why a half would refuse this manifest, as far as its INFO shows (None: no reason seen).
-    The same order of checks as update_manifest_check() (update_image.c). other: the half
-    without USB, reached over the split cable, whose relay protocols 2 and 3 share."""
+    The same order of checks as update_manifest_check() (update_image.c): integrity and
+    structure only, never the hand or pointing device (D33; see image_mismatches). other:
+    the half without USB, reached over the split cable, whose relay protocols 2 and 3 share."""
     if info["protocol"] not in (OTHER_HALF_PROTOS if other else (make_update.UPDATER_PROTO,)):
         return (f"UNSUPPORTED: the half speaks updater protocol {info['protocol']}, this tool "
                 f"{make_update.UPDATER_PROTO} (flash it with BOOTSEL and the .uf2)")
     if info["release_build"] and m["flags"] & make_update.FLAG_DIAGNOSTIC:
         return "BAD_IMAGE: a DIAGNOSTIC image on a release build"
-    if m["hand"] != info["hand_id"]:
-        return f"UNSUPPORTED: the image is for hand {HANDS.get(m['hand'], m['hand'])}, the half is {info['hand']}"
-    if m["pointing_id"] != info["pointing_id"]:
-        return f"WRONG_HW: the image is for pointing {POINTING.get(m['pointing_id'], m['pointing_id'])}, the half has {info['pointing']}"
     if m["security_epoch"] < info["security_epoch"]:
         return f"EPOCH: image epoch {m['security_epoch']}, the half's floor {info['security_epoch']}"
     if m["storage_format"] < info["storage_format"]:
@@ -267,6 +272,50 @@ def image_refusal(m, info, other=False):
     if m["image_len"] > int(info["max_image"], 16):
         return f"TOO_LARGE: {m['image_len']} B, the half takes at most {info['max_image']}"
     return None
+
+
+def pointing_text(pid):
+    if pid == make_update.POINTING["auto"]:
+        return "auto (any module)"
+    return POINTING.get(pid, f"pointing {pid}")
+
+
+def image_mismatches(m, info):
+    """Where the image was built for another hand or pointing device than the half runs,
+    as warnings. The firmware takes such an image (D33); the tool asks first."""
+    out = []
+    if m["hand"] != info["hand_id"]:
+        side = HANDS.get(m["hand"], m["hand"])
+        out.append(f"the image was built for the {side} hand; this half runs a {info['hand']} build. "
+                   f"Afterwards its updater and split presence report it as the {side} half")
+    if m["pointing_id"] != info["pointing_id"]:
+        want, have = pointing_text(m["pointing_id"]), pointing_text(info["pointing_id"])
+        note = ""
+        if m["pointing_id"] != make_update.POINTING["auto"]:
+            note = f"; only a {want} module will work on that half afterwards"
+        out.append(f"the image drives pointing {want}; the {info['hand']} half's build drives {have}{note}")
+    return out
+
+
+def ask(prompt):
+    return input(prompt)
+
+
+def confirm_mismatches(warnings, args, where=""):
+    """Print each mismatch and ask (y/N), unless --yes. Refusing sends nothing."""
+    if not warnings:
+        return
+    for w in warnings:
+        print(f"warning: {where}{w}")
+    if getattr(args, "yes", False):
+        print("--yes: going ahead")
+        return
+    try:
+        answer = ask("Flash it anyway? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        raise UpdaterError("not confirmed: nothing was sent (--yes skips the question)")
 
 
 def fw_differs(seen, m):
@@ -396,7 +445,7 @@ class Session:
             time.sleep(0.2)
         raise UpdaterError(f"{what}: no progress in {timeout} s")
 
-    def run(self, path, confirm_other=True):
+    def run(self, path, confirm_other=True, confirmed=False):
         data = Path(path).read_bytes()
         manifest, image = make_update.parse_svup(data)
         self.image = image
@@ -408,19 +457,25 @@ class Session:
         info = decode_info(*self.dev.op(INFO))
         board_hand = info["hand_id"]
         manifest_piece, chunk_piece = check_protocol(info)
-        # The image's own hand picks the half: this one, or the other one through it (M2).
-        self.other = m["hand"] in HANDS and m["hand"] == board_hand ^ 1
-        self.hand = m["hand"] if self.other else board_hand
+        # The image's own hand picks the half, this one or the other one through it (M2),
+        # unless --half says which.
+        half = getattr(self.args, "half", None)
+        if half == "usb":
+            self.other = False
+        elif half == "other":
+            self.other = True
+        else:
+            self.other = m["hand"] in HANDS and m["hand"] == board_hand ^ 1
+        self.hand = board_hand ^ 1 if self.other else board_hand
         if getattr(self.args, "halt", None) and not info["test_hooks"]:
             raise UpdaterError("--halt needs an SVAL_UPDATE_TEST_HOOKS build on the board")
         if getattr(self.args, "halt", None) and self.other:
             raise UpdaterError("--halt is for the half with USB only")
         print(f"board: {info['hand']} half, pointing {info['pointing']}, JEDEC {info['jedec']}, state {info['state']}, "
               f"status {info['status']}")
-        if self.other:
-            self.other_half(m)
-        elif m["hand"] != self.hand or m["pointing_id"] != info["pointing_id"]:
-            print(f"warning: image is for hand {m['hand']}, pointing {m['pointing_id']}; the board will refuse it")
+        target = self.other_half(m) if self.other else info
+        if not confirmed:
+            confirm_mismatches(image_mismatches(m, target), self.args)
         print(f"image: {version!r} ({m['fw_version']}), {len(image)} B, flags {m['flags']:#x}"
               + (f", for the other ({HANDS[self.hand]}) half" if self.other else ""))
 
@@ -526,9 +581,6 @@ class Session:
         oi = decode_info(st, r)
         print(f"other half: {oi['hand']}, pointing {oi['pointing']}, fw {oi['fw_version']}, state {oi['state']}, "
               f"status {oi['status']}, presence {s['other_half']}")
-        if m["pointing_id"] != oi["pointing_id"]:
-            print(f"warning: image is for pointing {m['pointing_id']}, the other half has {oi['pointing_id']}; "
-                  "it will be refused")
         return oi
 
     def relay(self):
@@ -673,17 +725,19 @@ def pair(dev, args, paths, sessions):
         why = image_refusal(m, infos[m["hand"]], other=m["hand"] != board)
         if why:
             raise UpdaterError(f"pair: {p.name} would be refused by the {HANDS[m['hand']]} half ({why}); nothing was sent")
+    # The hands match by construction; another pointing device is a warning (D33), asked once.
+    confirm_mismatches([f"{p.name}: {w}" for p, m in other + this for w in image_mismatches(m, infos[m["hand"]])], args)
     print("pair: the chord is made twice, both times on this half (the one with USB): once for each image")
     print(f"== 1/2: the other ({HANDS[board ^ 1]}) half, {other[0][0].name} ==")
     sessions.append(Session(dev, args))
-    rc = sessions[-1].run(other[0][0], confirm_other=False)
+    rc = sessions[-1].run(other[0][0], confirm_other=False, confirmed=True)
     if rc != 0:
         return rc
     # Straight on, without waiting to hear from the other half: it may not be
     # able to talk to this half's old firmware (V).
     print(f"== 2/2: this ({HANDS[board]}) half, {this[0][0].name} ==")
     sessions.append(Session(dev, args))
-    rc = sessions[-1].run(this[0][0])
+    rc = sessions[-1].run(this[0][0], confirmed=True)
     if rc != 0:
         return rc
     serial = dev.serial
@@ -864,6 +918,9 @@ def main():
     rj.add_argument("svup", type=Path, help="an image this half accepts")
     up = sub.add_parser("update")
     up.add_argument("svup", type=Path)
+    up.add_argument("--half", choices=("usb", "other"),
+                    help="the half to update (default: the image's own hand picks it); for an MCU moved between hands")
+    up.add_argument("--yes", action="store_true", help="flash an image built for another hand or pointing device without asking")
     up.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
     up.add_argument("--rebind-every", type=float, default=50.0, help="renew the client ID and REBIND every S seconds (0: never)")
     up.add_argument("--min-rebinds", type=int, default=0, help="fail before COMMIT unless at least N renewals happened (M1 #16)")
@@ -874,6 +931,7 @@ def main():
     up.add_argument("--halt-unfed", action="store_true", help="with --halt: let the watchdog reset the board (M1 #9)")
     pr = sub.add_parser("pair", help="update both halves: the other one through this one, then this one (M2)")
     pr.add_argument("svup", type=Path, nargs=2, help="one image for each half, in any order")
+    pr.add_argument("--yes", action="store_true", help="flash images built for another pointing device without asking")
     pr.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
     pr.add_argument("--rebind-every", type=float, default=50.0, help="renew the client ID and REBIND every S seconds (0: never)")
     pr.add_argument("--keep", action="store_true", help="on failure, leave the session for inspection instead of ABORTing")

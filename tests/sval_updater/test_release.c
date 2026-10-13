@@ -114,6 +114,18 @@ int main(int argc, char **argv) {
     m.manifest_ver = 1;
     CHECK(update_manifest_check(&m, &dev) == UPDATE_UNSUPPORTED); // version 1 (signed) manifests
     m.manifest_ver = UPDATE_MANIFEST_VERSION;
+    // gentle (D33): a release build takes a release image for the other hand or
+    // another pointing device, auto included, either way round
+    m.hand = UPDATE_HAND_LEFT;
+    CHECK(update_manifest_check(&m, &dev) == UPDATE_OK);
+    m.pointing_id = UPDATE_POINTING_AUTO;
+    CHECK(update_manifest_check(&m, &dev) == UPDATE_OK);
+    dev.pointing_id = UPDATE_POINTING_AUTO;
+    m.pointing_id   = UPDATE_POINTING_TRACKPOINT;
+    CHECK(update_manifest_check(&m, &dev) == UPDATE_OK);
+    dev.pointing_id = UPDATE_POINTING_PMW3389;
+    m.hand          = UPDATE_HAND_RIGHT;
+    m.pointing_id   = UPDATE_POINTING_PMW3389;
     for (unsigned k = 1; k < 256; k++) {
         m.reserved0 = (uint8_t)k; // version 1's key_id
         CHECK(update_manifest_check(&m, &dev) == UPDATE_INVALID);
