@@ -583,9 +583,9 @@ static uint32_t          motion_last_read;
 static bool              motion_read_once = false;
 
 // Both halves' reports after rotation and invert, before sniper, boost and scroll
-// conversion (keymap_support.c). Counted only while a host app is talking.
+// conversion (keymap_support.c). Counted only while a host app is reading them.
 report_mouse_t pointing_device_task_combined_kb(report_mouse_t left_report, report_mouse_t right_report) {
-    if (sval_host_recent()) {
+    if (motion_read_once && timer_elapsed32(motion_last_read) < SVAL_HOST_ACTIVE_MS) {
         sval_motion_accumulate(&motion_acc[0], left_report.x, left_report.y, left_report.h, left_report.v, left_report.buttons);
         sval_motion_accumulate(&motion_acc[1], right_report.x, right_report.y, right_report.h, right_report.v, right_report.buttons);
     }

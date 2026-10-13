@@ -1054,8 +1054,11 @@ __attribute__((weak)) void sval_pointing_motion_kb(uint8_t *out, uint8_t length)
 
 // Override via_command_kb to intercept wrapper and Sval protocol
 bool via_command_kb(uint8_t *data, uint8_t length) {
-    // Every host packet reaches this hook, including the ones VIA handles below.
-    sval_host_packet_kb();
+    // Every host packet reaches this hook, including the ones VIA handles below. The live
+    // pointer poll (wrapped 0x2D) doesn't count: a host app showing the pointer polls for as
+    // long as it's open, which would keep the board out of deep idle the whole time.
+    bool live_poll = length > 6 && data[0] == WRAPPER_PREFIX && data[5] == SVAL_PREFIX && data[6] == sval_cmd_pointing_motion;
+    if (!live_poll) sval_host_packet_kb();
     switch (data[0]) {
         case WRAPPER_PREFIX: // 0xDD - Client ID wrapper
             return client_wrapper_receive(data, length);
