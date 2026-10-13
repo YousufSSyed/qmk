@@ -48,3 +48,8 @@ ifeq ($(strip $(SVAL_KEYTEST)), yes)
   SRC += keytest.c
   OPT_DEFS += -DSVAL_KEYTEST
 endif
+
+# Bench builds that reset stored settings when flashed over other firmware; opt in with -e SVAL_TEST_WIPE=yes.
+ifeq ($(strip $(SVAL_TEST_WIPE)), yes)
+  OPT_DEFS += -DSVAL_TEST_WIPE
+endif
