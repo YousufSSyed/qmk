@@ -49,8 +49,7 @@ def main(argv):
             except (mu.Refused, OSError) as e:
                 problems.append(f"{n}: {e}")
                 continue
-            p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "verify", str(svup),
-                                "--build", "release"], capture_output=True, text=True)
+            p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "verify", str(svup), "--build", "release"], capture_output=True, text=True)
             print((p.stdout + p.stderr).strip())
             if p.returncode:
                 problems.append(f"{n}: a release build refuses its .svup")

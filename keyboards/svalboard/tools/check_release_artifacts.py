@@ -57,8 +57,7 @@ def elf_flash_image(path):
     e_phentsize, e_phnum = struct.unpack_from("<HH", data, 0x2A)
     segs = []
     for i in range(e_phnum):
-        p_type, p_offset, _vaddr, p_paddr, p_filesz, _memsz, _flags, _align = struct.unpack_from(
-            "<8I", data, e_phoff + i * e_phentsize)
+        p_type, p_offset, _vaddr, p_paddr, p_filesz, _memsz, _flags, _align = struct.unpack_from("<8I", data, e_phoff + i * e_phentsize)
         if p_type == PT_LOAD and p_filesz:
             segs.append((p_paddr, data[p_offset:p_offset + p_filesz]))
     if not segs:
@@ -91,8 +90,10 @@ def check_dir(d, version):
     if problems:
         return hashes, problems
     for n, (kb, km) in sorted(want.items()):
+
         def bad(msg):
             problems.append(f"{n}: {msg}")
+
         try:
             raw, img = mu.parse_svup((d / f"{n}_{version}.svup").read_bytes())
             if elf_flash_image(d / f"{n}.elf") != img:

@@ -58,8 +58,7 @@ def check(path):
     if len(info) != 1 or info[0][1] != mu.BUILD_INFO_BYTES:
         errors.append(f"expected one {mu.BUILD_INFO_BYTES}-byte sval_update_build_info, found {info}")
     else:
-        (magic, ver, flags, reserved0, proto, fw, version, hand, pointing_id, keymap_id,
-         reserved) = struct.unpack(mu.BUILD_INFO_FMT, read(info[0][0], mu.BUILD_INFO_BYTES))
+        (magic, ver, flags, reserved0, proto, fw, version, hand, pointing_id, keymap_id, reserved) = struct.unpack(mu.BUILD_INFO_FMT, read(info[0][0], mu.BUILD_INFO_BYTES))
         if magic + bytes([ver]) != mu.BUILD_INFO_MAGIC:
             errors.append(f"sval_update_build_info has magic {magic!r} version {ver}")
         if hand not in mu.HAND.values() or pointing_id not in mu.POINTING.values() or reserved or reserved0:

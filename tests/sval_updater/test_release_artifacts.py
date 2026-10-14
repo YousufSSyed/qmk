@@ -59,17 +59,14 @@ def elf(flash, extra_ram=b""):
 def image_for(kb, km, data_tail=b""):
     hand, pointing_id = mu.kb_fields(kb)
     body = bytearray(tmu.image(0x1800))
-    rec = struct.pack(mu.BUILD_INFO_FMT, b"SVBI", 3, mu.BI_RELEASE, 0, mu.UPDATER_PROTO, 3,
-                      VER.encode().ljust(16, b"\0"), hand, pointing_id, mu.KEYMAP[km], 0)
+    rec = struct.pack(mu.BUILD_INFO_FMT, b"SVBI", 3, mu.BI_RELEASE, 0, mu.UPDATER_PROTO, 3, VER.encode().ljust(16, b"\0"), hand, pointing_id, mu.KEYMAP[km], 0)
     body[0x800:0x800 + len(rec)] = rec
     return bytes(body)
 
 
 def make_svup(src, out, kb, km, raw=False):
     """make_update.py --release, as a release build job runs it."""
-    return subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), str(src), *(["--raw"] if raw else []),
-                           "-o", str(out), "--kb", kb, "--keymap", km, "--release", "--expect-version", VER],
-                          capture_output=True, text=True)
+    return subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), str(src), *(["--raw"] if raw else []), "-o", str(out), "--kb", kb, "--keymap", km, "--release", "--expect-version", VER], capture_output=True, text=True)
 
 
 def make_dir(d):
@@ -98,9 +95,7 @@ def main():
     good = out / "good"
     make_dir(good)
     hashes, problems = cra.check_dir(good, VER)
-    check([b for b in cra.RELEASE_BUILDS] == [("svalboard/left", "sval"), ("svalboard/right", "sval"),
-                                              ("svalboard/left", "blank"), ("svalboard/right", "blank")],
-          f"the release is the two auto builds with sval and blank (D34, D40): {cra.RELEASE_BUILDS}")
+    check([b for b in cra.RELEASE_BUILDS] == [("svalboard/left", "sval"), ("svalboard/right", "sval"), ("svalboard/left", "blank"), ("svalboard/right", "blank")], f"the release is the two auto builds with sval and blank (D34, D40): {cra.RELEASE_BUILDS}")
     check(all(mu.kb_fields(kb)[1] == mu.POINTING["auto"] for kb, _ in cra.RELEASE_BUILDS), "release builds are auto")
     check(not problems and len(hashes) == 4, f"a clean directory passes: {problems}")
     check(quiet_main([str(good), "--version", VER]) == 0, "main passes a clean directory")
@@ -138,14 +133,12 @@ def main():
         b[at] = value
         (d / f"{n}_{VER}.svup").write_bytes(b)
 
-    case("a flipped image byte with a re-made manifest", "not the ELF's flash contents",
-         lambda d: resvup(d, r, "svalboard/right", "sval"))
+    case("a flipped image byte with a re-made manifest", "not the ELF's flash contents", lambda d: resvup(d, r, "svalboard/right", "sval"))
     case("a flipped .svup image byte", "SHA-512", lambda d: flip(d / f"{r}_{VER}.svup", 108 + 0x1000))
     case("a flipped .uf2 byte", "the .uf2 does not hold the .svup's image", lambda d: flip(d / f"{r}_{VER}.uf2", 32 + 0x10))
     case("another ELF", "not the ELF's flash contents", lambda d: shutil.copy(d / f"{l}.elf", d / f"{r}.elf"))
-    case("a left build as right", "the manifest says hand 0", lambda d: [
-        shutil.copy(d / f"{l}{x}", d / f"{r}{x}") for x in (".elf",)]
-        + [shutil.copy(d / f"{l}_{VER}{x}", d / f"{r}_{VER}{x}") for x in (".uf2", ".svup")])
+    case("a left build as right", "the manifest says hand 0", lambda d: [shutil.copy(d / f"{l}{x}", d / f"{r}{x}") for x in (".elf",)] + [shutil.copy(d / f"{l}_{VER}{x}", d / f"{r}_{VER}{x}") for x in (".uf2", ".svup")])
+
     def replace_with(d, kb, km):
         """The right release build's three files swapped for another build's (a per-module or blank image)."""
         flash = image_for(kb, km)
@@ -156,13 +149,10 @@ def main():
         check(p.returncode == 0, f"make_update.py --release {kb}:{km}: {p.stdout}{p.stderr}")
 
     case("a blank build as sval", "keymap_id 2", lambda d: replace_with(d, "svalboard/right", "blank"))
-    case("an sval build as blank", "the manifest says keymap_id 1", lambda d: [
-        shutil.copy(d / f"{r}.elf", d / f"{rb}.elf")]
-        + [shutil.copy(d / f"{r}_{VER}{x}", d / f"{rb}_{VER}{x}") for x in (".uf2", ".svup")])
+    case("an sval build as blank", "the manifest says keymap_id 1", lambda d: [shutil.copy(d / f"{r}.elf", d / f"{rb}.elf")] + [shutil.copy(d / f"{r}_{VER}{x}", d / f"{rb}_{VER}{x}") for x in (".uf2", ".svup")])
     case("a missing blank build", "missing", lambda d: (d / f"{rb}_{VER}.uf2").unlink())
     case("a per-module build as the release", "pointing_id 3", lambda d: replace_with(d, "svalboard/trackball/pmw3389/right", "sval"))
-    case("a per-module build's files", "unexpected file",
-         lambda d: (d / "svalboard_trackpoint_right_sval.elf").write_bytes((d / f"{r}.elf").read_bytes()))
+    case("a per-module build's files", "unexpected file", lambda d: (d / "svalboard_trackpoint_right_sval.elf").write_bytes((d / f"{r}.elf").read_bytes()))
     case("a manifest edited to the other hand", "the manifest says hand 0", lambda d: svup_byte(d, r, 7, 0))
     case("a manifest without RELEASE", "flags 0x0", lambda d: svup_byte(d, r, 10, 0))
     case("a nonzero reserved byte", "reserved", lambda d: svup_byte(d, r, 6, 1))
