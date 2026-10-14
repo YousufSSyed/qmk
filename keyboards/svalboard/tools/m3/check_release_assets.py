@@ -3,8 +3,9 @@
 
     check_release_assets.py DIR TAG
 
-DIR must hold exactly NAME_TAG.uf2 and NAME_TAG.svup for each of the 2
-release builds (svalboard/left and svalboard/right, keymap sval: D34). For each pair: the .svup's image is the .uf2's image;
+DIR must hold exactly NAME_TAG.uf2 and NAME_TAG.svup for each of the 4
+release builds (svalboard/left and svalboard/right, keymaps sval and blank:
+D34, D40). For each pair: the .svup's image is the .uf2's image;
 its manifest says TAG and the build's side, pointing device and keymap; the
 image's build-info record agrees; and make_update.py verify --build release
 accepts it (manifest rules, hash, structure). Exit 1 on any failure.
@@ -48,8 +49,7 @@ def main(argv):
             except (mu.Refused, OSError) as e:
                 problems.append(f"{n}: {e}")
                 continue
-            p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "verify", str(svup),
-                                "--build", "release"], capture_output=True, text=True)
+            p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "verify", str(svup), "--build", "release"], capture_output=True, text=True)
             print((p.stdout + p.stderr).strip())
             if p.returncode:
                 problems.append(f"{n}: a release build refuses its .svup")

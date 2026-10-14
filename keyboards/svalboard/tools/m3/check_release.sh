@@ -6,7 +6,7 @@
 #
 # Downloads into ~/m3dry/TAG (kept: the hardware check uses these files).
 # A dry-run tag must be a prerelease; any release must not be a draft and
-# must hold exactly 2 .uf2 and 2 .svup files (D34).
+# must hold exactly 4 .uf2 and 4 .svup files (D34, D40).
 set -euo pipefail
 tag="${1:?usage: check_release.sh TAG [OWNER/REPO]}"
 R="${2:-morganvenable/sval-qmk}"
