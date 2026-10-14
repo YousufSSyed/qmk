@@ -3,9 +3,10 @@
 
     check_release_artifacts.py DIR --version TAG
 
-DIR holds what release CI's build jobs uploaded: for each of the 2 release
-builds NAME (svalboard_left_sval, svalboard_right_sval: D34) exactly
-NAME.elf, NAME_TAG.uf2 and NAME_TAG.svup, and nothing else. For each build
+DIR holds what release CI's build jobs uploaded: for each of the 4 release
+builds NAME (svalboard_left_sval, svalboard_right_sval, svalboard_left_blank,
+svalboard_right_blank: D34, D40) exactly NAME.elf, NAME_TAG.uf2 and
+NAME_TAG.svup, and nothing else. For each build
 this checks, and exits 1 on any failure:
 
   - the .svup's image is the ELF's flash contents: the ELF's loadable
@@ -33,9 +34,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import make_update as mu  # noqa: E402
 
-# The release builds: release.yml's build_sval matrix. One auto build per side,
-# with every pointing driver (pointing_id auto), keymap sval (D34).
-RELEASE_BUILDS = [(f"svalboard/{side}", "sval") for side in ("left", "right")]
+# The release builds: release.yml's build matrix. One auto build per side and
+# keymap, with every pointing driver (pointing_id auto, D34); keymaps sval and
+# blank, the test image with no key bindings (D40).
+RELEASE_KEYMAPS = ("sval", "blank")
+RELEASE_BUILDS = [(f"svalboard/{side}", km) for km in RELEASE_KEYMAPS for side in ("left", "right")]
 PT_LOAD = 1
 
 

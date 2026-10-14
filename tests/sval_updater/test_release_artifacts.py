@@ -3,7 +3,7 @@
 
     test_release_artifacts.py OUT_DIR
 
-Builds a synthetic release directory (for each of the 2 release builds: a
+Builds a synthetic release directory (for each of the 4 release builds: a
 minimal ELF with one loadable segment at 0x10000000, the .uf2, and the .svup
 from make_update.py --release), checks that it passes, and that each kind of
 substitution is refused.
@@ -98,14 +98,16 @@ def main():
     good = out / "good"
     make_dir(good)
     hashes, problems = cra.check_dir(good, VER)
-    check([b for b in cra.RELEASE_BUILDS] == [("svalboard/left", "sval"), ("svalboard/right", "sval")],
-          f"the release is the two auto builds (D34): {cra.RELEASE_BUILDS}")
+    check([b for b in cra.RELEASE_BUILDS] == [("svalboard/left", "sval"), ("svalboard/right", "sval"),
+                                              ("svalboard/left", "blank"), ("svalboard/right", "blank")],
+          f"the release is the two auto builds with sval and blank (D34, D40): {cra.RELEASE_BUILDS}")
     check(all(mu.kb_fields(kb)[1] == mu.POINTING["auto"] for kb, _ in cra.RELEASE_BUILDS), "release builds are auto")
-    check(not problems and len(hashes) == 2, f"a clean directory passes: {problems}")
+    check(not problems and len(hashes) == 4, f"a clean directory passes: {problems}")
     check(quiet_main([str(good), "--version", VER]) == 0, "main passes a clean directory")
     check(quiet_main([str(good), "--version", "vOther"]) == 1, "another version refused")
 
     r, l = "svalboard_right_sval", "svalboard_left_sval"
+    rb = "svalboard_right_blank"
 
     def case(what, needle, edit):
         d = out / "case"
@@ -154,6 +156,10 @@ def main():
         check(p.returncode == 0, f"make_update.py --release {kb}:{km}: {p.stdout}{p.stderr}")
 
     case("a blank build as sval", "keymap_id 2", lambda d: replace_with(d, "svalboard/right", "blank"))
+    case("an sval build as blank", "the manifest says keymap_id 1", lambda d: [
+        shutil.copy(d / f"{r}.elf", d / f"{rb}.elf")]
+        + [shutil.copy(d / f"{r}_{VER}{x}", d / f"{rb}_{VER}{x}") for x in (".uf2", ".svup")])
+    case("a missing blank build", "missing", lambda d: (d / f"{rb}_{VER}.uf2").unlink())
     case("a per-module build as the release", "pointing_id 3", lambda d: replace_with(d, "svalboard/trackball/pmw3389/right", "sval"))
     case("a per-module build's files", "unexpected file",
          lambda d: (d / "svalboard_trackpoint_right_sval.elf").write_bytes((d / f"{r}.elf").read_bytes()))

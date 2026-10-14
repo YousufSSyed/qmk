@@ -13,7 +13,7 @@ exits 1 on any failure:
   - the record says RELEASE, and none of TEST_HOOKS, KEYTEST or
     HOST_BOOTLOADER; its reserved bits and bytes are 0; its updater protocol
     is the tools'; it is a release build (D34): a known side, the auto
-    pointing build (every driver) and the sval keymap;
+    pointing build (every driver) and a release keymap (sval or blank, D40);
   - no test hooks (update_commit_test_halt, op_test_halt, halt_point,
     halt_fed), no SVAL_KEYTEST (keytest_task, keytest_command) and no
     SVAL_HOST_BOOTLOADER (scanlab.c's reboot_pending, reboot_due_ms).
@@ -67,8 +67,8 @@ def check(path):
         elif pointing_id != mu.POINTING["auto"]:
             errors.append(f"the build-info record has pointing_id {pointing_id}: a release is the auto build "
                           f"({mu.POINTING['auto']}, svalboard/left and svalboard/right)")
-        if keymap_id != mu.KEYMAP["sval"]:
-            errors.append(f"the build-info record has keymap_id {keymap_id}: a release is the sval keymap")
+        if keymap_id not in mu.KEYMAP.values():
+            errors.append(f"the build-info record has keymap_id {keymap_id}: a release is the sval or blank keymap")
         if not flags & mu.BI_RELEASE:
             errors.append("not a release updater build (SVAL_UPDATE_RELEASE)")
         for bit, what in mu.BI_NOT_IN_RELEASE.items():
