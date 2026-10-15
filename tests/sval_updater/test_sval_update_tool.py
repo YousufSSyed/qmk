@@ -123,6 +123,17 @@ class FakeBoard(su.Device):
                 FakeBoard.acked_resets = lib.host_master_soft_resets()
             self.sval_cmds.append(cmd)
             reply = (packet[:5] + bytes(body))[:su.REPORT]
+        elif packet[6] in (su.VIA_GET_LAYER_COUNT, su.VIA_KEYMAP_GET_BUFFER):
+            # The dynamic keymap (VIA), for reset-settings --blank: KC_NO everywhere
+            # once this half took a blank SETTINGS_RESET (D44), KC_A everywhere before.
+            body = bytearray(packet[6:])
+            if packet[6] == su.VIA_GET_LAYER_COUNT:
+                body[1] = 16
+            else:
+                n = body[3]
+                key = b"\0\0" if lib.host_master_reset_mode() == 1 else b"\0\x04"
+                body[4:4 + n] = (key * n)[:n]
+            reply = (packet[:6] + bytes(body))[:su.REPORT]
         else:
             # As client_wrapper.c: VIA gets the report shifted down 6 bytes (the
             # last 6 stale), and the reply loses its last 6 to the header.
@@ -655,6 +666,20 @@ def main():
         check(("0x2A sent; storage notice now: none" in text) == ack, f"reset-settings: ack\n{text}")
         rs = [r for op, r in board.ops if op == su.SETTINGS_RESET]
         check(rs == [b"RSET" + bytes([0 if this_half else 1]) + bytes(len(rs[0]) - 5)] if rs else False, f"SETTINGS_RESET request {rs}")
+    # P4-28: reset-settings --blank (D44): mode 1 to both halves, and the keymap read back blank
+    lib.host_lib_reset(1)
+    lib.host_lib_split(1)
+    lib.host_passes(1200)
+    FakeBoard.storage, FakeBoard.acked_resets = 0, 0
+    board = FakeBoard()
+    with contextlib.redirect_stdout(io.StringIO()) as log:
+        rc = su.reset_settings(board, args_with(this_half=False, ack=True, blank=True))
+    text = log.getvalue()
+    check(rc == 0, f"reset-settings --blank: exit {rc}\n{text}")
+    check(lib.host_master_reset_mode() == 1 and lib.host_slave_reset_mode() == 1, f"--blank: mode 1 on both halves\n{text}")
+    check("reset to a blank board" in text and "960 keys, 0 not KC_NO" in text, f"--blank: text\n{text}")
+    rs = [r for op, r in board.ops if op == su.SETTINGS_RESET]
+    check(rs and rs[0][:6] == b"RSET\x01\x01", f"--blank request {rs}")
     # the other half silent: UNAVAILABLE, nothing changed, nothing waited for
     lib.host_lib_reset(1)
     try:

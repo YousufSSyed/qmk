@@ -45,9 +45,33 @@ void build_reset_record_make(build_reset_record_t *rec, uint32_t image, uint32_t
     rec->check = ~(rec->magic ^ rec->image ^ rec->flags);
 }
 
-void build_reset_invalid_page(uint8_t page[BUILD_RESET_PAGE_BYTES]) {
+static void put32le(uint8_t *p, uint32_t v) {
+    for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+static uint32_t get32le(const uint8_t *p) {
+    return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+_Static_assert(sizeof(build_reset_record_t) + 8 == BUILD_RESET_HEAD_BYTES, "the blank mark follows the record");
+
+void build_reset_invalid_page(uint8_t page[BUILD_RESET_PAGE_BYTES], uint8_t mode) {
     memset(page, 0xFF, BUILD_RESET_PAGE_BYTES);
-    memset(page, 0x00, sizeof(build_reset_record_t));
+    memset(page, 0x00, BUILD_RESET_HEAD_BYTES);
+    if (mode == BUILD_RESET_TO_BLANK) {
+        put32le(page + sizeof(build_reset_record_t), BUILD_RESET_BLANK_MAGIC);
+        put32le(page + sizeof(build_reset_record_t) + 4, ~BUILD_RESET_BLANK_MAGIC);
+    }
+}
+
+void build_reset_program_head(uint8_t head[BUILD_RESET_HEAD_BYTES], const uint8_t page[BUILD_RESET_PAGE_BYTES]) {
+    for (size_t i = 0; i < BUILD_RESET_HEAD_BYTES; i++) head[i] &= page[i];
+}
+
+bool build_reset_blank_requested(const uint8_t head[BUILD_RESET_HEAD_BYTES]) {
+    build_reset_record_t rec;
+    memcpy(&rec, head, sizeof(rec));
+    const uint8_t *mark = head + sizeof(rec);
+    return build_reset_cleared(&rec) && get32le(mark) == BUILD_RESET_BLANK_MAGIC && get32le(mark + 4) == (uint32_t)~BUILD_RESET_BLANK_MAGIC;
 }
 
 bool build_reset_cleared(const build_reset_record_t *rec) {
@@ -65,6 +89,8 @@ void build_reset_program_over(build_reset_record_t *rec, const uint8_t page[BUIL
 
 #ifndef BUILD_RESET_HOST_TEST
 #    include "eeconfig.h"
+#    include "dynamic_keymap.h"
+#    include "matrix.h"
 #    include "identity.h"
 #    include "hardware/regs/addressmap.h"
 #    include "hardware/sync.h"
@@ -88,6 +114,7 @@ __attribute__((used)) const volatile uint8_t sval_dev_keep_settings = 1;
 
 static uint32_t image_hash;
 static bool     pending, notice, record_failed, invalidated;
+static bool     blank_due, blanked; // D44: this boot sets every key to KC_NO after the reset
 // SETTINGS_RESET (D42, build_reset_invalidate): boot2 taken at pre-init, while
 // page 0 is this firmware's boot2, and the page programmed over the record.
 static uint32_t boot2_copy[64];
@@ -96,6 +123,10 @@ static uint8_t  invalid_page[BUILD_RESET_PAGE_BYTES] __attribute__((aligned(4)))
 
 static const build_reset_record_t *record(void) {
     return (const build_reset_record_t *)(XIP_NOCACHE_NOALLOC_BASE + BUILD_RESET_SECTOR);
+}
+
+static void read_head(uint8_t head[BUILD_RESET_HEAD_BYTES]) {
+    memcpy(head, (const void *)record(), BUILD_RESET_HEAD_BYTES);
 }
 
 void build_reset_pre_init(void) {
@@ -112,6 +143,11 @@ void build_reset_pre_init(void) {
     image_hash = build_reset_hash((const uint8_t *)XIP_BASE, (size_t)(__flash_binary_end - (const uint8_t *)XIP_BASE));
     pending    = build_reset_due(true, record(), image_hash);
     notice     = !pending && build_reset_notice(record(), image_hash);
+    if (pending) {
+        uint8_t head[BUILD_RESET_HEAD_BYTES];
+        read_head(head);
+        blank_due = build_reset_blank_requested(head); // SETTINGS_RESET mode BLANK (D44)
+    }
     // quantum_init() then finds the settings invalid and resets them all, as
     // for a new EECONFIG_MAGIC_NUMBER.
     if (pending) eeconfig_disable();
@@ -123,9 +159,25 @@ static bool write_record(uint32_t flags) {
     return identity_build_record_write(&rec, sizeof(rec));
 }
 
+// D44: every key on every layer KC_NO (0x0000), over the defaults that the
+// reset just wrote (VIA's dynamic_keymap_reset(), and sval_init()'s, which ran
+// in the module post-init before this). It runs before the record is written,
+// so after a power cut here the record still reads cleared with the mark in
+// place, and the next boot resets and blanks again.
+static void blank_keymap(void) {
+    static const uint8_t zero[64] = {0};
+    uint32_t             size     = (uint32_t)dynamic_keymap_get_layer_count() * MATRIX_ROWS * MATRIX_COLS * 2;
+    for (uint32_t off = 0; off < size; off += sizeof(zero)) {
+        uint32_t n = size - off < sizeof(zero) ? size - off : sizeof(zero);
+        dynamic_keymap_set_buffer((uint16_t)off, (uint16_t)n, (uint8_t *)zero);
+    }
+    blanked = true;
+}
+
 void build_reset_post_init(void) {
     if (!pending) return;
     pending = false;
+    if (blank_due) blank_keymap();
     if (write_record(BUILD_RESET_NOTICE)) {
         notice = true;
     } else {
@@ -139,6 +191,10 @@ bool build_reset_notice_pending(void) {
 
 bool build_reset_record_failed(void) {
     return record_failed;
+}
+
+bool build_reset_blanked(void) {
+    return blanked;
 }
 
 void build_reset_notice_clear(void) {
@@ -164,15 +220,18 @@ static void __no_inline_not_in_flash_func(record_page_program)(void) {
     ((void (*)(void))((intptr_t)boot2_copy + 1))(); // back to XIP via boot2
 }
 
-bool build_reset_invalidate(void) {
-    if (!boot2_ready || !identity_available()) return false;
-    build_reset_invalid_page(invalid_page);
+bool build_reset_invalidate(uint8_t mode) {
+    if (mode > BUILD_RESET_MODE_MAX || !boot2_ready || !identity_available()) return false;
+    build_reset_invalid_page(invalid_page, mode);
     invalidated = true;
     uint32_t irq = save_and_disable_interrupts();
     record_page_program();
     restore_interrupts(irq);
+    uint8_t head[BUILD_RESET_HEAD_BYTES];
+    read_head(head);
     build_reset_record_t rec;
-    memcpy(&rec, (const void *)record(), sizeof(rec));
-    return !build_reset_matches(&rec, rec.image);
+    memcpy(&rec, head, sizeof(rec));
+    if (build_reset_matches(&rec, rec.image)) return false;
+    return build_reset_blank_requested(head) == (mode == BUILD_RESET_TO_BLANK);
 }
 #endif

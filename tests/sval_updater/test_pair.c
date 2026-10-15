@@ -1,7 +1,7 @@
 // Copyright 2026 Morgan Venable
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-// Host tests for updater protocol 4 (D41-D43): one approval for both halves
+// Host tests for updater protocol 4 (D41-D45): one approval for both halves
 // (PAIR_MANIFEST, the pair ARM, the held approval), SETTINGS_RESET, and the
 // no-chord dev build. Each case has its ID from PROTOCOL4_CASES.md, the list
 // Keybard's mock board (tests/updater/protocol4-cases.md there) runs too.
@@ -548,6 +548,196 @@ static void test_p4_settings_reset(void) {
     CHECK_EQ(out[0], UPDATE_INVALID);
 }
 
+// ---- P4-28: SETTINGS_RESET mode 1, a blank board (D44) ---------------------------------------
+
+static update_status_t settings_reset_mode(uint32_t client, uint8_t scope, uint8_t mode) {
+    uint8_t a[6] = {'R', 'S', 'E', 'T', scope, mode};
+    return send(client, UPDATE_OP_SETTINGS_RESET, a, sizeof(a));
+}
+
+static void test_p4_blank_reset(void) {
+    // both halves take mode 1, the other half first; both reset as for mode 0
+    fresh(0x2000);
+    presence_up();
+    req_hand = UPDATE_HAND_RIGHT;
+    CHECK_EQ(settings_reset_mode(CLIENT_A, 1, 1), UPDATE_OK);
+    CHECK_EQ(rsp[1], 0x03);
+    CHECK_EQ(slave_reset_mode, 1);
+    CHECK_EQ(master_reset_mode, 1);
+    for (int i = 0; i < 600 && (master_reboots == 0 || slave_reboots == 0); i++) pass();
+    CHECK_EQ(master_reboots, 1);
+    CHECK_EQ(slave_reboots, 1);
+    // no mode byte (a protocol 4 host from before D44) and mode 0: defaults on both halves
+    fresh(0x2000);
+    presence_up();
+    CHECK_EQ(settings_reset(CLIENT_A, 1), UPDATE_OK);
+    CHECK_EQ(slave_reset_mode, 0);
+    CHECK_EQ(master_reset_mode, 0);
+    fresh(0x2000);
+    presence_up();
+    CHECK_EQ(settings_reset_mode(CLIENT_A, 1, 0), UPDATE_OK);
+    CHECK_EQ(slave_reset_mode, 0);
+    CHECK_EQ(master_reset_mode, 0);
+    // scope 0, mode 1: this half only
+    fresh(0x2000);
+    CHECK_EQ(settings_reset_mode(CLIENT_A, 0, 1), UPDATE_OK);
+    CHECK_EQ(rsp[1], 0x01);
+    CHECK_EQ(master_reset_mode, 1);
+    CHECK_EQ(slave_invalidations, 0);
+    // mode 2 and up: INVALID, nothing changed
+    fresh(0x2000);
+    presence_up();
+    for (unsigned m = 2; m < 256; m += 37) CHECK_EQ(settings_reset_mode(CLIENT_A, 1, (uint8_t)m), UPDATE_INVALID);
+    CHECK_EQ(master_invalidations + slave_invalidations, 0);
+    // the other half on a protocol 4 build from before D44 (no mode byte there):
+    // UNAVAILABLE for mode 1, nothing changed on either half; mode 0 still works
+    fresh(0x2000);
+    presence_up();
+    slave_pre_blank = true;
+    CHECK_EQ(settings_reset_mode(CLIENT_A, 1, 1), UPDATE_UNAVAILABLE);
+    CHECK_EQ(master_invalidations + slave_invalidations, 0);
+    for (int i = 0; i < 600; i++) pass();
+    CHECK_EQ(master_reboots + slave_reboots, 0);
+    CHECK_EQ(settings_reset_mode(CLIENT_A, 1, 0), UPDATE_OK);
+    CHECK_EQ(slave_reset_mode, 0);
+    slave_pre_blank = false;
+    // the wire: 'RSET' and an optional mode 0 or 1; anything else is refused when built
+    uint8_t req[USPLIT_MSG_MAX];
+    uint8_t m1[5] = {'R', 'S', 'E', 'T', 1}, m2[5] = {'R', 'S', 'E', 'T', 2}, m6[6] = {'R', 'S', 'E', 'T', 1, 0};
+    CHECK_EQ(usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, 3, m1, 5), 9);
+    CHECK_EQ(usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, 3, m2, 5), 0);
+    CHECK_EQ(usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, 3, m6, 6), 0);
+}
+
+// ---- P4-30: a release build reads the image's own build-info record (D45) --------------------
+
+// Put a build-info record ("SVBI", info_ver 3, flags) at img[at] and seal the
+// manifest over the new bytes; the manifest's flags stay as they are (no DIAGNOSTIC).
+static void plant_record(uint32_t at, uint8_t flags) {
+    const uint8_t rec[6] = {'S', 'V', 'B', 'I', UPDATE_BUILD_INFO_VERSION, flags};
+    memcpy(img + at, rec, sizeof(rec));
+    crypto_sha512(blob_manifest()->sha512, img, img_len);
+}
+
+static uint8_t last_error(uint32_t client) {
+    CHECK_EQ(send(client, UPDATE_OP_STATUS, NULL, 0), UPDATE_OK);
+    return rsp[12];
+}
+
+// This half's install from IDLE to the end of the image check: VERIFIED or ERROR.
+static update_state_t self_install_to_check(void) {
+    req_hand = UPDATE_HAND_RIGHT;
+    if (!to_receiving(CLIENT_A)) return UPDATE_STATE_IDLE;
+    CHECK_EQ(send_image(CLIENT_A, 0, img_len), UPDATE_OK);
+    CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_END, session_nonce), UPDATE_ACCEPTED);
+    passes_until(UPDATE_STATE_VERIFIED, 5000);
+    return updater_state();
+}
+
+static void test_p4_image_build_check(void) {
+    const uint32_t len = 0x3000;
+    // a release board, this half: a no-chord image is refused after its hash
+    // checks out, before anything is committed, though its manifest has no DIAGNOSTIC
+    struct {
+        uint8_t flags;
+        bool    release;
+        bool    refused;
+    } cases[] = {
+        {UPDATE_BUILD_NO_CHORD, true, true},
+        {UPDATE_BUILD_DEV_KEEP, true, true},
+        {UPDATE_BUILD_NO_CHORD | UPDATE_BUILD_TEST_HOOKS, true, true},
+        {0, true, false},                    // a chord build
+        {UPDATE_BUILD_RELEASE, true, false}, // a release build
+        {UPDATE_BUILD_NO_CHORD, false, false}, // a dev board takes a dev image
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        fresh(len);
+        self_dev.release_build = cases[i].release;
+        plant_record(0x1235, cases[i].flags); // anywhere, any alignment
+        CHECK_EQ(blob_manifest()->flags & UPDATE_FLAG_DIAGNOSTIC, 0);
+        update_state_t st = self_install_to_check();
+        CHECK_EQ(st, cases[i].refused ? UPDATE_STATE_ERROR : UPDATE_STATE_VERIFIED);
+        if (cases[i].refused) {
+            CHECK_EQ(last_error(CLIENT_A), UPDATE_BAD_IMAGE);
+            CHECK_EQ(commit_runs, 0);
+        }
+    }
+    // no record at all (Vial, vLaunch2): taken
+    fresh(len);
+    self_dev.release_build = true;
+    CHECK_EQ(self_install_to_check(), UPDATE_STATE_VERIFIED);
+    // a record split across two verify slices (2048 bytes) and two 256-byte reads
+    fresh(len);
+    self_dev.release_build = true;
+    plant_record(2048 - 3, UPDATE_BUILD_NO_CHORD);
+    CHECK_EQ(self_install_to_check(), UPDATE_STATE_ERROR);
+    CHECK_EQ(last_error(CLIENT_A), UPDATE_BAD_IMAGE);
+    // two records, one of them no-chord: refused
+    fresh(len);
+    self_dev.release_build = true;
+    plant_record(0x0400, UPDATE_BUILD_RELEASE);
+    plant_record(0x2000, UPDATE_BUILD_NO_CHORD);
+    CHECK_EQ(self_install_to_check(), UPDATE_STATE_ERROR);
+    // a record of another info_ver is not this check's (make_update.py's match too)
+    fresh(len);
+    self_dev.release_build = true;
+    plant_record(0x0400, UPDATE_BUILD_NO_CHORD);
+    img[0x0404] = 2;
+    crypto_sha512(blob_manifest()->sha512, img, img_len);
+    CHECK_EQ(self_install_to_check(), UPDATE_STATE_VERIFIED);
+
+    // the other half's image, from a release half with USB: refused at this
+    // half's verify, before the relay starts, and the pair approval is gone
+    pair_fresh(0x5000);
+    self_dev.release_build = true;
+    plant_record(0x1235, UPDATE_BUILD_NO_CHORD);
+    CHECK(pair_armed(CLIENT_A));
+    chord();
+    CHECK_EQ(status_flags2(CLIENT_A) & 0x01, 0x01);
+    CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_BEGIN, session_nonce), UPDATE_ACCEPTED);
+    passes_until(UPDATE_STATE_RECEIVING, 2000);
+    CHECK_EQ(send_image(CLIENT_A, 0, img_len), UPDATE_OK);
+    CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_END, session_nonce), UPDATE_ACCEPTED);
+    passes_until(UPDATE_STATE_VERIFIED, 5000);
+    CHECK_EQ(updater_state(), UPDATE_STATE_ERROR);
+    CHECK_EQ(last_error(CLIENT_A), UPDATE_BAD_IMAGE);
+    CHECK_EQ(status_flags2(CLIENT_A) & 0x01, 0); // the held approval went with the error
+    CHECK_EQ(slave_commit_runs, 0);
+
+    // a dev half with USB relaying to a release half: the other half checks
+    // the image itself (D7) and the relay fails with its refusal
+    pair_fresh(0x5000);
+    slave_dev.release_build = true;
+    plant_record(0x1235, UPDATE_BUILD_NO_CHORD);
+    CHECK(pair_armed(CLIENT_A));
+    chord();
+    CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_BEGIN, session_nonce), UPDATE_ACCEPTED);
+    passes_until(UPDATE_STATE_RECEIVING, 2000);
+    CHECK_EQ(send_image(CLIENT_A, 0, img_len), UPDATE_OK);
+    CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_END, session_nonce), UPDATE_ACCEPTED);
+    passes_until(UPDATE_STATE_VERIFIED, 5000);
+    CHECK_EQ(updater_state(), UPDATE_STATE_VERIFIED);
+    CHECK_EQ(send_commit(CLIENT_A, body_crc()), UPDATE_ACCEPTED);
+    for (int i = 0; i < 60000 && updater_state() == UPDATE_STATE_RELAYING; i++) {
+        pass();
+        if (i % 200 == 0) send(CLIENT_A, UPDATE_OP_RELAY, NULL, 0);
+    }
+    CHECK_EQ(updater_state(), UPDATE_STATE_ERROR);
+    CHECK_EQ(last_error(CLIENT_A), UPDATE_BAD_IMAGE);
+    CHECK_EQ(slave_commit_runs, 0);
+
+    // the scan by itself: byte at a time and all at once agree
+    update_build_scan_t a, b;
+    update_build_scan_init(&a);
+    update_build_scan_init(&b);
+    for (uint32_t i = 0; i < img_len; i++) update_build_scan(&a, img + i, 1);
+    update_build_scan(&b, img, img_len);
+    CHECK_EQ(a.records, 1);
+    CHECK_EQ(b.records, 1);
+    CHECK_EQ(a.flags, UPDATE_BUILD_NO_CHORD);
+    CHECK_EQ(b.flags, a.flags);
+}
+
 static void test_pair(void) {
     int before_failures = failures;
     test_p4_single();
@@ -555,6 +745,8 @@ static void test_pair(void) {
     test_p4_pair_one_chord();
     test_p4_held_rules();
     test_p4_settings_reset();
+    test_p4_blank_reset();
+    test_p4_image_build_check();
     printf("protocol 4 tests: %s\n", failures == before_failures ? "pass" : "FAIL");
 }
 

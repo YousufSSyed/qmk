@@ -100,9 +100,10 @@ the no-chord bit from the half with USB, since that's the half that would skip t
 
 ## SETTINGS_RESET (new op 0x0E) (D42)
 
-- Request: `[hand = this half's own hand]['R' 'S' 'E' 'T'][scope u8: 0 this half, 1 both halves]`,
-  wrapped. Keybard always sends scope 1.
-- Allowed only in IDLE with no held approval (else BUSY). A bad magic or scope gives INVALID.
+- Request: `[hand = this half's own hand]['R' 'S' 'E' 'T'][scope u8: 0 this half, 1 both halves][mode u8]`,
+  wrapped. Keybard always sends scope 1. `mode` (D44): 0 the firmware's defaults (a missing
+  byte reads as 0), 1 a blank board.
+- Allowed only in IDLE with no held approval (else BUSY). A bad magic, scope or mode gives INVALID.
   With scope 1 and no answer from the other half, it gives UNAVAILABLE and nothing changes.
 - Reply: `[status][done u8: bit0 this half, bit1 the other half]`. On OK, each half has
   invalidated its build reset record (D39). The other half is told over the split link first.
@@ -110,6 +111,16 @@ the no-chord bit from the half with USB, since that's the half that would skip t
   resets **every** stored setting (keymap, macros, combos, tap dances, overrides, QMK settings,
   and the keyboard's VIA custom values: layer colors, pointing and scan settings), exactly as for
   a different build. Identity (serial and board name) and the updater state are kept.
+- **Mode 1, a blank board (D44).** The same reset, then every key on every layer is `KC_NO`
+  (`0x0000`), on both halves. There are no combos, tap dances, macros, key overrides, leader
+  sequences or alt-repeat keys, as after any reset, and the layer colors, pointing and scan
+  values are the firmware's defaults. Each half marks its build reset record for a blank
+  board (8 bytes after the record, in the same page program), so the request survives the
+  reset: the next boot resets to defaults, writes `KC_NO` over the keymap, then records the
+  image. A power cut before that record write leaves the mark, so the next boot blanks again.
+  The other half gets the mode over the split link (KEYBOARD_UPDATE `0x07` with a fifth byte).
+  A half on a protocol 4 build from before D44 answers that INVALID, so the request is
+  UNAVAILABLE and nothing changed on either half.
 - After the reconnect, Sval GET_INFO storage flags (`svilInfo[17]` in Keybard, response byte 18
   on the wire) has **bit 2 set**, until Keybard sends `0x2A`. This is the same notice a new build gives.
 - The USB product ID doesn't change, so Keybard reopens the device with no chooser.
@@ -125,6 +136,16 @@ the no-chord bit from the half with USB, since that's the half that would skip t
   Images of a no-chord (or keep-settings) build are always flagged DIAGNOSTIC (manifest flags bit1):
   `make_update.py` sets the flag itself when the build-info record has 0x40 or 0x80, so a release
   board refuses them however they were packed. Keybard shows that refusal as a check row (EPOCH-like refusals → the sheet).
+- **The image is checked too (D45).** A release build reads the build-info records in the image
+  itself while it hashes it (VERIFYING_IMAGE, on the half with USB for either half's image, and
+  again on the half without USB when the image is relayed to it). It refuses an image whose record
+  has `0x40` (no chord) or `0x80` (kept settings) with BAD_IMAGE, whatever the manifest's flags
+  say, so a hand-made manifest without DIAGNOSTIC cannot put a no-chord image on a release board.
+  The refusal comes after the chord (the image arrives after ARM) but before anything is
+  committed, and it clears a held approval like any error. A record is matched as `make_update.py`
+  matches it (`"SVBI"`, `info_ver` 3); an image with no record (Vial, vLaunch2) is taken. This
+  stops files made from dev builds by the tools or by hand-made manifests. It cannot stop someone
+  who patches the record out of a dev image on purpose: the chord is what stops that.
 
 ## The flow Keybard runs (the contract's sequence)
 
@@ -149,6 +170,8 @@ O:     MANIFEST(O) x3 -> PAIR_MANIFEST(U) x3 -> ARM(O, mode 1)
        COMMIT(nonce, crc16) -> RELAYING; poll RELAY until RELAYED
        COMMIT(nonce, crc16) -> SUBSIDE_COMMITTING; poll STATUS until IDLE (~4.5 s hold + probes)
        poll INFO(O) until it answers (<= 10 s); presence VERSION is expected here
+       no answer in 10 s: stop here, before U (F11). U keeps its old release and works;
+         the halves-differ guidance follows (decision of 2026-10-15)
 U:     STATUS rsp[23] bit0 must be set (else F9 "Halves differ" -> Finish update with its own chord)
        MANIFEST(U) x3 -> ARM(U, mode 0): expect flags bit0|bit1 -> BEGIN at once
        CHUNKs -> END -> VERIFIED, CRC check -> COMMIT -> the device disconnects within ~2 s
@@ -156,8 +179,11 @@ after: reconnect (same PID: navigator.hid connect / getDevices, up to 30 s)
        INFO page 0 both halves: fw_version == both manifests; INFO page 1 tag; presence MATCH <= 10 s
        Sval GET_INFO storage flags:
          "Put my layout back": import preflight + syncWithKeyboard, whatever bit 2 says
-         "Start from defaults": if bit 2 is clear, or only one half was installed:
+         "Reset to the default layout": if bit 2 is clear, or only one half was installed:
             SETTINGS_RESET(scope 1) -> reconnect again -> bit 2 now set
+         "Wipe to a blank board" (D44): always SETTINGS_RESET(scope 1, mode 1) -> reconnect
+            again -> bit 2 now set -> read the keymap back: every key KC_NO. No backup is
+            needed before the install for this choice
        send 0x2A last, once the restore succeeded or the defaults are confirmed
 ```
 
@@ -196,8 +222,8 @@ Additions that keep within the contract, which Keybard may rely on:
   approval. Keybard may still REBIND only after IDLE.
 - **A REBIND with the pair nonce while this half's manifest loads** moves that
   load to the new client as well.
-- **SETTINGS_RESET statuses**: OK; INVALID (bad magic, scope above 1, the other
-  hand, or unwrapped); BUSY (a session, a held approval, a relay, a reset
+- **SETTINGS_RESET statuses**: OK; INVALID (bad magic, scope above 1, mode above
+  1, the other hand, or unwrapped); BUSY (a session, a held approval, a relay, a reset
   already pending, or the other half in a session of its own, or its DMA busy
   for six tries in a row); UNAVAILABLE (no presence MATCH or VERSION, no answer
   from the other half, or a half on protocol 2 or 3 there, which does not know

@@ -78,7 +78,12 @@ static update_status_t release_check(const uint8_t *buf, size_t len) {
     uint8_t h[64];
     crypto_sha512(h, image, ilen);
     if (memcmp(h, m.sha512, 64) != 0) return UPDATE_BAD_HASH;
-    return ilen >= UPDATE_HEAD_BYTES ? update_image_head_check(image, m.image_len) : UPDATE_BAD_IMAGE;
+    st = ilen >= UPDATE_HEAD_BYTES ? update_image_head_check(image, m.image_len) : UPDATE_BAD_IMAGE;
+    if (st != UPDATE_OK) return st;
+    update_build_scan_t sc; // D45: what the image itself says it is
+    update_build_scan_init(&sc);
+    update_build_scan(&sc, image, ilen);
+    return update_image_build_check(&sc, &dev);
 }
 
 int main(int argc, char **argv) {
@@ -129,6 +134,30 @@ int main(int argc, char **argv) {
     for (unsigned k = 1; k < 256; k++) {
         m.reserved0 = (uint8_t)k; // version 1's key_id
         CHECK(update_manifest_check(&m, &dev) == UPDATE_INVALID);
+    }
+
+    // ---- P4-30: the image's own build-info record (D45) ------------------------------------
+    {
+        static uint8_t im[4096];
+        memset(im, 0x11, sizeof(im));
+        update_build_scan_t sc;
+        update_build_scan_init(&sc);
+        update_build_scan(&sc, im, sizeof(im));
+        CHECK(sc.records == 0 && update_image_build_check(&sc, &dev) == UPDATE_OK); // no record: taken
+        const uint8_t flags[] = {UPDATE_BUILD_NO_CHORD, UPDATE_BUILD_DEV_KEEP, 0, UPDATE_BUILD_RELEASE};
+        for (size_t k = 0; k < sizeof(flags); k++) {
+            memcpy(im + 1001, "SVBI", 4);
+            im[1005] = UPDATE_BUILD_INFO_VERSION;
+            im[1006] = flags[k];
+            update_build_scan_init(&sc);
+            for (size_t off = 0; off < sizeof(im); off += 7) update_build_scan(&sc, im + off, sizeof(im) - off < 7 ? sizeof(im) - off : 7);
+            CHECK(sc.records == 1 && sc.flags == flags[k]);
+            CHECK(update_image_build_check(&sc, &dev) == (k < 2 ? UPDATE_BAD_IMAGE : UPDATE_OK));
+        }
+        // this release build's own record passes its own check
+        update_build_scan_init(&sc);
+        update_build_scan(&sc, (const uint8_t *)&sval_update_build_info, sizeof(sval_update_build_info));
+        CHECK(sc.records == 1 && update_image_build_check(&sc, &dev) == UPDATE_OK);
     }
 
     // ---- .svup files from outside ----------------------------------------------------------

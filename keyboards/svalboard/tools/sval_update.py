@@ -17,7 +17,7 @@ open handle.
     sval_update.py update FILE.svup [--half usb|other] [--yes] [--delay S] [--rebind-every S]
                                     [--min-rebinds N] [--no-commit] [--halt POINT [--halt-unfed]]
     sval_update.py pair FILE1.svup FILE2.svup [--yes] [--delay S] [--rebind-every S]
-    sval_update.py reset-settings [--this-half] [--ack]
+    sval_update.py reset-settings [--this-half] [--blank] [--ack]
     sval_update.py storage [--ack]
     sval_update.py reject FILE.svup
 
@@ -56,6 +56,8 @@ reset-settings (protocol 4, D42) puts every stored setting on both halves back
 to the defaults of the firmware they run (--this-half: only the half with
 USB): the keymap, macros, combos, tap dances, overrides, QMK settings, layer
 colors, pointing and scan settings. Identity (serial, board name) is kept.
+--blank (D44) asks for a blank board instead: the same reset, then every key on
+every layer KC_NO; the tool reads the keymap back afterwards and checks it.
 Both halves reset; the tool waits for the board, then shows the storage notice
 (Sval GET_INFO byte 18 bit 2) that a host clears with 0x2A once it has told the
 user (--ack sends it). storage prints that byte, and --ack clears it.
@@ -257,6 +259,15 @@ class Device:
             raise ClientIdExpired(f"client wrapper error {r[6]} for client {cid.hex()}")
         return r[9], r[10:REPORT]
 
+    def via(self, body):
+        """One plain VIA command in the client wrapper: the reply from its command byte on."""
+        cid = self.client or self.bootstrap()
+        body = bytes(body)
+        r = self._exchange(bytes([WRAPPER]) + cid + bytes([VIA_PROTO]) + body, lambda r: r[0] == WRAPPER and r[1:5] == cid and (r[5] == WRAPPER_ERROR or r[6] == body[0]))
+        if r[5] == WRAPPER_ERROR:
+            raise ClientIdExpired(f"client wrapper error {r[6]} for client {cid.hex()}")
+        return r[6:REPORT]
+
     def sval(self, cmd, args=b""):
         """One Sval command (0xDF) in the client wrapper: the reply after [0xDF][cmd]."""
         cid = self.client or self.bootstrap()
@@ -272,6 +283,23 @@ def storage_flags(dev):
     bit2 settings reset to this build's defaults (D39, D42), until 0x2A."""
     r = dev.sval(SVAL_GET_INFO)
     return r[16]
+
+
+VIA_GET_LAYER_COUNT, VIA_KEYMAP_GET_BUFFER = 0x11, 0x12
+KEYMAP_KEYS = 10 * 6  # MATRIX_ROWS * MATRIX_COLS (keyboards/svalboard/config.h)
+KEYMAP_PIECE = 28     # bytes per VIA get-buffer request, well inside the wrapped report
+
+
+def keymap_bytes(dev):
+    """The whole dynamic keymap through VIA: every layer, 2 bytes per key, big-endian."""
+    layers = dev.via(bytes([VIA_GET_LAYER_COUNT]))[1]
+    size = layers * KEYMAP_KEYS * 2
+    out = bytearray()
+    for off in range(0, size, KEYMAP_PIECE):
+        n = min(KEYMAP_PIECE, size - off)
+        r = dev.via(bytes([VIA_KEYMAP_GET_BUFFER, off >> 8, off & 0xFF, n]))
+        out += r[4:4 + n]
+    return layers, bytes(out)
 
 
 def storage_text(flags):
@@ -939,15 +967,19 @@ def reset_settings(dev, args):
     if info["protocol"] < 4:
         raise UpdaterError(f"reset-settings needs updater protocol 4; the board speaks {info['protocol']}")
     scope = 0 if args.this_half else 1
-    st, r = dev.op(SETTINGS_RESET, b"RSET" + bytes([scope]), hand=board)
+    blank = bool(getattr(args, "blank", False))
+    st, r = dev.op(SETTINGS_RESET, b"RSET" + bytes([scope, 1 if blank else 0]), hand=board)
     done = r[0]
     halves = [n for b, n in ((2, f"the other ({HANDS[board ^ 1]}) half"), (1, f"this ({info['hand']}) half")) if done & b]
     if st != OK:
         why = {5: "the updater is busy (a session, a held approval, or a reset already pending)",
-               2: "the other half does not answer (connected, and on updater protocol 4?)"}.get(st, "")
+               2: "the other half does not answer (connected, and on updater protocol 4?"
+                  + (" A blank board also needs a build from after D44 there" if blank else "") + ")",
+               1: "a blank board needs a firmware build from after D44" if blank else ""}.get(st, "")
         raise UpdaterError(f"SETTINGS_RESET: {status_name(st)}" + (f": {why}" if why else "") +
                            (f"; already reset: {', '.join(halves)}" if halves else "; nothing changed"))
-    print(f"SETTINGS_RESET: OK, {' and '.join(halves)} reset to defaults on the next boot; waiting for the board")
+    what = "reset to a blank board (every key KC_NO)" if blank else "reset to defaults"
+    print(f"SETTINGS_RESET: OK, {' and '.join(halves)} {what} on the next boot; waiting for the board")
     serial = dev.serial
     t0 = time.monotonic()
     dev.close()
@@ -973,6 +1005,12 @@ def reset_settings(dev, args):
         print(f"back after {back_s:.1f} s; storage notice: {storage_text(flags)}; the other half: {s['other_half']}")
         if not flags & 4:
             raise UpdaterError("the board did not report the settings reset (GET_INFO byte 18 bit 2)")
+        if blank:
+            layers, km = keymap_bytes(dev2)
+            set_keys = sum(1 for i in range(0, len(km), 2) if km[i] or km[i + 1])
+            print(f"keymap: {layers} layers, {len(km) // 2} keys, {set_keys} not KC_NO")
+            if set_keys:
+                raise UpdaterError(f"the board is not blank: {set_keys} keys are not KC_NO")
         if args.ack:
             dev2.sval(SVAL_STORAGE_RESET_CLEAR)
             flags = storage_flags(dev2)
@@ -1149,6 +1187,7 @@ def main():
     pr.add_argument("--keep", action="store_true", help="on failure, leave the session for inspection instead of ABORTing")
     rs = sub.add_parser("reset-settings", help="protocol 4: every stored setting on both halves back to defaults (D42)")
     rs.add_argument("--this-half", action="store_true", help="only the half with USB")
+    rs.add_argument("--blank", action="store_true", help="a blank board: then every key on every layer KC_NO (D44)")
     rs.add_argument("--ack", action="store_true", help="afterwards send 0x2A, which clears the storage notice")
     sg = sub.add_parser("storage", help="the storage notice (Sval GET_INFO byte 18)")
     sg.add_argument("--ack", action="store_true", help="send 0x2A, which clears bit 2 (settings reset)")

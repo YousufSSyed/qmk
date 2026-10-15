@@ -49,11 +49,12 @@
 //    0x04 END     -                               -   all pages sent: async image verify
 //    0x05 COMMIT  image CRC low 16                -   needs VERIFIED, behind the master's pause
 //    0x06 ABORT   -                               -   never erases
-//    0x07 SETTINGS_RESET 'R' 'S' 'E' 'T'          -   protocol 4 (D42): only with no session (else
+//    0x07 SETTINGS_RESET 'R' 'S' 'E' 'T' [mode]   -   protocol 4 (D42): only with no session (else
 //                 BUSY); invalidates this half's build reset record (one page program, no
 //                 erase), then this half resets itself about 300 ms later, so its next boot
 //                 resets every stored setting (D39). Protocol 2 and 3 halves do not know the op
-//                 and send no answer.
+//                 and send no answer. mode (D44, optional): 0 defaults, 1 blank (then every
+//                 key KC_NO); a half from before D44 answers a 5-byte payload INVALID.
 //
 //    status is an update_status_t, state the slave's update_state_t. A request
 //    that fails its CRC or its op's length rules is answered INVALID and
@@ -158,6 +159,7 @@ typedef struct {
     uint8_t        n;    // BEGIN, PAGE
     const uint8_t *data; // BEGIN, PAGE: n bytes
     uint16_t       crc_lo16; // COMMIT
+    uint8_t        mode;     // SETTINGS_RESET (D44): 0 defaults, 1 blank
 } usplit_req_t;
 
 // Build a request frame into buf (USPLIT_MSG_MAX bytes). Returns its length,

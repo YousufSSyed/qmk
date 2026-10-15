@@ -50,8 +50,26 @@ void build_reset_record_make(build_reset_record_t *rec, uint32_t image, uint32_t
 // invalidate it without an erase. NOR programming only clears bits, so the
 // record's bytes become 0 whatever they were (no valid record has magic 0),
 // and the rest of the page (0xFF) is left as it is.
+//
+// The 8 bytes after the record are the blank mark (D44). SETTINGS_RESET mode
+// BLANK programs BUILD_RESET_BLANK_MAGIC and its complement there, so the next
+// boot resets every stored setting and then sets every key on every layer to
+// KC_NO. The record written after that boot erases the sector, mark included.
+// Mode DEFAULTS programs zeros there, so a mark left by a blank reset that
+// never completed cannot turn a reset to defaults into a blank one. The mark
+// counts only over a cleared record, and a mark programmed over bytes that
+// were not erased reads wrong, so build_reset_invalidate() then fails.
 #define BUILD_RESET_PAGE_BYTES 256u
-void build_reset_invalid_page(uint8_t page[BUILD_RESET_PAGE_BYTES]);
+#define BUILD_RESET_BLANK_MAGIC 0x4B4E4C42u // "BLNK"
+#define BUILD_RESET_HEAD_BYTES 24u          // the record, then the blank mark (magic, ~magic)
+#define BUILD_RESET_TO_DEFAULTS 0u          // SETTINGS_RESET mode 0: firmware defaults
+#define BUILD_RESET_TO_BLANK 1u             // SETTINGS_RESET mode 1: defaults, then every key KC_NO
+#define BUILD_RESET_MODE_MAX BUILD_RESET_TO_BLANK
+void build_reset_invalid_page(uint8_t page[BUILD_RESET_PAGE_BYTES], uint8_t mode);
+// What the sector's first BUILD_RESET_HEAD_BYTES read after that page is programmed over them.
+void build_reset_program_head(uint8_t head[BUILD_RESET_HEAD_BYTES], const uint8_t page[BUILD_RESET_PAGE_BYTES]);
+// The sector's head asks for a blank board: a cleared record and a whole blank mark.
+bool build_reset_blank_requested(const uint8_t head[BUILD_RESET_HEAD_BYTES]);
 // What the record reads after that page is programmed over it (bitwise AND).
 void build_reset_program_over(build_reset_record_t *rec, const uint8_t page[BUILD_RESET_PAGE_BYTES]);
 // The record reads all zeros: invalidated by SETTINGS_RESET (never a valid
@@ -65,10 +83,14 @@ bool build_reset_cleared(const build_reset_record_t *rec);
 // sets the notice. Interrupts are off for the program. Until the reset, 0x2A
 // leaves the record alone. False when the sector does not exist or the record
 // still reads valid.
-bool build_reset_invalidate(void);
+// Mode BUILD_RESET_TO_BLANK also writes the blank mark (D44): after the reset
+// to defaults, every key on every layer becomes KC_NO. Also false when the
+// mark does not read back as asked.
+bool build_reset_invalidate(uint8_t mode);
 void build_reset_pre_init(void);  // keyboard_pre_init_kb: marks stored settings invalid when due
 void build_reset_post_init(void); // keyboard_post_init_kb: records the image after the reset
 bool build_reset_notice_pending(void);
 bool build_reset_record_failed(void);
+bool build_reset_blanked(void); // this boot set every key to KC_NO (D44)
 void build_reset_notice_clear(void); // Sval 0x2A
 #endif

@@ -795,6 +795,12 @@ int host_slave_invalidations(void) {
 int host_master_soft_resets(void) {
     return master_soft_resets;
 }
+int host_master_reset_mode(void) {
+    return master_reset_mode;
+}
+int host_slave_reset_mode(void) {
+    return slave_reset_mode;
+}
 int host_slave_soft_resets(void) {
     return slave_soft_resets;
 }

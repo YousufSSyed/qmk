@@ -145,8 +145,10 @@ update_status_t update_split_other_info(uint8_t payload[USPLIT_INFO_PAYLOAD], ui
 // SVAL_UPDATE_SETTINGS_RESET_SLAVE_MS later. UPDATE_OK once it said so;
 // UPDATE_BUSY while a relay runs here or a session runs there; else
 // UPDATE_UNAVAILABLE (no valid answer: unplugged, or a protocol 2-3 half,
-// which does not know the op) or its refusal (FLASH_ERR).
-update_status_t update_split_other_settings_reset(void);
+// which does not know the op; or a protocol 4 half from before D44 asked
+// for mode 1, which it does not know) or its refusal (FLASH_ERR). mode 0
+// sends protocol 4's 4-byte payload, mode 1 (blank, D44) one byte more.
+update_status_t update_split_other_settings_reset(uint8_t mode);
 
 // The half without USB took a SETTINGS_RESET and resets soon.
 bool update_split_slave_reset_pending(void);
@@ -178,7 +180,7 @@ update_status_t update_split_port_program_page(uint32_t off, const uint8_t *page
 // Slave, in the SlaveThread: invalidate this half's build reset record (D42;
 // one page program, no erase), under the same DMA check: UPDATE_OK,
 // UPDATE_BUSY (a DMA channel is busy: nothing written) or UPDATE_FLASH_ERR.
-update_status_t update_split_port_settings_invalidate(void);
+update_status_t update_split_port_settings_invalidate(uint8_t mode);
 // Slave, from housekeeping: reset this half (SETTINGS_RESET). Never returns
 // on the device.
 void update_split_port_reboot(void);

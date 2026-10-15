@@ -131,6 +131,7 @@ static struct {
     uint32_t          verify_off;
     uint32_t          crc;
     crypto_sha512_ctx sha;
+    update_build_scan_t bi; // the image's build-info records (D45)
     uint8_t           manifest[UPDATE_MANIFEST_BYTES] __attribute__((aligned(4)));
 } hk;
 
@@ -281,7 +282,7 @@ static update_status_t run(const usplit_req_t *r, uint8_t *payload) {
             // One page program in this thread, as PAGE does (R16), under the
             // same DMA check: BUSY means nothing was written, and the master
             // sends a new request.
-            update_status_t st = update_split_port_settings_invalidate();
+            update_status_t st = update_split_port_settings_invalidate(r->mode);
             if (st != UPDATE_OK) return st;
             sl.reset_pending = true;
             sl.reset_due_ms  = update_split_port_now_ms() + SVAL_UPDATE_SETTINGS_RESET_SLAVE_MS;
@@ -392,6 +393,7 @@ static void slave_verify(uint32_t mseq) {
     uint32_t len = SL_MANIFEST->image_len;
     if (!hk.verifying) {
         crypto_sha512_init(&hk.sha);
+        update_build_scan_init(&hk.bi);
         hk.verify_off = 0;
         hk.crc        = UPDATE_CRC32_INIT;
         hk.verifying  = true;
@@ -406,6 +408,7 @@ static void slave_verify(uint32_t mseq) {
             break;
         }
         crypto_sha512_update(&hk.sha, buf, n);
+        update_build_scan(&hk.bi, buf, n);
         uint32_t skip = hk.verify_off < UPDATE_VECTORS_OFFSET ? UPDATE_VECTORS_OFFSET - hk.verify_off : 0;
         if (skip < n) hk.crc = update_crc32_mpeg2_update(hk.crc, buf + skip, n - skip);
         hk.verify_off += n;
@@ -419,6 +422,11 @@ static void slave_verify(uint32_t mseq) {
     if (st == UPDATE_OK) {
         uint8_t head[UPDATE_HEAD_BYTES] __attribute__((aligned(4)));
         st = slot_copy(0, head, sizeof(head)) ? update_image_head_check(head, len) : UPDATE_FLASH_ERR;
+    }
+    if (st == UPDATE_OK) {
+        update_device_t dev;
+        update_device_self(&dev);
+        st = update_image_build_check(&hk.bi, &dev); // D45: this half checks the image itself too (D7)
     }
     hk.verifying = false;
     if (!post_begin(mseq, UPDATE_STATE_VERIFYING_IMAGE)) return;
@@ -991,13 +999,14 @@ update_status_t update_split_other_info(uint8_t payload[USPLIT_INFO_PAYLOAD], ui
 #define SETTINGS_RESET_SILENT_TRIES 2
 #define SETTINGS_RESET_DMA_TRIES 6
 
-update_status_t update_split_other_settings_reset(void) {
+update_status_t update_split_other_settings_reset(uint8_t mode) {
     if (update_relay_busy()) return UPDATE_BUSY;
-    static const uint8_t magic[4] = {'R', 'S', 'E', 'T'};
+    const uint8_t        magic[5] = {'R', 'S', 'E', 'T', mode};
+    const uint8_t        mlen     = mode ? 5 : 4; // mode 0: protocol 4's payload, which every protocol 4 half knows
     uint8_t              req[USPLIT_MSG_MAX], buf[USPLIT_MSG_MAX];
     usplit_rsp_t         r;
     uint8_t              want = usplit_rsp_len(USPLIT_OP_SETTINGS_RESET);
-    uint8_t              len  = usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, ++master_seq, magic, sizeof(magic));
+    uint8_t              len  = usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, ++master_seq, magic, mlen);
     int                  silent = 0, dma = 0, invalids = 0;
     while (silent < SETTINGS_RESET_SILENT_TRIES && dma < SETTINGS_RESET_DMA_TRIES) {
         memset(buf, 0, sizeof(buf));
@@ -1009,7 +1018,7 @@ update_status_t update_split_other_settings_reset(void) {
             // A busy DMA channel there: nothing was written. The answer is
             // cached by seq, so a new request.
             dma++;
-            len = usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, ++master_seq, magic, sizeof(magic));
+            len = usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, ++master_seq, magic, mlen);
             continue;
         }
         if (r.status == UPDATE_INVALID && ++invalids < RELAY_INVALID_TRIES) continue; // maybe damaged on the way
@@ -1147,7 +1156,7 @@ bool update_split_port_slot_read(uint32_t off, uint8_t *dst, uint32_t n) {
 
 // SETTINGS_RESET on the half without USB (D42), in the SlaveThread: the same
 // DMA check as a PAGE's program (R6), then one page program over the record.
-update_status_t update_split_port_settings_invalidate(void) {
+update_status_t update_split_port_settings_invalidate(uint8_t mode) {
     uint32_t irq = save_and_disable_interrupts();
     for (uint32_t ch = 0; ch < NUM_DMA_CHANNELS; ch++) {
         if (*(volatile uint32_t *)(DMA_BASE + DMA_CH_STRIDE * ch + DMA_CH0_CTRL_TRIG_OFFSET) & DMA_CH0_CTRL_TRIG_BUSY_BITS) {
@@ -1155,7 +1164,7 @@ update_status_t update_split_port_settings_invalidate(void) {
             return UPDATE_BUSY;
         }
     }
-    bool ok = build_reset_invalidate(); // its own interrupts-off section nests in this one
+    bool ok = build_reset_invalidate(mode); // its own interrupts-off section nests in this one
     restore_interrupts(irq);
     return ok ? UPDATE_OK : UPDATE_FLASH_ERR;
 }

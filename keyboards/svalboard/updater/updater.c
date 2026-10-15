@@ -70,7 +70,8 @@
 //                [hand] = this half's own        D41: this half's manifest, while a session for the
 //                                                other hand is in MANIFEST_LOADING (see "One approval")
 //  0x0E SETTINGS_RESET 'R' 'S' 'E' 'T', scope u8 done u8 (bit0 this half, bit1 the other half).
-//                (0 this half, 1 both)           Protocol 4, D42: see "Settings reset"
+//                (0 this half, 1 both),          Protocol 4, D42: see "Settings reset"
+//                mode u8 (0 defaults, 1 blank: D44)
 //
 // Protocol 3 is protocol 2 in 64-byte reports: the same ops and fields, with
 // larger MANIFEST and CHUNK pieces and the three sizes at the end of INFO page
@@ -104,6 +105,13 @@
 // SVAL_UPDATE_SETTINGS_RESET_MS later (the other half resets itself). Each
 // half's next boot then resets every stored setting as for a different build,
 // keeping its identity, and sets the notice (GET_INFO byte 18 bit 2) until 0x2A.
+// Mode 1 (D44) asks both halves for a blank board: the same reset, then every
+// key on every layer KC_NO (the blank mark, kb/build_reset.h).
+//
+// The image's own build info (D45). While VERIFYING_IMAGE hashes an image, a
+// release build also reads its build-info records (update_build_scan) and
+// refuses a no-chord or kept-settings dev image with BAD_IMAGE, whatever the
+// manifest's flags say. The half without USB checks a relayed image again.
 //
 // The image CRC is CRC-32/MPEG-2 over image bytes [0x100, image_len): the
 // range the commit checks after copying (page 0 is written last).
@@ -166,6 +174,7 @@
 #include "update_led.h"
 #include "update_commit.h"
 #include "update_split.h"
+#include "build_reset.h" // BUILD_RESET_TO_* (SETTINGS_RESET modes, D44)
 #include "sha512.h" // vendor/: SHA-512 from Monocypher
 
 #ifdef SVAL_UPDATER_HOST_TEST
@@ -217,6 +226,7 @@ typedef struct {
     bool    pair;         // a pair ARM: the chord approves both manifests
     bool    pre_approved; // ARM counted the chord as made (no-chord build, or the held approval)
     uint8_t pair_hash[UPDATE_SHA512_BYTES]; // sha512(pair manifest), at the pair ARM
+    update_build_scan_t bi;                 // VERIFYING_IMAGE: the image's build-info records (D45)
 } session_t;
 
 // The held approval (D41): RAM only, so a reset clears it.
@@ -621,6 +631,7 @@ static update_status_t op_end(uint32_t client, const uint8_t *req) {
     if (s.state != UPDATE_STATE_RECEIVING) return UPDATE_INVALID;
     if (s.staged != s.image_len) return UPDATE_OUT_OF_ORDER; // END before the last byte
     crypto_sha512_init(&sha);
+    update_build_scan_init(&s.bi);
     s.verify_off = 0;
     s.crc_body   = UPDATE_CRC32_INIT;
     s.work_ms    = now_ms;
@@ -814,7 +825,10 @@ static update_status_t op_rebind(uint32_t client, const uint8_t *req) {
 // SETTINGS_RESET (D42; see the top of this file).
 static update_status_t op_settings_reset(const uint8_t *req, uint8_t *rsp, bool to_other) {
     if (to_other) return UPDATE_INVALID; // [hand] is this half's own
-    if (req[1] != 'R' || req[2] != 'S' || req[3] != 'E' || req[4] != 'T' || req[5] > 1) return UPDATE_INVALID;
+    // req[6]: the mode (D44): 0 firmware defaults (a protocol 4 host from
+    // before D44 sends 0 there), 1 a blank board.
+    uint8_t mode = req[6];
+    if (req[1] != 'R' || req[2] != 'S' || req[3] != 'E' || req[4] != 'T' || req[5] > 1 || mode > BUILD_RESET_MODE_MAX) return UPDATE_INVALID;
     if (s.state != UPDATE_STATE_IDLE || held.state != HELD_NONE || reset_due || update_relay_busy() || update_split_slave_active()) return UPDATE_BUSY;
     if (!update_flash_available()) return UPDATE_UNAVAILABLE; // no build reset record on a smaller die
     if (req[5] == 1) {
@@ -822,11 +836,11 @@ static update_status_t op_settings_reset(const uint8_t *req, uint8_t *rsp, bool 
         update_presence_t p;
         uint8_t           pr = update_split_other(&p);
         if (pr != UPDATE_PRESENCE_MATCH && pr != UPDATE_PRESENCE_VERSION) return UPDATE_UNAVAILABLE;
-        update_status_t st = update_split_other_settings_reset();
+        update_status_t st = update_split_other_settings_reset(mode);
         if (st != UPDATE_OK) return st;
         rsp[1] |= 0x02;
     }
-    if (!updater_port_settings_invalidate()) return UPDATE_FLASH_ERR;
+    if (!updater_port_settings_invalidate(mode)) return UPDATE_FLASH_ERR;
     rsp[1] |= 0x01;
     reset_due    = true;
     reset_due_ms = now_ms + SVAL_UPDATE_SETTINGS_RESET_MS; // the reply goes out first
@@ -980,6 +994,7 @@ static void verify_image_step(void) {
             return;
         }
         crypto_sha512_update(&sha, buf, n);
+        update_build_scan(&s.bi, buf, n);
         uint32_t skip = s.verify_off < UPDATE_VECTORS_OFFSET ? UPDATE_VECTORS_OFFSET - s.verify_off : 0;
         if (skip < n) s.crc_body = update_crc32_mpeg2_update(s.crc_body, buf + skip, n - skip);
         s.verify_off += n;
@@ -993,6 +1008,11 @@ static void verify_image_step(void) {
         uint8_t head[UPDATE_HEAD_BYTES] __attribute__((aligned(4)));
         st = slot_copy(0, head, sizeof(head)) ? update_image_head_check(head, s.image_len) : UPDATE_FLASH_ERR;
     }
+    // D45: what the image itself says it is. A release build never takes a
+    // no-chord or kept-settings dev image, even from a manifest without
+    // DIAGNOSTIC. s.dev is the half the image is for (this build's floors and
+    // release state either way); the other half checks again itself (D7).
+    if (st == UPDATE_OK) st = update_image_build_check(&s.bi, &s.dev);
     s.verify_ms = ms16(updater_port_now_ms() - s.work_ms);
     if (st != UPDATE_OK) {
         fail(st);
@@ -1201,8 +1221,8 @@ uint8_t updater_port_split_presence(void) {
     return update_split_presence();
 }
 
-bool updater_port_settings_invalidate(void) {
-    return build_reset_invalidate();
+bool updater_port_settings_invalidate(uint8_t mode) {
+    return build_reset_invalidate(mode);
 }
 
 void updater_port_reboot(void) {

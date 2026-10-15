@@ -184,7 +184,7 @@ byte layouts are in the comment at the top of `kb/updater/updater.c`. In short:
 | `0x0B DIAG` | clear | Main's stack: bytes never used since boot and its size; the longest `updater_task()` pass in ms and the state it began in; the last reset reason and updater breadcrumbs. `clear` 1 restarts the pass record. For M1 #13 |
 | `0x0C RELAY` | - | M2: the relay to the other half: phase, that half's state and last error, bytes it acknowledged, image length, its erase progress, retries, relay ms, link paused, the relay's error, this half's state |
 | `0x0D PAIR_MANIFEST` | off, n ≤ 52, bytes; `[hand]` is this half's own | Protocol 4 (D41): bytes filled of this half's 108-byte manifest, loaded beside a session for the other hand while it is in MANIFEST_LOADING, from that session's client. INVALID with no such session, OTHER_CLIENT, BUSY after its ARM; refusals change nothing |
-| `0x0E SETTINGS_RESET` | `'R' 'S' 'E' 'T'`, scope (0 this half, 1 both) | Protocol 4 (D42): done mask (bit0 this half, bit1 the other half). Only in IDLE with no held approval and no relay, else BUSY. See "Settings reset" |
+| `0x0E SETTINGS_RESET` | `'R' 'S' 'E' 'T'`, scope (0 this half, 1 both), mode (0 defaults, 1 a blank board: D44) | Protocol 4 (D42): done mask (bit0 this half, bit1 the other half). Only in IDLE with no held approval and no relay, else BUSY. See "Settings reset" |
 
 States: `IDLE 0, MANIFEST_LOADING 1, CONFIRM_WAIT 2, VERIFYING_MANIFEST 3,
 ERASING 4, RECEIVING 5, VERIFYING_IMAGE 6, VERIFIED 7, COMMITTING 8, ERROR 9`,
@@ -638,11 +638,45 @@ the record is at 16 MB - 12 KB: an early build that called it stopped the half
 without USB at its first SETTINGS_RESET (found on the test boards; nothing was
 written).
 
-`sval_update.py reset-settings [--this-half] [--ack]` sends it, waits for the
-board to come back, prints the storage notice, and with `--ack` sends `0x2A`.
+### A blank board (D44)
+
+Mode 1 (`req[6]`; 0 or a missing byte is the reset to defaults) asks for a
+blank board: the same reset, then every key on every layer `KC_NO`.
+
+- Each half programs the blank mark with the invalidation, in the same page
+  program: `"BLNK"` and its complement in the 8 bytes after the record. Mode 0
+  programs zeros there.
+- At the next boot, pre-init finds a cleared record with the whole mark. The
+  reset runs as for D39; then `build_reset_post_init()` writes `KC_NO` over the
+  whole dynamic keymap (after `sval_init()`, which ran in the module post-init),
+  and only then writes the record, which erases the sector and the mark. A
+  power cut in between leaves the mark, and the next boot blanks again.
+- The other half gets the mode as a fifth payload byte of `KEYBOARD_UPDATE`
+  `0x07`. A protocol 4 half from before D44 refuses that payload (INVALID), so
+  the request is UNAVAILABLE and nothing changes on either half.
+- The firmware does this, not the host, because it is atomic per half and
+  covers the half without USB too. A host that wrote `KC_NO` after a reset to
+  defaults would reach only the USB half's keymap, and a closed tab mid-write
+  would leave part of the defaults behind.
+
+`sval_update.py reset-settings [--this-half] [--blank] [--ack]` sends it, waits for the
+board to come back, prints the storage notice, with `--blank` reads every key
+back and checks it is `KC_NO`, and with `--ack` sends `0x2A`.
 `sval_update.py storage [--ack]` prints that notice and can clear it. Keybard
-sends scope 1 for "Start from defaults" when the install did not already reset
-the settings (the image was identical, or only one half was installed).
+sends scope 1 for "Reset to the default layout" when the install did not already reset
+the settings (the image was identical, or only one half was installed), and scope 1
+with mode 1 for "Wipe to a blank board" after every install.
+
+## The image's own build info (D45)
+
+A release build reads the build-info records in the image while it hashes it
+(`update_build_scan`, `update_image.c`) and refuses a no-chord (`0x40`) or
+kept-settings (`0x80`) image with BAD_IMAGE, whatever the manifest's flags say.
+The half with USB checks either half's image at VERIFYING_IMAGE; the half
+without USB checks a relayed image again. A record matches as `make_update.py`
+matches it (`"SVBI"`, `info_ver` 3). The scanner compares the magic a byte at
+a time, so it adds no `"SVBI"` literal of its own to the image. An image with no
+record is taken.
 
 ## Dev builds with no chord (D43)
 

@@ -218,9 +218,12 @@ update_status_t update_split_port_program_page(uint32_t off, const uint8_t *page
 // its reset, which the simulation runs as a reboot into the same image.
 static int  master_invalidations, slave_invalidations, master_soft_resets, slave_soft_resets;
 static bool master_invalidate_fails, slave_invalidate_fails;
-bool updater_port_settings_invalidate(void) {
+static int  master_reset_mode = -1, slave_reset_mode = -1; // the last mode each half took (D44)
+static bool slave_pre_blank; // the other half is a protocol 4 build from before D44: no mode byte
+bool updater_port_settings_invalidate(uint8_t mode) {
     if (master_invalidate_fails) return false;
     master_invalidations++;
+    master_reset_mode = mode;
     return true;
 }
 void updater_port_reboot(void) {
@@ -228,13 +231,14 @@ void updater_port_reboot(void) {
     master_reset_pending = true;
     master_next_fw       = master_id.fw_version;
 }
-update_status_t update_split_port_settings_invalidate(void) {
+update_status_t update_split_port_settings_invalidate(uint8_t mode) {
     if (chance(dma_busy_pct)) {
         dma_refusals++;
         return UPDATE_BUSY;
     }
     if (slave_invalidate_fails) return UPDATE_FLASH_ERR;
     slave_invalidations++;
+    slave_reset_mode = mode;
     return UPDATE_OK;
 }
 void update_split_port_reboot(void) {
@@ -269,6 +273,11 @@ bool update_split_port_rpc(const uint8_t *req, uint8_t req_len, uint8_t *rsp, ui
     }
     if (old_slave && req[0] == USPLIT_OP_SETTINGS_RESET) {
         memset(rsp, 0, rsp_len); // an unknown op builds no answer (update_split_slave_rpc)
+        return true;
+    }
+    if (slave_pre_blank && req[0] == USPLIT_OP_SETTINGS_RESET && req_len > USPLIT_REQ_HDR + 4 + USPLIT_CRC_BYTES) {
+        // a protocol 4 half from before D44: its payload rule takes 4 bytes only
+        usplit_rsp_build(rsp, rsp_len, UPDATE_INVALID, USPLIT_OP_SETTINGS_RESET, req[1], UPDATE_STATE_IDLE, NULL);
         return true;
     }
     uint8_t in[USPLIT_MSG_MAX], out[USPLIT_MSG_MAX];
@@ -608,6 +617,8 @@ static void fresh(uint32_t len) {
     slave_reboots = master_reboots = 0;
     master_invalidations = slave_invalidations = master_soft_resets = slave_soft_resets = 0;
     master_invalidate_fails = slave_invalidate_fails = false;
+    master_reset_mode = slave_reset_mode = -1;
+    slave_pre_blank = false;
     commit_avail  = false;
     commit_runs   = 0;
     commit_result = UPDATE_UNSUPPORTED;

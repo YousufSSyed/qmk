@@ -3,7 +3,9 @@
 
 // Structure checks for the updater (see update_image.h).
 
+#include <string.h>
 #include "update_image.h"
+#include "update_build_info.h"
 #include "update_self.h"
 
 // ---- this build ------------------------------------------------------------------
@@ -73,5 +75,32 @@ update_status_t update_image_head_check(const uint8_t head[UPDATE_HEAD_BYTES], u
     if (sp < UPDATE_SP_MIN || sp > UPDATE_SP_MAX) return UPDATE_BAD_IMAGE;
     // Thumb: odd, and inside the image after the boot2 page.
     if (!(reset & 1) || reset < UPDATE_XIP_BASE + UPDATE_VECTORS_OFFSET || reset >= UPDATE_XIP_BASE + image_len) return UPDATE_BAD_IMAGE;
+    return UPDATE_OK;
+}
+
+// ---- the image's build-info records (D45) ---------------------------------------------
+
+void update_build_scan_init(update_build_scan_t *sc) {
+    memset(sc, 0, sizeof(*sc));
+}
+
+// Byte by byte, through a 6-byte window. The magic is compared a byte at a
+// time (win is byte-aligned, so the compiler cannot merge the compares into one
+// word against an "SVBI" literal): the scanner itself never adds a record-like
+// "SVBI" to the image it is built into.
+void update_build_scan(update_build_scan_t *sc, const uint8_t *p, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        for (size_t k = 0; k + 1 < sizeof(sc->win); k++) sc->win[k] = sc->win[k + 1];
+        sc->win[sizeof(sc->win) - 1] = p[i];
+        if (sc->seen < sizeof(sc->win)) sc->seen++;
+        if (sc->seen == sizeof(sc->win) && sc->win[0] == 'S' && sc->win[1] == 'V' && sc->win[2] == 'B' && sc->win[3] == 'I' && sc->win[4] == UPDATE_BUILD_INFO_VERSION) {
+            if (sc->records < 0xFF) sc->records++;
+            sc->flags |= sc->win[5];
+        }
+    }
+}
+
+update_status_t update_image_build_check(const update_build_scan_t *sc, const update_device_t *dev) {
+    if (dev->release_build && sc->records && (sc->flags & (UPDATE_BUILD_NO_CHORD | UPDATE_BUILD_DEV_KEEP))) return UPDATE_BAD_IMAGE;
     return UPDATE_OK;
 }

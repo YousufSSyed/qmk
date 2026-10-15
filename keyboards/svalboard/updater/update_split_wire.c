@@ -153,7 +153,10 @@ static bool payload_ok(uint8_t op, const uint8_t *pl, uint8_t len, usplit_req_t 
             r->crc_lo16 = get16(pl);
             return true;
         case USPLIT_OP_SETTINGS_RESET:
-            return len == 4 && pl[0] == 'R' && pl[1] == 'S' && pl[2] == 'E' && pl[3] == 'T';
+            // D44: an optional mode byte, 0 defaults or 1 blank.
+            if ((len != 4 && len != 5) || pl[0] != 'R' || pl[1] != 'S' || pl[2] != 'E' || pl[3] != 'T') return false;
+            r->mode = len == 5 ? pl[4] : 0;
+            return r->mode <= 1;
         default:
             return false;
     }
