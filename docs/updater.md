@@ -654,6 +654,9 @@ blank board: the same reset, then every key on every layer `KC_NO`.
 - The other half gets the mode as a fifth payload byte of `KEYBOARD_UPDATE`
   `0x07`. A protocol 4 half from before D44 refuses that payload (INVALID), so
   the request is UNAVAILABLE and nothing changes on either half.
+- A half with USB on a protocol 4 build from before D44 ignores `req[6]`: mode
+  1 is its reset to defaults, on both halves. The reply is the same, so the
+  host reads the keymap back (`sval_update.py --blank` fails; Keybard: F20).
 - The firmware does this, not the host, because it is atomic per half and
   covers the half without USB too. A host that wrote `KC_NO` after a reset to
   defaults would reach only the USB half's keymap, and a closed tab mid-write

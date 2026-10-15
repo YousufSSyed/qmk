@@ -121,6 +121,11 @@ the no-chord bit from the half with USB, since that's the half that would skip t
   The other half gets the mode over the split link (KEYBOARD_UPDATE `0x07` with a fifth byte).
   A half on a protocol 4 build from before D44 answers that INVALID, so the request is
   UNAVAILABLE and nothing changed on either half.
+- **A half with USB on a protocol 4 build from before D44 does not read the mode byte.** It
+  takes mode 1 as the reset to defaults, on both halves (the other half gets protocol 4's
+  4-byte payload). Nothing in the reply tells the two apart, so a host reads the keymap back
+  after the reset: `sval_update.py reset-settings --blank` fails, and Keybard stops on F20.
+  Keybard always sends mode 1 to the build it has just installed.
 - After the reconnect, Sval GET_INFO storage flags (`svilInfo[17]` in Keybard, response byte 18
   on the wire) has **bit 2 set**, until Keybard sends `0x2A`. This is the same notice a new build gives.
 - The USB product ID doesn't change, so Keybard reopens the device with no chooser.
