@@ -17,7 +17,7 @@ image's first page last. A power cut at any point leaves either the new image
 or a board that comes up in BOOTSEL. It never leaves a half-written image that
 the boot ROM would run.
 
-This version (updater protocol 3) does not sign updates. See "Security"
+This version (updater protocol 4) does not sign updates. See "Security"
 below. Signing was built and tested in M3 and then deferred; that code is kept
 under the tag `archive/fw-updater-signed`.
 
@@ -59,13 +59,16 @@ python3 -I $MU $N.uf2 -o $N.svup --kb $K
 | `SVAL_UPDATE_TEST_HOOKS=yes` | Adds the `TEST_HALT` op and the commit halt points (hardware tests only) |
 | `SVAL_UPDATE_RELEASE=yes` | Release updater build: DIAGNOSTIC images refused. Cannot be combined with the test hooks, `SVAL_KEYTEST` or `SVAL_HOST_BOOTLOADER`. Release CI builds its four images this way (see "Releases") |
 | `SVAL_TEST_WIPE=yes` | Bench builds only, never released: a settings magic (`0xB1A0`) no release uses. Every build now resets settings on its first boot anyway (D39); the wipe magic also resets when the same image is flashed over a normal one |
+| `SVAL_UPDATE_NO_CHORD=yes` | Dev builds only (D43): every ARM counts as confirmed, so installs need no chord (INFO flags bit 7; ARM flags PRE_APPROVED and NO_CHORD; no blue light). A release build refuses it (`rules.mk`, `#error`, release CI) |
+| `SVAL_DEV_KEEP_SETTINGS=yes` | Dev builds only (D43): the first boot of a different build keeps stored settings (no D39 reset), except after a SETTINGS_RESET. A release build refuses it |
 | `SVAL_FW_VERSION=N` | The numeric version (D17), reported by INFO and presence. Default: `kb/updater/fw_version.txt` (D32). The older `EXTRAFLAGS=-DSVAL_FW_VERSION=N` still works |
 | `SVAL_FW_VERSION_STRING=S` | The version string, at most 16 of `A-Z a-z 0-9 . _ + -` (INFO page 1). Default empty; release CI passes the tag |
 
 Every updater build carries a 32-byte build-info record,
 `sval_update_build_info` (`kb/updater/update_build_info.h`, version 3): magic
 `SVBI`, which of the flags above it was built with (bit0 release, bit2 test
-hooks, bit3 keytest, bit4 host bootloader; bits 1 and 5 reserved, always 0), a
+hooks, bit3 keytest, bit4 host bootloader, bit6 no-chord, bit7 keep settings (the
+last two dev builds only, D43); bits 1 and 5 reserved, always 0), a
 reserved byte, the updater protocol, `SVAL_FW_VERSION`,
 `SVAL_FW_VERSION_STRING`, and the build's side, pointing device and keymap
 (`sval` 1, `blank` 2, any other 0). `make_update.py` takes the manifest's
@@ -73,7 +76,8 @@ version from it, and warns about a `--kb` whose side or pointing device
 contradicts it, asking before it writes the `.svup` (D33); with `--release` it
 also refuses a record that is not a clean release build or whose version or
 keymap does not match the manifest. `update_build_info.c` refuses to
-compile a release build with test hooks, keytest or the host bootloader.
+compile a release build with test hooks, keytest, the host bootloader, no-chord
+or keep settings.
 
 `SVAL_UPDATER` cannot be combined with `SVAL_KEYTEST` (keytest injects key
 events, so a host could fake the confirmation chord). Main's stack is
@@ -150,6 +154,12 @@ its pieces from INFO and refuses any other protocol; a protocol 2 host cannot
 talk to a protocol 3 board (its 32-byte reports don't fit the descriptor), and
 `sval_update.py` refuses a protocol 2 board. The relay over the split cable is
 unchanged, so either protocol's half can be updated through the other.
+Protocol 4 (D41-D43) is protocol 3 plus one chord for both halves
+(PAIR_MANIFEST, the ARM mode and flags, the held approval, STATUS byte 23), the
+settings reset (SETTINGS_RESET) and INFO flags bit 7; the sizes are unchanged.
+Its byte-level contract with Keybard is [updater-protocol4.md](updater-protocol4.md).
+Keybard offers its own install flow only to a half with USB on protocol 4.
+`sval_update.py` speaks protocols 3 and 4.
 
 The reply is the same packet with `value_data` rewritten. `value_data[0]` is
 always a status. Every request starts with `[hand]`: this half (0 left, 1 right),
@@ -160,19 +170,21 @@ byte layouts are in the comment at the top of `kb/updater/updater.c`. In short:
 
 | Op | Request after `[hand]` | Reply after `[status]` / rule |
 |---|---|---|
-| `0x00 INFO` | page (0, the default) | state, protocol (3), slot base/size and max image (4 KiB units), JEDEC ID, pointing ID, hand, fw version, storage format, security epoch, flags (bit0 16 MiB die, bit1 settings writes failing, bit2 release build, bit3 test hooks, bit4 reserved, bit5 the other half's version differs, bit6 reserved), last error, then the largest CHUNK data (50), the largest MANIFEST piece (52) and the report size (64), for either half. Page 1 (this half only): `1`, fw version u32, the 16-character version string from the build-info record. Other pages: INVALID |
+| `0x00 INFO` | page (0, the default) | state, protocol (4), slot base/size and max image (4 KiB units), JEDEC ID, pointing ID, hand, fw version, storage format, security epoch, flags (bit0 16 MiB die, bit1 settings writes failing, bit2 release build, bit3 test hooks, bit4 reserved, bit5 the other half's version differs, bit6 reserved, bit7 a no-chord dev build, D43), last error, then the largest CHUNK data (50), the largest MANIFEST piece (52) and the report size (64), for either half. Page 1 (this half only): `1`, fw version u32, the 16-character version string from the build-info record. Other pages: INVALID |
 | `0x01 MANIFEST` | off, n ≤ 52, bytes | bytes filled, of 108. In order; offset 0 restarts. Bytes past 108 are INVALID. Ties the load to this client |
-| `0x02 ARM` | - | nonce u32 and the first 4 bytes of SHA-512(manifest), which the host shows. Needs all 108 bytes. Checks the manifest fields, binds the session to client ID + nonce, starts the 30 s chord window. BUSY, with nothing changed, while a Scan Lab sweep runs |
+| `0x02 ARM` | mode (protocol 4: 0 single, the default; 1 pair) | nonce u32 and the first 4 bytes of SHA-512(manifest), which the host shows; then (protocol 4) the first 4 bytes of SHA-512(the pair manifest) for a pair ARM (else 0), and flags: bit0 PRE_APPROVED (BEGIN needs no chord, no blue light), bit1 BY_PAIR, bit2 NO_CHORD, bit3 PAIR. Needs all 108 bytes. Checks the manifest fields, binds the session to client ID + nonce, starts the 30 s chord window. BUSY, with nothing changed, while a Scan Lab sweep runs. A pair ARM also needs the whole pair manifest and checks it against this half (see "One chord for both halves") |
 | `0x03 BEGIN` | nonce | ACCEPTED once the chord is made: the manifest is checked again, then the erase, one 4 KiB sector per main-loop pass |
 | `0x04 CHUNK` | off u24, n ≤ 50, bytes | next offset. Strictly in order; an earlier chunk is acknowledged and not written again |
 | `0x05 END` | nonce | ACCEPTED: SHA-512, structure checks and CRC of the staged image, 2 KiB per pass |
-| `0x06 STATUS` | - | state, bytes staged, image length, erase progress, last error, reserved u16 (0), verify ms, longest sector erase ms, CRC low 16 bits once VERIFIED, flags, the other half by split presence (see below) |
+| `0x06 STATUS` | - | state, bytes staged, image length, erase progress, last error, reserved u16 (0), verify ms, longest sector erase ms, CRC low 16 bits once VERIFIED, flags, the other half by split presence (see below), then (protocol 4) flags2: bit0 an approval is held for this half's next install, bit1 this session was pre-approved |
 | `0x07 COMMIT` | nonce, CRC low 16 | ACCEPTED; the commit runs from housekeeping 100 ms later. The CRC (CRC-32/MPEG-2 over image bytes `[0x100, len)`) must match the verified image |
 | `0x08 ABORT` | nonce | From the session, or from anyone while ERROR is latched. Never erases |
-| `0x09 REBIND` | nonce | Moves the session to the sender's client ID (Keybard renews its ID every 50 s); the old ID is refused after it |
+| `0x09 REBIND` | nonce | Moves the session to the sender's client ID (Keybard renews its ID every 50 s); the old ID is refused after it. Protocol 4: with the pair session's nonce it also moves a held approval, in any state, IDLE included; it is also answered while the other half commits |
 | `0x0A TEST_HALT` | nonce, point, fed | Test-hooks builds only, in VERIFIED: where the commit stops (see Test hooks). INVALID elsewhere |
 | `0x0B DIAG` | clear | Main's stack: bytes never used since boot and its size; the longest `updater_task()` pass in ms and the state it began in; the last reset reason and updater breadcrumbs. `clear` 1 restarts the pass record. For M1 #13 |
 | `0x0C RELAY` | - | M2: the relay to the other half: phase, that half's state and last error, bytes it acknowledged, image length, its erase progress, retries, relay ms, link paused, the relay's error, this half's state |
+| `0x0D PAIR_MANIFEST` | off, n ≤ 52, bytes; `[hand]` is this half's own | Protocol 4 (D41): bytes filled of this half's 108-byte manifest, loaded beside a session for the other hand while it is in MANIFEST_LOADING, from that session's client. INVALID with no such session, OTHER_CLIENT, BUSY after its ARM; refusals change nothing |
+| `0x0E SETTINGS_RESET` | `'R' 'S' 'E' 'T'`, scope (0 this half, 1 both) | Protocol 4 (D42): done mask (bit0 this half, bit1 the other half). Only in IDLE with no held approval and no relay, else BUSY. See "Settings reset" |
 
 States: `IDLE 0, MANIFEST_LOADING 1, CONFIRM_WAIT 2, VERIFYING_MANIFEST 3,
 ERASING 4, RECEIVING 5, VERIFYING_IMAGE 6, VERIFIED 7, COMMITTING 8, ERROR 9`,
@@ -213,7 +225,12 @@ start a sweep or a probe while the updater is active.
 
 **LEDs.** Blue blink: make the chord. White double flash: chord recognized. Solid
 blue: approved, waiting for BEGIN. Rainbow: verifying, erasing, receiving.
-Magenta: writing. Red at 1 Hz: error, until ABORT.
+Magenta: writing. Red at 1 Hz: error, until ABORT. A pre-approved ARM
+(protocol 4: this half's install approved by the pair's chord, or any ARM on a
+no-chord dev build) shows no blue and no white flash: the light goes straight
+to the rainbow. Between the halves of a pair update, the half with USB blinks
+red slowly while the halves differ; that is expected, and it ends when this
+half's install is done.
 
 **Manifest checks** (at ARM, again at BEGIN, and at commit step 0). Magic
 `SVUP`, version 2, reserved fields 0, known flags; a release build refuses
@@ -532,8 +549,9 @@ manifest's (both nonzero) is an error. `pair A.svup B.svup` picks each image
 by the hand each half reports, checks both against both halves' INFO
 (protocol, release build, epoch, storage format, size) and sends nothing if
 either would be refused, and asks once (or `--yes`) if either image names
-another pointing device than its half runs; then it does the other half, then this half over USB (the chord
-twice, both on this half), waits for the board to come back, and requires
+another pointing device than its half runs; then it does the other half, then this half over USB (on
+protocol 4 one chord, on this half, approves both: see "One chord for both
+halves"; on protocol 3 the chord twice, both on this half), waits for the board to come back, and requires
 presence to show the same release on both halves within 10 s and each half's
 fw to equal its manifest's (when both are set). `relay` prints the RELAY op;
 `info --other` asks the other half; `info` also prints this half's version
@@ -543,6 +561,162 @@ with (`kb/updater/fw_version.txt` unless `make ... SVAL_FW_VERSION=N`), and
 manifest, so the two agree unless `--fw-version` says otherwise (which it
 refuses when the record has a nonzero number). For an A/B pair of test images
 build twice with `SVAL_FW_VERSION=2101` and `2102`.
+
+## One chord for both halves (protocol 4, D41)
+
+A pair update asks for the chord once. The first session, for the other half,
+also carries this half's own manifest:
+
+1. MANIFEST (the other hand) in pieces, then PAIR_MANIFEST (this hand) in
+   pieces, then ARM (the other hand, mode 1).
+2. The pair ARM checks the other manifest against the other half, as a single
+   ARM does, and the pair manifest against this half's own build and floors.
+   Either refusal latches ERROR with its status, so the user is never asked to
+   approve a file one of the halves would refuse. The reply carries both
+   4-byte codes (`rsp[5..8]`, `rsp[9..12]`) and the PAIR flag; the host shows
+   both at the one chord.
+3. The chord, made once in that session, creates the **held approval** on this
+   half: SHA-512 of the pair manifest, the session's client ID and its nonce,
+   in RAM only. On a no-chord build it is created at the pair ARM.
+4. The other half's install goes on as before (stage, verify, relay, its
+   commit). Once the relay is DONE the approval waits for this half's install
+   for `SVAL_UPDATE_PAIR_HOLD_MS` (120 s; the contract allows 90-180 s, and the
+   host sends this half's ARM within 60 s). STATUS byte 23 bit0 says it is
+   held.
+5. This half's own MANIFEST and single ARM, from the bound client, with the
+   very manifest that was approved: the ARM reply has PRE_APPROVED and
+   BY_PAIR, the chord counts as made (no blue light, no white flash), and BEGIN
+   is ACCEPTED at once. Any ARM for this half uses the approval up, matching
+   or not: a mismatch gets the chord prompt instead.
+
+REBIND with the pair session's nonce moves the approval to the sender in any
+state, IDLE between the sessions included, and REBIND is answered while the
+other half commits. A REBIND while this half's manifest loads moves that load
+too. ABORT (in IDLE too), any ERROR in either session, a MANIFEST from another
+client or for the other hand, a reset of this half and the timeout clear it.
+Nothing may ask for the chord twice: a host that finds the approval gone
+after the other half's install (STATUS bit0 clear, or no PRE_APPROVED) stops,
+and the user finishes this half with an update of its own (one chord). A
+one-half update keeps one chord, as in protocol 3. `sval_update.py pair` does
+all this on protocol 4 and the old two-chord flow on protocol 3.
+
+## Settings reset (protocol 4, D42)
+
+`SETTINGS_RESET` (op `0x0E`, `[hand]` this half, `'R' 'S' 'E' 'T'`, scope 1 for
+both halves or 0 for this one) puts every stored setting back to the defaults of
+the firmware each half runs, through the same path as a different build (D39).
+
+- Only in IDLE with no held approval, no relay and no reset already pending;
+  else BUSY. A bad magic or scope, or the other hand: INVALID.
+- Scope 1: the other half first, over a new `KEYBOARD_UPDATE` op (`0x07`). It
+  refuses with BUSY while it holds a session, and programs one page over its
+  build reset record (no erase, under 1 ms, in the SlaveThread, under the same
+  DMA check as a PAGE). With no presence MATCH or VERSION, or no answer (a
+  half on protocol 2 or 3 does not know the op), UNAVAILABLE and nothing
+  changes anywhere.
+- Then this half programs the same page over its own record. The record then
+  reads all zeros, which is never a valid record.
+- The reply's done mask says which halves took it (`0x03`, or `0x01` for
+  scope 0). FLASH_ERR when a record could not be written; the mask says which
+  half already took it.
+- This half resets 100 ms after the reply, the other half 300 ms after it took
+  the request: both within 500 ms.
+- Each half's next boot finds no valid record and resets every stored setting:
+  the keymap, macros, combos, tap dances, overrides, QMK settings and the
+  keyboard's VIA custom values (layer colors, pointing and scan settings). The
+  EEPROM reset erases the whole store, so the custom values fail their stamp
+  and take the build's defaults. Identity (serial and board name) is kept, and
+  so is the updater state. The new record carries the notice: GET_INFO byte 18
+  bit 2 until `0x2A`. The USB product ID does not change.
+- Dev keep builds (`SVAL_DEV_KEEP_SETTINGS`) skip the D39 reset, but honor a
+  SETTINGS_RESET (they reset when the record reads all zeros).
+
+The record is written through the boot ROM from RAM (`build_reset.c`), as
+`identity.c` and `update_flash.c` do. The Pico SDK's `flash_range_program()`
+hard-asserts any address above `PICO_FLASH_SIZE_BYTES` (2 MB in this build), and
+the record is at 16 MB - 12 KB: an early build that called it stopped the half
+without USB at its first SETTINGS_RESET (found on the test boards; nothing was
+written).
+
+`sval_update.py reset-settings [--this-half] [--ack]` sends it, waits for the
+board to come back, prints the storage notice, and with `--ack` sends `0x2A`.
+`sval_update.py storage [--ack]` prints that notice and can clear it. Keybard
+sends scope 1 for "Start from defaults" when the install did not already reset
+the settings (the image was identical, or only one half was installed).
+
+## Dev builds with no chord (D43)
+
+For firmware work, never released. `SVAL_UPDATE_NO_CHORD=yes` makes every ARM
+count as confirmed: INFO flags bit 7, ARM flags PRE_APPROVED and NO_CHORD, no
+blue light. A pair ARM on such a build holds the approval at once, so this
+half's install has PRE_APPROVED, BY_PAIR and NO_CHORD.
+`SVAL_DEV_KEEP_SETTINGS=yes` keeps stored settings across different builds
+(no D39 reset), except after a SETTINGS_RESET.
+
+```
+util/sval_dev_flash.sh SERIAL [left|right|both] [keep|fresh|blank]
+```
+
+builds them (the `sval` keymap, or `SVAL_DEV_KEYMAP`; `SVAL_DEV_KEYMAP_DIR`
+copies a private keymap in, never tracked) and installs them with
+`sval_update.py --yes`: both halves with `pair`. Its `.svup` files are
+DIAGNOSTIC, so a board on a release build refuses them; the first dev install
+on such a board goes through BOOTSEL and the `.uf2`. Release builds refuse
+both flags at three gates: `rules.mk` (`$(error)`), `#error` guards in
+`update_build_info.c`, `update_gesture.c` and `build_reset.c`, and release CI
+(`check_release_elf.py` refuses the symbols `update_no_chord` and
+`sval_dev_keep_settings` and the build-info flags `0x40` and `0x80`;
+`make_update.py --release` refuses the flags).
+
+## What the half without USB stores
+
+(The technical design's question 4.4.2: does "Put my layout back" restore
+everything after an install?)
+
+Each half has its own settings store in its own flash: the keymap, macros,
+combos, tap dances, overrides, QMK settings and the keyboard's VIA custom
+values. An install of a different build (D39), or SETTINGS_RESET, resets the
+store on each half it reaches. While a half has no USB it uses almost none of
+its own store:
+
+- Keys, layers, macros, combos and every other behavior run on the half with
+  USB, from that half's store. The half without USB only scans its matrix and
+  sends it over the split cable.
+- The scan and idle settings (turbo scan, the pre and post waits, the scan,
+  idle and deep periods, the idle flags and the deep clock) come from the half
+  with USB in every presence ping (`KEYBOARD_SYNC_A`, every 500 ms). Until the
+  first ping after its boot, the half without USB scans with its own values,
+  so for at most half a second after an install it scans with the defaults.
+- The pointer settings (DPI, scroll and automouse) are applied on the half
+  with USB, which drives the pointing over the split cable. Layer colors come
+  from the half with USB too.
+- Identity (serial and board name) is per half and is never reset.
+
+So a `.svil` restored through the half with USB brings back everything the
+keyboard does while USB stays on that half: nothing is lost on the other one.
+The one gap: the other half's own store keeps the defaults. If the user later
+moves the USB cable to that half, it starts from the defaults, and the layout
+must be restored there too (Keybard can say so when it sees a half it has not
+restored). No firmware change is needed for "Put my layout back".
+
+## Hardware test notes (protocol 4)
+
+On the trackball test boards (right half with USB, left half behind the split
+cable), no-chord dev builds of this branch, 127,744-byte images, Windows
+`sval_update.py` over hidapi:
+
+| Step | Result |
+|---|---|
+| `pair` from a protocol 3 dev build to protocol 4 | Two sessions, no chord asked; 41.6 s in all. Settings reset on both halves (new build, D39), notice set, `0x2A` cleared it |
+| `pair` again on protocol 4 (identical images) | One approval: the pair ARM showed both codes, and this half's ARM came back PRE_APPROVED, BY_PAIR and NO_CHORD (`0x07`), BEGIN at once. 40.7 s in all: the other half's image staged on the half with USB in 9.9 s (7.5 s of transfer, 2,587 reports, 2.0 ms each), relayed in 11.3 s (64 retries), its commit and hold about 4.5 s; this half's install 9.8 s; presence MATCH 4.0 s after the board came back. Settings kept (the identical image) |
+| `reset-settings --this-half --ack` | Back on USB 5.3 s after the reply; a probe key and a layer color back to their defaults, notice set, `0x2A` cleared it; the serial kept |
+| `reset-settings` (both) with the other half silent | UNAVAILABLE, nothing changed |
+| Restore of the backed-up keymap | Identical to the backup |
+
+Not yet run on hardware: `reset-settings` on both halves with the fixed build.
+The first attempt, with the SDK flash call described under "Settings reset",
+stopped the left half; it needs a power cycle (unplug and replug the right
+half's USB) before the both-halves run.
 
 ## make_update.py
 
@@ -691,7 +865,8 @@ and a release build accepts it.
 - `kb/tools/make_update.py`: UF2 → `.svup` (manifest, then the raw image), and
   `verify`. It refuses malformed UF2s and images the device would refuse.
 - `kb/tools/sval_update.py`: the host tool (`list`, `info [--other]`, `status`,
-  `relay`, `diag`, `abort`, `update`, `pair`, `reject`). Close Keybard first: raw
+  `relay`, `diag`, `abort`, `update`, `pair`, `reset-settings`, `storage`,
+  `reject`), protocols 3 and 4. Close Keybard first: raw
   HID replies reach every open handle.
 - `kb/tools/check_ram_funcs.py BUILD.elf`: the RAM-code check above.
 - `kb/tools/check_split_tables.py`: the split-table check across left/right
@@ -748,3 +923,9 @@ and a release build accepts it.
   LED until MATCH. `test_sval_update_tool.py` runs
   `sval_update.py update` with the other half's image and `pair` against the
   same simulation.
+  `test_pair.c` runs the protocol 4 cases (`tests/sval_updater/PROTOCOL4_CASES.md`,
+  the list Keybard's mock board runs too) against the same simulation: the pair
+  ARM and its refusals, one chord for both halves, everything that clears or
+  moves the held approval, and SETTINGS_RESET. A no-chord build of the same
+  harness runs the no-chord cases, and `test_no_chord_tool.py` runs the tool
+  against it; `run.sh` also checks that a release build refuses both dev flags.
