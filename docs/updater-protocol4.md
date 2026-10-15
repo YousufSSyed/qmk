@@ -122,8 +122,9 @@ the no-chord bit from the half with USB, since that's the half that would skip t
 - Its build-info record (magic `SVBI`, 32 bytes in the image's `.rodata`) has flag
   `UPDATE_BUILD_NO_CHORD 0x40` at byte 5. Keybard detects a no-chord image in a chosen file by finding
   the record (`"SVBI"`, `info_ver` 3 at byte 4) in the image and testing byte 5 & 0x40.
-  Images built by `util/sval_dev_flash.sh` are also flagged DIAGNOSTIC (manifest flags bit1), so a
-  release board refuses them. Keybard shows that refusal as a check row (EPOCH-like refusals → the sheet).
+  Images of a no-chord (or keep-settings) build are always flagged DIAGNOSTIC (manifest flags bit1):
+  `make_update.py` sets the flag itself when the build-info record has 0x40 or 0x80, so a release
+  board refuses them however they were packed. Keybard shows that refusal as a check row (EPOCH-like refusals → the sheet).
 
 ## The flow Keybard runs (the contract's sequence)
 
