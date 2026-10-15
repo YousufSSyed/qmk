@@ -279,6 +279,9 @@ def manifest_from_args(image, args):
     if args.release and args.diagnostic:
         raise Refused("a RELEASE image cannot be DIAGNOSTIC")
     info = build_info(image)
+    if info and info["flags"] & (BI_NO_CHORD | BI_DEV_KEEP) and not args.release:
+        # D43: a dev build is always DIAGNOSTIC, so a release board refuses it however it was packed.
+        flags |= FLAG_DIAGNOSTIC
     keymap_id = keymap_id_for(info, args)
     if args.release and keymap_id not in KEYMAP.values():
         raise Refused(f"RELEASE images are release keymaps only ({', '.join(KEYMAP)})")
