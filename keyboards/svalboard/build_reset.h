@@ -46,7 +46,26 @@ bool build_reset_due(bool available, const build_reset_record_t *rec, uint32_t i
 bool build_reset_notice(const build_reset_record_t *rec, uint32_t image);
 void build_reset_record_make(build_reset_record_t *rec, uint32_t image, uint32_t flags);
 
+// SETTINGS_RESET (D42): the page programmed over the record's first page to
+// invalidate it without an erase. NOR programming only clears bits, so the
+// record's bytes become 0 whatever they were (no valid record has magic 0),
+// and the rest of the page (0xFF) is left as it is.
+#define BUILD_RESET_PAGE_BYTES 256u
+void build_reset_invalid_page(uint8_t page[BUILD_RESET_PAGE_BYTES]);
+// What the record reads after that page is programmed over it (bitwise AND).
+void build_reset_program_over(build_reset_record_t *rec, const uint8_t page[BUILD_RESET_PAGE_BYTES]);
+// The record reads all zeros: invalidated by SETTINGS_RESET (never a valid
+// record, never erased flash). Dev keep builds reset settings only then.
+bool build_reset_cleared(const build_reset_record_t *rec);
+
 #ifndef BUILD_RESET_HOST_TEST
+// SETTINGS_RESET (D42): invalidates the record with one page program (no
+// erase: under 1 ms, so the half without USB can do it in the SlaveThread),
+// so the next boot resets every stored setting as for a different build and
+// sets the notice. Interrupts are off for the program. Until the reset, 0x2A
+// leaves the record alone. False when the sector does not exist or the record
+// still reads valid.
+bool build_reset_invalidate(void);
 void build_reset_pre_init(void);  // keyboard_pre_init_kb: marks stored settings invalid when due
 void build_reset_post_init(void); // keyboard_post_init_kb: records the image after the reset
 bool build_reset_notice_pending(void);

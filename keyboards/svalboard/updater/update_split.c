@@ -90,6 +90,13 @@ uint8_t update_split_other(update_presence_t *p) {
 // the lock to read or change it). hk is housekeeping's own.
 
 #define SLAVE_COMMIT_DELAY_MS 100 // so the COMMIT answer reaches the master first (as updater.c)
+// SETTINGS_RESET (D42): this half resets this long after taking it, so its
+// answer and the master's own reply get out first; both halves are reset
+// within 500 ms of the host's reply.
+#ifndef SVAL_UPDATE_SETTINGS_RESET_SLAVE_MS
+#    define SVAL_UPDATE_SETTINGS_RESET_SLAVE_MS 300
+#endif
+_Static_assert(SVAL_UPDATE_SETTINGS_RESET_SLAVE_MS < 500, "both halves reset within 500 ms (D42)");
 #define SLAVE_VERIFY_SLICE 2048   // image bytes hashed per housekeeping pass (as updater.c)
 
 static struct {
@@ -112,6 +119,9 @@ static struct {
     uint32_t       commit_due_ms;
     uint8_t        manifest[UPDATE_MANIFEST_BYTES] __attribute__((aligned(4)));
     usplit_pages_t pages; // RECEIVING: the page being assembled
+    // SETTINGS_RESET (D42): the build reset record is invalidated; reset at reset_due_ms.
+    bool     reset_pending;
+    uint32_t reset_due_ms;
 } sl;
 
 static struct {
@@ -264,6 +274,19 @@ static update_status_t run(const usplit_req_t *r, uint8_t *payload) {
             sl.state         = UPDATE_STATE_COMMITTING;
             sl.commit_due_ms = update_split_port_now_ms() + SLAVE_COMMIT_DELAY_MS;
             return UPDATE_ACCEPTED;
+        case USPLIT_OP_SETTINGS_RESET: {
+            // D42: the master asks this half first, then does the same itself.
+            if (sl.reset_pending) return UPDATE_OK; // a repeat whose answer was lost
+            if (sl.state != UPDATE_STATE_IDLE) return UPDATE_BUSY;
+            // One page program in this thread, as PAGE does (R16), under the
+            // same DMA check: BUSY means nothing was written, and the master
+            // sends a new request.
+            update_status_t st = update_split_port_settings_invalidate();
+            if (st != UPDATE_OK) return st;
+            sl.reset_pending = true;
+            sl.reset_due_ms  = update_split_port_now_ms() + SVAL_UPDATE_SETTINGS_RESET_SLAVE_MS;
+            return UPDATE_OK;
+        }
         default: // USPLIT_OP_ABORT
             if (sl.state == UPDATE_STATE_COMMITTING) return UPDATE_BUSY; // the copy may have started (D23)
             if (sl.state != UPDATE_STATE_IDLE) slave_cancel(UPDATE_OK);
@@ -424,7 +447,17 @@ static void slave_commit(uint32_t mseq) {
     update_split_port_unlock();
 }
 
+bool update_split_slave_reset_pending(void) {
+    return sl.reset_pending;
+}
+
 void update_split_slave_task(void) {
+    // SETTINGS_RESET (D42): the record is invalidated; the next boot resets
+    // every stored setting (D39). Set once by the callback, never cleared.
+    if (sl.reset_pending && due(update_split_port_now_ms(), sl.reset_due_ms)) {
+        update_split_port_reboot();
+        return; // host tests: the simulation reboots this half
+    }
     if (sl.state == UPDATE_STATE_IDLE) return; // a byte read: the common case takes no lock
     update_split_port_lock();
     // The clock is read under the lock: read before it, the SlaveThread could
@@ -952,6 +985,40 @@ update_status_t update_split_other_info(uint8_t payload[USPLIT_INFO_PAYLOAD], ui
     return UPDATE_UNAVAILABLE;
 }
 
+// At most two requests without a valid answer, as INFO (each lost one costs
+// the 20 ms serial timeout: R13's 50 ms per op), and a few more when the
+// other half answers BUSY for a busy DMA channel (an answer within 1 ms).
+#define SETTINGS_RESET_SILENT_TRIES 2
+#define SETTINGS_RESET_DMA_TRIES 6
+
+update_status_t update_split_other_settings_reset(void) {
+    if (update_relay_busy()) return UPDATE_BUSY;
+    static const uint8_t magic[4] = {'R', 'S', 'E', 'T'};
+    uint8_t              req[USPLIT_MSG_MAX], buf[USPLIT_MSG_MAX];
+    usplit_rsp_t         r;
+    uint8_t              want = usplit_rsp_len(USPLIT_OP_SETTINGS_RESET);
+    uint8_t              len  = usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, ++master_seq, magic, sizeof(magic));
+    int                  silent = 0, dma = 0, invalids = 0;
+    while (silent < SETTINGS_RESET_SILENT_TRIES && dma < SETTINGS_RESET_DMA_TRIES) {
+        memset(buf, 0, sizeof(buf));
+        if (!update_split_port_rpc(req, len, buf, want) || usplit_rsp_parse(buf, want, USPLIT_OP_SETTINGS_RESET, req[1], &r) != UPDATE_OK) {
+            silent++; // no answer, or a damaged one: the same frame again (a repeat is not run twice)
+            continue;
+        }
+        if (r.status == UPDATE_BUSY && r.state == UPDATE_STATE_IDLE) {
+            // A busy DMA channel there: nothing was written. The answer is
+            // cached by seq, so a new request.
+            dma++;
+            len = usplit_req_build(req, USPLIT_OP_SETTINGS_RESET, ++master_seq, magic, sizeof(magic));
+            continue;
+        }
+        if (r.status == UPDATE_INVALID && ++invalids < RELAY_INVALID_TRIES) continue; // maybe damaged on the way
+        if (r.status == UPDATE_OK || r.status == UPDATE_BUSY || r.status == UPDATE_FLASH_ERR) return (update_status_t)r.status;
+        return UPDATE_UNAVAILABLE; // refused: nothing changed there
+    }
+    return dma >= SETTINGS_RESET_DMA_TRIES ? UPDATE_BUSY : UPDATE_UNAVAILABLE;
+}
+
 #ifdef SVAL_UPDATER_HOST_TEST
 void update_split_host_reset(void) {
     memset(&sl, 0, sizeof(sl));
@@ -986,6 +1053,7 @@ void update_split_host_master_reset(void) {
 #    include "synchronization_util.h"
 #    include "version.h" // QMK_GIT_HASH
 #    include "split_pause.h"
+#    include "build_reset.h"
 #    include "updater.h"
 #    include "hardware/sync.h"
 #    include "hardware/regs/addressmap.h"
@@ -1075,5 +1143,24 @@ bool update_split_port_pause(bool on) {
 
 bool update_split_port_slot_read(uint32_t off, uint8_t *dst, uint32_t n) {
     return slot_copy(off, dst, n);
+}
+
+// SETTINGS_RESET on the half without USB (D42), in the SlaveThread: the same
+// DMA check as a PAGE's program (R6), then one page program over the record.
+update_status_t update_split_port_settings_invalidate(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    for (uint32_t ch = 0; ch < NUM_DMA_CHANNELS; ch++) {
+        if (*(volatile uint32_t *)(DMA_BASE + DMA_CH_STRIDE * ch + DMA_CH0_CTRL_TRIG_OFFSET) & DMA_CH0_CTRL_TRIG_BUSY_BITS) {
+            restore_interrupts(irq);
+            return UPDATE_BUSY;
+        }
+    }
+    bool ok = build_reset_invalidate(); // its own interrupts-off section nests in this one
+    restore_interrupts(irq);
+    return ok ? UPDATE_OK : UPDATE_FLASH_ERR;
+}
+
+void update_split_port_reboot(void) {
+    soft_reset_keyboard();
 }
 #endif

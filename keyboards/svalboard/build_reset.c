@@ -45,10 +45,30 @@ void build_reset_record_make(build_reset_record_t *rec, uint32_t image, uint32_t
     rec->check = ~(rec->magic ^ rec->image ^ rec->flags);
 }
 
+void build_reset_invalid_page(uint8_t page[BUILD_RESET_PAGE_BYTES]) {
+    memset(page, 0xFF, BUILD_RESET_PAGE_BYTES);
+    memset(page, 0x00, sizeof(build_reset_record_t));
+}
+
+bool build_reset_cleared(const build_reset_record_t *rec) {
+    const uint8_t *p = (const uint8_t *)rec;
+    for (size_t i = 0; i < sizeof(*rec); i++) {
+        if (p[i]) return false;
+    }
+    return true;
+}
+
+void build_reset_program_over(build_reset_record_t *rec, const uint8_t page[BUILD_RESET_PAGE_BYTES]) {
+    uint8_t *p = (uint8_t *)rec;
+    for (size_t i = 0; i < sizeof(*rec); i++) p[i] &= page[i];
+}
+
 #ifndef BUILD_RESET_HOST_TEST
 #    include "eeconfig.h"
 #    include "identity.h"
 #    include "hardware/regs/addressmap.h"
+#    include "hardware/flash.h"
+#    include "hardware/sync.h"
 
 _Static_assert(BUILD_RESET_SECTOR + 4096u == IDENTITY_SECTOR_A, "the build reset sector is just below the identity sectors");
 #    ifdef SVAL_UPDATE_BASE
@@ -57,14 +77,27 @@ _Static_assert(SVAL_UPDATE_BASE + SVAL_UPDATE_SIZE <= BUILD_RESET_SECTOR, "the s
 
 extern const uint8_t __flash_binary_end[]; // RP2040_FLASH_TIMECRIT.ld
 
+#    ifdef SVAL_DEV_KEEP_SETTINGS
+#        ifdef SVAL_UPDATE_RELEASE
+#            error "release builds cannot have SVAL_DEV_KEEP_SETTINGS (dev builds only)"
+#        endif
+// Kept in the ELF so check_release_elf.py finds it.
+__attribute__((used)) const volatile uint8_t sval_dev_keep_settings = 1;
+#    endif
+
 static uint32_t image_hash;
-static bool     pending, notice, record_failed;
+static bool     pending, notice, record_failed, invalidated;
 
 static const build_reset_record_t *record(void) {
     return (const build_reset_record_t *)(XIP_NOCACHE_NOALLOC_BASE + BUILD_RESET_SECTOR);
 }
 
 void build_reset_pre_init(void) {
+#    ifdef SVAL_DEV_KEEP_SETTINGS
+    // Dev "keep" builds: settings carry over and the record is left alone,
+    // except after a SETTINGS_RESET (D42), which asked for the reset.
+    if (sval_dev_keep_settings && !build_reset_cleared(record())) return;
+#    endif
     // On a smaller die the sector does not exist (its address would wrap onto
     // the firmware), so there is no record to keep.
     if (!identity_available()) return;
@@ -101,7 +134,22 @@ bool build_reset_record_failed(void) {
 }
 
 void build_reset_notice_clear(void) {
-    if (!notice) return;
+    if (!notice || invalidated) return; // after SETTINGS_RESET the record stays invalid until the reset
     if (write_record(0)) notice = false;
+}
+
+bool build_reset_invalidate(void) {
+    if (!identity_available()) return false;
+    static uint8_t page[BUILD_RESET_PAGE_BYTES] __attribute__((aligned(4)));
+    build_reset_invalid_page(page);
+    invalidated = true;
+    // flash_range_program() runs from RAM, leaves XIP and restores it through
+    // boot2, and flushes the XIP cache; nothing may run from flash meanwhile.
+    uint32_t irq = save_and_disable_interrupts();
+    flash_range_program(BUILD_RESET_SECTOR, page, sizeof(page));
+    restore_interrupts(irq);
+    build_reset_record_t rec;
+    memcpy(&rec, (const void *)record(), sizeof(rec));
+    return !build_reset_matches(&rec, rec.image);
 }
 #endif

@@ -113,7 +113,7 @@ static void test_manifest_layout(void) {
     CHECK_EQ(sizeof(sval_update_manifest_t), 108);
     CHECK_EQ(UPDATE_MANIFEST_BYTES, 108); // the MANIFEST op's buffer: no signature after it (protocol 2)
     CHECK_EQ(UPDATE_MANIFEST_VERSION, 2);
-    CHECK_EQ(UPDATE_PROTOCOL_VERSION, 3); // 2 in 64-byte reports
+    CHECK_EQ(UPDATE_PROTOCOL_VERSION, 4); // 3 plus one approval for both halves and SETTINGS_RESET (D41, D42)
     CHECK_EQ(UPDATE_BAD_SIG, 8); // retired, never returned; the codes after it keep their values
     CHECK_EQ(UPDATE_BAD_HASH, 9);
     CHECK_EQ(offsetof(sval_update_manifest_t, reserved0), 6); // key_id in version 1
@@ -719,6 +719,9 @@ static void test_flash(void) {
 // M2: the relay to the other half and its session (update_split.c).
 #include "test_relay.c"
 
+// Protocol 4 (D41-D43): one approval for both halves, SETTINGS_RESET.
+#include "test_pair.c"
+
 #ifdef SVAL_UPDATER_HOST_LIB
 // Entry points for tests/sval_updater/test_sval_update_tool.py (ctypes).
 void host_lib_reset(int commit_available) {
@@ -779,8 +782,33 @@ int host_slave_state(void) {
 int host_link_paused(void) {
     return link_paused;
 }
+int host_chord_done(void) {
+    return update_gesture_done(NULL);
+}
+// SETTINGS_RESET (D42): each half's record invalidations and resets.
+int host_master_invalidations(void) {
+    return master_invalidations;
+}
+int host_slave_invalidations(void) {
+    return slave_invalidations;
+}
+int host_master_soft_resets(void) {
+    return master_soft_resets;
+}
+int host_slave_soft_resets(void) {
+    return slave_soft_resets;
+}
 #else
 int main(int argc, char **argv) {
+#ifdef SVAL_UPDATE_NO_CHORD
+    // The no-chord dev build (D43): its protocol 4 cases only; the rest of
+    // these tests expect the chord.
+    (void)argc;
+    (void)argv;
+    test_pair_no_chord();
+    printf("%d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+#endif
 #ifdef SVAL_TEST_REAL_COMMIT
     (void)argc;
     (void)argv;
@@ -799,6 +827,7 @@ int main(int argc, char **argv) {
     if (argc > 1) test_cross(argv[1]);
     test_session();
     test_relay();
+    test_pair();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

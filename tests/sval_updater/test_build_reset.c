@@ -118,6 +118,30 @@ int main(void) {
     CHECK(boot(A) == 1 && !record_failed && notice);
     CHECK(boot(A) == 0 && !record_failed);
 
+    // SETTINGS_RESET (D42): one page programmed over the record, no erase.
+    // Whatever the record held (valid with or without the notice, erased,
+    // garbage), it reads all zeros afterwards, which is never a valid record:
+    // the next boot of the same image resets once and records it again.
+    uint8_t page[BUILD_RESET_PAGE_BYTES];
+    build_reset_invalid_page(page);
+    for (size_t i = 0; i < sizeof(page); i++) CHECK(page[i] == (i < sizeof(build_reset_record_t) ? 0x00 : 0xFF));
+    for (int k = 0; k < 4; k++) {
+        if (k == 0) build_reset_record_make(&sector, A, 0);
+        if (k == 1) build_reset_record_make(&sector, A, BUILD_RESET_NOTICE);
+        if (k == 2) erase();
+        if (k == 3) memset(&sector, 0x5A, sizeof(sector));
+        build_reset_program_over(&sector, page);
+        CHECK(build_reset_cleared(&sector));
+        CHECK(!build_reset_matches(&sector, A) && !build_reset_matches(&sector, 0));
+        CHECK(flash(A, 3) == 1 && notice);
+        CHECK(!build_reset_cleared(&sector));
+        host_clears(A);
+    }
+    erase();
+    CHECK(!build_reset_cleared(&sector)); // erased flash is not a SETTINGS_RESET
+    build_reset_record_make(&sector, 0, 0);
+    CHECK(!build_reset_cleared(&sector));
+
     // No sector (a die smaller than 16 MB): nothing to compare, settings kept.
     erase();
     available = false;

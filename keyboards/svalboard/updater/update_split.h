@@ -140,6 +140,17 @@ bool update_relay_busy(void); // between START and DONE/FAILED (ABORTING is busy
 // UPDATE_UNAVAILABLE (no answer) or UPDATE_BUSY.
 update_status_t update_split_other_info(uint8_t payload[USPLIT_INFO_PAYLOAD], uint8_t *state);
 
+// SETTINGS_RESET (D42) on the other half, through KEYBOARD_UPDATE: it
+// invalidates its build reset record and resets itself
+// SVAL_UPDATE_SETTINGS_RESET_SLAVE_MS later. UPDATE_OK once it said so;
+// UPDATE_BUSY while a relay runs here or a session runs there; else
+// UPDATE_UNAVAILABLE (no valid answer: unplugged, or a protocol 2-3 half,
+// which does not know the op) or its refusal (FLASH_ERR).
+update_status_t update_split_other_settings_reset(void);
+
+// The half without USB took a SETTINGS_RESET and resets soon.
+bool update_split_slave_reset_pending(void);
+
 #ifdef SVAL_UPDATER_HOST_TEST
 void update_split_host_reset(void);
 void update_split_host_master_reset(void); // this half's RAM after its reset: relay, presence, latch
@@ -164,6 +175,13 @@ void update_split_port_unlock(void);
 // same section as the program (R6: the PMW SPI's DMA reads its TX source
 // from XIP, and this thread can preempt the main thread mid-transfer).
 update_status_t update_split_port_program_page(uint32_t off, const uint8_t *page);
+// Slave, in the SlaveThread: invalidate this half's build reset record (D42;
+// one page program, no erase), under the same DMA check: UPDATE_OK,
+// UPDATE_BUSY (a DMA channel is busy: nothing written) or UPDATE_FLASH_ERR.
+update_status_t update_split_port_settings_invalidate(void);
+// Slave, from housekeeping: reset this half (SETTINGS_RESET). Never returns
+// on the device.
+void update_split_port_reboot(void);
 // Master: one KEYBOARD_UPDATE RPC (transaction_rpc_exec); the split pause (D15).
 bool update_split_port_rpc(const uint8_t *req, uint8_t req_len, uint8_t *rsp, uint8_t rsp_len);
 bool update_split_port_pause(bool on);

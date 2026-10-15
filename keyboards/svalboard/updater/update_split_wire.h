@@ -49,6 +49,11 @@
 //    0x04 END     -                               -   all pages sent: async image verify
 //    0x05 COMMIT  image CRC low 16                -   needs VERIFIED, behind the master's pause
 //    0x06 ABORT   -                               -   never erases
+//    0x07 SETTINGS_RESET 'R' 'S' 'E' 'T'          -   protocol 4 (D42): only with no session (else
+//                 BUSY); invalidates this half's build reset record (one page program, no
+//                 erase), then this half resets itself about 300 ms later, so its next boot
+//                 resets every stored setting (D39). Protocol 2 and 3 halves do not know the op
+//                 and send no answer.
 //
 //    status is an update_status_t, state the slave's update_state_t. A request
 //    that fails its CRC or its op's length rules is answered INVALID and
@@ -131,6 +136,7 @@ typedef enum {
     USPLIT_OP_END    = 0x04,
     USPLIT_OP_COMMIT = 0x05,
     USPLIT_OP_ABORT  = 0x06,
+    USPLIT_OP_SETTINGS_RESET = 0x07, // protocol 4 (D42)
     USPLIT_OP_COUNT,
 } usplit_op_t;
 

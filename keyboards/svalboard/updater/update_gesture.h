@@ -23,6 +23,10 @@ typedef uint8_t matrix_row_t;
 // have been seen up after this, so keys already held at ARM do not confirm.
 void update_gesture_arm(void);
 
+// Enter CONFIRM_WAIT with the chord already counted as made: an ARM approved
+// by the held approval of a pair ARM (D41). No keys are watched or swallowed.
+void update_gesture_preapprove(void);
+
 // Stop watching (leaving CONFIRM_WAIT). The keys stay swallowed until released.
 void update_gesture_disarm(void);
 

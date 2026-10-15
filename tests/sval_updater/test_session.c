@@ -140,6 +140,7 @@ static uint32_t slave_busy_rpcs; // RPCs that failed for it
 static uint32_t dma_busy_pct, dma_refusals;
 static bool     slave_hk_frozen; // the other half's housekeeping does not run (it is stuck)
 static int      drop_rsp_op = -1; // every answer to requests with this op is lost
+static bool     old_slave;        // the other half on protocol 3: KEYBOARD_UPDATE op 0x07 is unknown there
 static const uint8_t *master_slot;  // this half's slot for the relay; NULL: the die's
 static uint8_t        shadow[SVAL_UPDATE_MAX_IMAGE];
 static bool           auto_shadow; // the relay's pause takes a copy of the die's slot as this half's (tool tests)
@@ -213,6 +214,35 @@ update_status_t update_split_port_program_page(uint32_t off, const uint8_t *page
     return update_flash_program_page(off, page);
 }
 
+// SETTINGS_RESET (D42): each half's build reset record, as invalidated, and
+// its reset, which the simulation runs as a reboot into the same image.
+static int  master_invalidations, slave_invalidations, master_soft_resets, slave_soft_resets;
+static bool master_invalidate_fails, slave_invalidate_fails;
+bool updater_port_settings_invalidate(void) {
+    if (master_invalidate_fails) return false;
+    master_invalidations++;
+    return true;
+}
+void updater_port_reboot(void) {
+    master_soft_resets++;
+    master_reset_pending = true;
+    master_next_fw       = master_id.fw_version;
+}
+update_status_t update_split_port_settings_invalidate(void) {
+    if (chance(dma_busy_pct)) {
+        dma_refusals++;
+        return UPDATE_BUSY;
+    }
+    if (slave_invalidate_fails) return UPDATE_FLASH_ERR;
+    slave_invalidations++;
+    return UPDATE_OK;
+}
+void update_split_port_reboot(void) {
+    slave_soft_resets++;
+    slave_reset_pending = true;
+    slave_next_fw       = slave_id.fw_version;
+}
+
 // The other half's callback, as the SlaveThread runs it.
 static void slave_rpc(const uint8_t *in, uint8_t len, uint8_t *out, uint8_t out_len) {
     bool was  = sim_slave;
@@ -236,6 +266,10 @@ bool update_split_port_rpc(const uint8_t *req, uint8_t req_len, uint8_t *rsp, ui
         slave_busy_rpcs++;
         sim_us += SIM_RPC_FAIL_US;
         return false;
+    }
+    if (old_slave && req[0] == USPLIT_OP_SETTINGS_RESET) {
+        memset(rsp, 0, rsp_len); // an unknown op builds no answer (update_split_slave_rpc)
+        return true;
     }
     uint8_t in[USPLIT_MSG_MAX], out[USPLIT_MSG_MAX];
     memcpy(in, req, req_len);
@@ -554,6 +588,7 @@ static void fresh(uint32_t len) {
     dma_busy_pct      = dma_refusals = 0;
     slave_hk_frozen   = false;
     drop_rsp_op       = -1;
+    old_slave         = false;
     master_slot       = NULL;
     auto_shadow       = false;
     memset(&lk, 0, sizeof(lk));
@@ -571,6 +606,8 @@ static void fresh(uint32_t len) {
     slave_commit_result = UPDATE_UNSUPPORTED;
     slave_commit_resets = slave_reset_pending = master_commit_resets = master_reset_pending = false;
     slave_reboots = master_reboots = 0;
+    master_invalidations = slave_invalidations = master_soft_resets = slave_soft_resets = 0;
+    master_invalidate_fails = slave_invalidate_fails = false;
     commit_avail  = false;
     commit_runs   = 0;
     commit_result = UPDATE_UNSUPPORTED;
@@ -600,7 +637,7 @@ static void test_session_info_and_wrapper(void) {
     CHECK_EQ(rsp[21] & (0x10 | 0x40), 0); // reserved (protocol 1's key flags)
     // protocol 3: the largest CHUNK and MANIFEST pieces and the report size,
     // which a host sizes its requests by; nothing after them
-    CHECK_EQ(rsp[2], 3);
+    CHECK_EQ(rsp[2], 4); // protocol 4 (D41-D43)
     CHECK_EQ(rsp[23], T_CHUNK);
     CHECK_EQ(rsp[24], T_MPIECE);
     CHECK_EQ(rsp[25], T_REPORT);

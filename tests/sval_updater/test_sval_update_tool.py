@@ -52,6 +52,9 @@ lib.host_slave_fw.restype = ctypes.c_uint32
 lib.host_master_fw.restype = ctypes.c_uint32
 lib.host_slave_state.restype = ctypes.c_int
 lib.host_link_paused.restype = ctypes.c_int
+lib.host_chord_done.restype = ctypes.c_int
+for _f in ("host_master_invalidations", "host_slave_invalidations", "host_master_soft_resets", "host_slave_soft_resets"):
+    getattr(lib, _f).restype = ctypes.c_int
 
 BOOT2 = bytes(int(h, 16) for h in __import__("re").findall(r"0x([0-9a-f]{2})", (Path(__file__).parent / "boot2_page0.h").read_text().split("#define BOOT2_PAGE0_BYTES")[1]))
 
@@ -68,6 +71,8 @@ class FakeBoard(su.Device):
     in CONFIRM_WAIT."""
 
     current = None
+    storage = 0  # Sval GET_INFO byte 18, across reopens
+    acked_resets = 0
 
     def __init__(self, allow_unwrapped=False):
         self.handle = None
@@ -80,6 +85,7 @@ class FakeBoard(su.Device):
         self.chords = 0
         self.allow_unwrapped = allow_unwrapped
         self.ops = []  # (op, request after [hand]) of each wrapped updater packet
+        self.sval_cmds = []
         FakeBoard.current = self
 
     def _exchange(self, packet, match):
@@ -103,6 +109,20 @@ class FakeBoard(su.Device):
             reply = (packet[:25] + new + struct.pack("<H", 120)).ljust(su.REPORT, b"\0")
         elif cid not in self.issued:
             reply = (bytes([su.WRAPPER]) + cid + bytes([0xFF, 1])).ljust(su.REPORT, b"\0")
+        elif packet[5] == su.SVAL_PREFIX:
+            # Sval in the wrapper: GET_INFO's storage byte and 0x2A only. Bit 2
+            # is set by a reset of this half after SETTINGS_RESET (D42).
+            cmd = packet[6]
+            body = bytearray(packet[5:])
+            if cmd == su.SVAL_GET_INFO:
+                if lib.host_master_soft_resets() > FakeBoard.acked_resets:
+                    FakeBoard.storage |= 4
+                body[18] = FakeBoard.storage
+            elif cmd == su.SVAL_STORAGE_RESET_CLEAR:
+                FakeBoard.storage &= ~4
+                FakeBoard.acked_resets = lib.host_master_soft_resets()
+            self.sval_cmds.append(cmd)
+            reply = (packet[:5] + bytes(body))[:su.REPORT]
         else:
             # As client_wrapper.c: VIA gets the report shifted down 6 bytes (the
             # last 6 stale), and the reply loses its last 6 to the header.
@@ -112,7 +132,7 @@ class FakeBoard(su.Device):
             lib.host_via(via, struct.unpack("<I", cid)[0])
             check(via.raw[su.REPORT - 6:su.REPORT] == b"\xEE" * 6, "the updater wrote into the wrapper's 6 bytes")
             reply = bytes([su.WRAPPER]) + cid + bytes([su.VIA_PROTO]) + via.raw[:su.REPORT - 6]
-        if lib.host_state() == 2 and self.waited:  # CONFIRM_WAIT and the tool is waiting: the user makes the chord
+        if lib.host_state() == 2 and self.waited and not lib.host_chord_done():  # CONFIRM_WAIT, no chord yet, the tool waits: the user makes it
             self.waited = False
             self.chords += 1
             lib.host_chord()
@@ -120,6 +140,17 @@ class FakeBoard(su.Device):
             raise AssertionError(f"reply does not match: {reply.hex()}")
         self.round_trips += 1
         return reply
+
+
+class Proto3Board(FakeBoard):
+    """The same state machine, reporting updater protocol 3 in this half's INFO: the
+    tool must then take protocol 3's path (one chord per half, no PAIR_MANIFEST)."""
+
+    def op(self, op, args=b"", hand=su.HAND_SELF, client=None):
+        st, r = super().op(op, args, hand, client)
+        if op == su.INFO and hand in (su.HAND_SELF, 1) and r[0] != 0xFF and not (args and args[0] == 1):
+            r = bytes([r[0], 3]) + r[2:]
+        return st, r
 
 
 class Args:
@@ -183,8 +214,8 @@ def fake_sleep(s):
     """Simulated time while the tool polls; the fake user acts on the next poll."""
     slept[0] += s
     lib.host_passes(max(int(s * 1000), 1))
-    if FakeBoard.current:
-        FakeBoard.current.waited = True
+    if FakeBoard.current:  # the tool waits in CONFIRM_WAIT for a chord not made yet
+        FakeBoard.current.waited = lib.host_state() == 2 and not lib.host_chord_done()
 
 
 def main():
@@ -296,11 +327,12 @@ def main():
     check(info["hand"] == "right" and info["pointing"] == "pmw3389" and info["jedec"] == "ef4018", f"info {info}")
     check(info["slot_base"] == "0x800000" and info["slot_size"] == "0x160000" and info["max_image"] == "0x160000", f"info {info}")
     check(info["storage_format"] == 2 and info["flash_16mib"] and not info["settings_writes_failing"], f"info {info}")
-    check(info["protocol"] == mu.UPDATER_PROTO == 3 and not info["release_build"], f"info {info}")
+    check(info["protocol"] == mu.UPDATER_PROTO == 4 and not info["release_build"], f"info {info}")
     check((info["chunk_max"], info["manifest_max"], info["report_bytes"]) == (50, 52, 64), f"info sizes {info}")
     check(su.check_protocol(info) == (52, 50), "piece sizes from INFO")
     # a board on another protocol, or with piece sizes that do not fit, is refused before any session op
-    for change, want in ((dict(protocol=2), "protocol 2"), (dict(protocol=4), "protocol 4"),
+    check(su.check_protocol({**info, "protocol": 3}) == (52, 50), "protocol 3 boards still taken")
+    for change, want in ((dict(protocol=2), "protocol 2"), (dict(protocol=5), "protocol 5"),
                          (dict(chunk_max=51), "do not fit"), (dict(chunk_max=0), "do not fit"),
                          (dict(manifest_max=53), "do not fit"), (dict(report_bytes=32), "32-byte")):
         try:
@@ -461,8 +493,75 @@ def main():
     check("pair: presence match" in text, f"pair:\n{text}")
     # INFO and presence both report the build's fw_version (the sim's reboot sets it from the manifest)
     check("this half fw 9, the other half fw 9" in text and "EXTRAFLAGS=-DSVAL_FW_VERSION=N" not in text, f"pair:\n{text}")
-    check("the chord is made twice" in text and text.index("the chord is made twice") < text.index("1/2"), f"pair:\n{text}")
+    # P4-25: protocol 4, one chord for both halves (D41)
+    check("the chord is made once" in text and text.index("the chord is made once") < text.index("1/2"), f"pair:\n{text}")
+    check(board.chords == 1, f"pair, protocol 4: the chord made {board.chords} times")
+    check(sessions[0].arm_flags == su.ARM_PAIR_FLAG and sessions[1].arm_flags == su.ARM_PRE_APPROVED | su.ARM_BY_PAIR,
+          f"pair, protocol 4: ARM flags {sessions[0].arm_flags:#x}, {sessions[1].arm_flags:#x}")
+    pm = [r for op, r in board.ops if op == su.PAIR_MANIFEST]
+    check(b"".join(r[2:2 + r[1]] for r in pm) == right_m and [r[1] for r in pm] == [52, 52, 4], "pair: PAIR_MANIFEST carries this half's manifest")
+    hashes = [ln.split()[2] for ln in text.splitlines() if "MANIFEST HASH" in ln]
+    check(hashes[:2] == [__import__("hashlib").sha512(left_m).hexdigest()[:8], __import__("hashlib").sha512(right_m).hexdigest()[:8]],
+          f"pair: both codes shown at the one chord {hashes}")
+    check("pre-approved by the pair update" in text and "approved by the pair (ARM flags 0x3)" in text, f"pair:\n{text}")
+    check(text.count("chord recognized") == 1, f"pair: one chord\n{text}")
     check(len(sessions) == 2, "pair: two sessions")
+    # P4-26: protocol 3 (the same board reporting 3): the chord twice, no PAIR_MANIFEST
+    lib.host_lib_reset(1)
+    lib.host_lib_split(1)
+    su.reopen = lambda serial, timeout: Proto3Board()
+    board = Proto3Board()
+    sessions = []
+    with contextlib.redirect_stdout(io.StringIO()) as log:
+        rc = su.pair(board, Args(), [right, left], sessions)
+    text = log.getvalue()
+    check(rc == 0 and lib.host_slave_commits() == 1 and lib.host_master_reboots() == 1, f"pair, protocol 3: exit {rc}\n{text}")
+    check("the chord is made twice" in text and board.chords == 2, f"pair, protocol 3: {board.chords} chords\n{text}")
+    check(not [op for op, _ in board.ops if op == su.PAIR_MANIFEST], "pair, protocol 3: no PAIR_MANIFEST")
+    check(sessions[1].arm_flags == 0, "pair, protocol 3: no flags read")
+    su.reopen = lambda serial, timeout: FakeBoard()
+    # P4-25: client ID renewals everywhere, the one between the sessions moving the approval
+    lib.host_lib_reset(1)
+    lib.host_lib_split(1)
+    board = FakeBoard()
+    with contextlib.redirect_stdout(io.StringIO()) as log:
+        rc = su.pair(board, args_with(rebind_every=1e-9), [right, left], [])
+    text = log.getvalue()
+    check(rc == 0 and board.chords == 1 and "the approval moved with REBIND" in text, f"pair with renewals: exit {rc}, {board.chords} chords\n{text[-2000:]}")
+    # F9: the approval gone between the halves: the tool stops, never asks for a second chord
+
+    class ClearsApproval(FakeBoard):
+        cleared = False
+
+        def op(self, op, args=b"", hand=su.HAND_SELF, client=None):
+            if op == su.STATUS and not self.cleared and lib.host_slave_commits() == 1 and lib.host_state() == 0:
+                self.cleared = True
+                super().op(su.ABORT, bytes(4), hand=1)  # in IDLE: clears the held approval
+            return super().op(op, args, hand, client)
+    for how in ("abort", "timeout"):
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        board = ClearsApproval() if how == "abort" else FakeBoard()
+        if how == "timeout":
+            real_run = su.Session.run
+
+            def slow_run(self, path, *a, **kw):
+                if kw.get("by_pair"):
+                    lib.host_passes(181000)  # past the held approval's window
+                return real_run(self, path, *a, **kw)
+            su.Session.run = slow_run
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as log:
+                su.pair(board, Args(), [right, left], [])
+            check(False, f"pair went on without the approval ({how})")
+        except su.UpdaterError as exc:
+            check(("approval for this half is gone" in str(exc) or "not pre-approved" in str(exc)) and "one chord" in str(exc),
+                  f"pair, approval {how}: {exc}")
+        finally:
+            if how == "timeout":
+                su.Session.run = real_run
+        check(board.chords == 1 and lib.host_commit_runs() == 0 and lib.host_slave_commits() == 1,
+              f"pair, approval {how}: {board.chords} chords, this half not installed\n{log.getvalue()}")
     # pair asks once, before anything is sent, when an image names another pointing
     # device than its half runs (D33): no stops it before the left half is touched,
     # --yes goes ahead with both
@@ -516,9 +615,13 @@ def main():
         got = su.image_refusal({**base_m, **change}, {**base_info, **info_change})
         check(got is None, f"image_refusal takes {change} {info_change}: {got}")
     # the other half, over the split cable: protocol 2 or 3 (the relay is the same)
-    for proto, ok in ((1, False), (2, True), (3, True), (4, False)):
+    for proto, ok in ((1, False), (2, True), (3, True), (4, True), (5, False)):
         got = su.image_refusal(base_m, {**base_info, "protocol": proto}, other=True)
         check((got is None) == ok, f"image_refusal, the other half on protocol {proto}: {got}")
+    # the half with USB: protocol 3 or 4
+    for proto, ok in ((2, False), (3, True), (4, True), (5, False)):
+        got = su.image_refusal(base_m, {**base_info, "protocol": proto})
+        check((got is None) == ok, f"image_refusal, this half on protocol {proto}: {got}")
     check(not su.fw_differs(5, dict(fw_version=5)) and su.fw_differs(4, dict(fw_version=5)), "fw_differs")
     check(not su.fw_differs(0, dict(fw_version=5)) and not su.fw_differs(5, dict(fw_version=0)), "fw_differs: 0 is unset")
     # pair refuses two images for the same half, before any op
@@ -530,6 +633,50 @@ def main():
     except su.UpdaterError as exc:
         check("one image for each half" in str(exc), f"pair: {exc}")
     check(lib.host_state() == 0, "pair refused: nothing started")
+
+    # P4-27: reset-settings (D42): both halves invalidate and reset, the board comes
+    # back with the storage notice, and --ack (0x2A) clears it
+    for this_half, ack in ((False, True), (True, False)):
+        lib.host_lib_reset(1)
+        lib.host_lib_split(1)
+        lib.host_passes(1200)  # presence up
+        FakeBoard.storage, FakeBoard.acked_resets = 0, 0
+        su.reopen = lambda serial, timeout: FakeBoard()
+        board = FakeBoard()
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            rc = su.reset_settings(board, args_with(this_half=this_half, ack=ack))
+        text = log.getvalue()
+        check(rc == 0, f"reset-settings: exit {rc}\n{text}")
+        check(lib.host_master_invalidations() == 1 and lib.host_master_soft_resets() == 1, f"reset-settings: this half\n{text}")
+        want = 0 if this_half else 1
+        check(lib.host_slave_invalidations() == want and lib.host_slave_soft_resets() == want, f"reset-settings: the other half\n{text}")
+        check(("the other (left) half and this (right) half" in text) != this_half, f"reset-settings: halves\n{text}")
+        check("storage notice: settings reset to this build's defaults" in text, f"reset-settings: notice\n{text}")
+        check(("0x2A sent; storage notice now: none" in text) == ack, f"reset-settings: ack\n{text}")
+        rs = [r for op, r in board.ops if op == su.SETTINGS_RESET]
+        check(rs == [b"RSET" + bytes([0 if this_half else 1]) + bytes(len(rs[0]) - 5)] if rs else False, f"SETTINGS_RESET request {rs}")
+    # the other half silent: UNAVAILABLE, nothing changed, nothing waited for
+    lib.host_lib_reset(1)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            su.reset_settings(FakeBoard(), args_with(this_half=False, ack=False))
+        check(False, "reset-settings with no other half")
+    except su.UpdaterError as exc:
+        check("UNAVAILABLE" in str(exc) and "nothing changed" in str(exc), f"reset-settings, no other half: {exc}")
+    check(lib.host_master_invalidations() == 0 and lib.host_master_soft_resets() == 0, "no other half: nothing reset")
+    # a protocol 3 board: refused before any op
+    lib.host_lib_reset(1)
+    try:
+        su.reset_settings(Proto3Board(), args_with(this_half=True, ack=False))
+        check(False, "reset-settings on protocol 3")
+    except su.UpdaterError as exc:
+        check("protocol 4" in str(exc), f"reset-settings, protocol 3: {exc}")
+    # storage --ack
+    FakeBoard.storage = 4
+    FakeBoard.acked_resets = lib.host_master_soft_resets()
+    with contextlib.redirect_stdout(io.StringIO()) as log:
+        su.storage(FakeBoard(), args_with(ack=True))
+    check("byte 18 = 0x04" in log.getvalue() and "now: none" in log.getvalue(), f"storage --ack\n{log.getvalue()}")
 
     print(f"sval_update.py: {checks} checks, {failures} failures")
     return 1 if failures else 0

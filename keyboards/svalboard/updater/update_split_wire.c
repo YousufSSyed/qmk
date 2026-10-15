@@ -113,6 +113,7 @@ int usplit_rsp_payload_len(uint8_t op) {
         case USPLIT_OP_END:
         case USPLIT_OP_COMMIT:
         case USPLIT_OP_ABORT:
+        case USPLIT_OP_SETTINGS_RESET:
             return 0;
         default:
             return -1;
@@ -151,6 +152,8 @@ static bool payload_ok(uint8_t op, const uint8_t *pl, uint8_t len, usplit_req_t 
             if (len != 2) return false;
             r->crc_lo16 = get16(pl);
             return true;
+        case USPLIT_OP_SETTINGS_RESET:
+            return len == 4 && pl[0] == 'R' && pl[1] == 'S' && pl[2] == 'E' && pl[3] == 'T';
         default:
             return false;
     }
