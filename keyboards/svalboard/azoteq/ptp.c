@@ -351,6 +351,8 @@ typedef struct {
     bool     known, up, armed, has_epoch;
     bool     fresh;     // a sample changed this pad since the last frame
     bool     has_valid; // valid_us holds a time
+    bool     resume;    // lifted because its samples stopped: arm on the next valid sample, finger down or not
+    uint16_t stale_ms;  // lift after this long without a valid sample (0: SVAL_PTP_STALE_MS)
     uint32_t epoch;
     uint32_t sample_us; // when the sample behind `fresh` was read
     uint32_t valid_us;  // the last valid sample (any answer from the chip)
@@ -365,6 +367,7 @@ static uint8_t  cid_next, key_buttons, sent_buttons, seen_switches = 3, pad_mask
 static uint8_t key_taken; // buttons whose press went to the touchpad
 #endif
 static uint16_t motion[2];
+static uint8_t  lost_down[2]; // sval_ptp_lost_down
 static uint8_t  last_report[SVAL_PTP_INPUT_SIZE] = {SVAL_PTP_REPORT_ID_INPUT};
 
 static uint16_t ptp_get16(const uint8_t *p) {
@@ -409,7 +412,8 @@ static void clear_all(void) {
         free_contact(&pool[i]);
     pads[0].armed = pads[1].armed = false;
     pads[0].fresh = pads[1].fresh = false;
-    dirty                         = false;
+    pads[0].resume = pads[1].resume = false;
+    dirty                           = false;
 }
 
 static contact_t *alloc_contact(uint8_t pad) {
@@ -552,9 +556,16 @@ void sval_ptp_feed(const uint8_t *f, uint32_t sample_us) {
     p->has_epoch   = true;
     if (!output) return;
     if (!p->armed) {
-        if (mask == 0) p->armed = true; // one all-up sample arms the pad
-        return;
+        // One all-up sample arms the pad. A pad lifted only because its
+        // samples stopped (a late split link, a pad that missed reads) arms
+        // on its next valid sample: a finger still down is reported again,
+        // as a new contact, instead of staying unseen until it lifts.
+        if (mask != 0 && !p->resume) return;
+        p->armed  = true;
+        p->resume = false;
+        if (mask == 0) return;
     }
+    p->resume = false;
 
     bool was_dirty = dirty;
     dirty          = false;
@@ -631,11 +642,21 @@ bool sval_ptp_pad_quiet(uint8_t pad) {
 
 void sval_ptp_pad_lost(uint8_t pad) {
     pad &= 1;
+    if (output && pad_down(pad) && lost_down[pad] != 0xFF) lost_down[pad]++;
     lift_pad(pad);
     pads[pad].known     = false; // unknown counts as up for the mouse hold
     pads[pad].has_epoch = false;
     pads[pad].has_valid = false;
     pads[pad].fresh     = false;
+    pads[pad].resume    = output; // reporting: a finger still down comes back when samples do
+}
+
+void sval_ptp_set_stale_ms(uint8_t pad, uint16_t ms) {
+    pads[pad & 1].stale_ms = ms;
+}
+
+uint8_t sval_ptp_lost_down(uint8_t pad) {
+    return lost_down[pad & 1];
 }
 
 // Admit waiting contacts in arrival order. A contact that finds 5 others
@@ -794,8 +815,9 @@ static void start_release(uint32_t now) {
             free_contact(c);
     }
     pads[0].armed = pads[1].armed = false;
-    release_pending               = any;
-    release_at                    = now;
+    pads[0].resume = pads[1].resume = false;
+    release_pending                 = any;
+    release_at                      = now;
     if (!any) clear_all();
 }
 
@@ -836,11 +858,15 @@ void sval_ptp_task(void) {
         clear_last_report();
     }
 
-    // A pad whose contacts get no valid sample for SVAL_PTP_STALE_MS has
-    // stopped answering: lift them (the other half's pad has its own link
-    // checks too, in multitouch.c).
-    for (uint8_t i = 0; i < 2; i++)
-        if (pads[i].has_valid && pad_has_contacts(i) && now - pads[i].valid_us > SVAL_PTP_STALE_MS * 1000u) sval_ptp_pad_lost(i);
+    // A pad whose contacts get no valid sample for its stale time
+    // (SVAL_PTP_STALE_MS, or longer for the other half's pad, see
+    // sval_ptp_set_stale_ms) has stopped answering: lift them. Until then
+    // they stay down where they were. The other half's pad has its own link
+    // checks too, in multitouch.c.
+    for (uint8_t i = 0; i < 2; i++) {
+        uint32_t stale = (pads[i].stale_ms ? pads[i].stale_ms : SVAL_PTP_STALE_MS) * 1000u;
+        if (pads[i].has_valid && pad_has_contacts(i) && now - pads[i].valid_us > stale) sval_ptp_pad_lost(i);
+    }
 
     bool m3 = native && pad_mask && f_mode == 3;
     if (mode3 && !m3) hold = true; // the pad mouse resumes once all fingers are up
@@ -986,6 +1012,48 @@ void sval_ptp_status(uint8_t *o) {
     ptp_put16(o + 22, pool_full);
 }
 
+// ------------------------------------------------- contacts for host apps
+// Sval POINTING_CONTACTS (ptp.h): read only, so it never changes what the
+// touchpad sends. It copies the last report the computer took, so a host
+// app draws exactly the contacts the operating system has.
+
+uint8_t sval_ptp_contacts(uint8_t *o, uint8_t length) {
+    if (length < SVAL_PTP_CONTACTS_LEN) return 0;
+    memset(o, 0, SVAL_PTP_CONTACTS_LEN);
+    uint8_t r[SVAL_PTP_INPUT_SIZE];
+    PTP_LOCK();
+    memcpy(r, last_report, sizeof(r));
+    PTP_UNLOCK();
+    uint32_t age_ms = ever_sent ? (ptp_now_us() - last_sent) / 1000u : 0;
+    o[0]            = 1;
+    o[1]            = (output ? 1 : 0) | (pad_mask & 3) << 1;
+    o[2]            = age_ms > 255 ? 255 : (uint8_t)age_ms;
+    if (!output || !ever_sent || age_ms > SVAL_PTP_CONTACTS_STALE_MS) return SVAL_PTP_CONTACTS_LEN;
+    uint8_t n     = r[33] > SVAL_PTP_MAX_CONTACTS ? SVAL_PTP_MAX_CONTACTS : r[33];
+    uint8_t taken = 0;
+    for (uint8_t i = 0; i < n; i++) {
+        const uint8_t *s = r + 1 + 6 * i;
+        uint16_t       x = ptp_get16(s + 2), y = ptp_get16(s + 4);
+        uint8_t        right = 0;
+        if (x >= SVAL_PTP_PAD_STRIDE) {
+            right = 1;
+            x -= SVAL_PTP_PAD_STRIDE;
+        } else if (x >= SVAL_PTP_PAD_X) {
+            continue; // in the gap: never sent
+        }
+        if (x > SVAL_PTP_PAD_X - 1) x = SVAL_PTP_PAD_X - 1;
+        if (y > SVAL_PTP_PAD_Y - 1) y = SVAL_PTP_PAD_Y - 1;
+        uint8_t *c = o + 4 + 4 * taken++;
+        c[0]       = (s[1] & 15) | ((s[0] & 2) ? 0x10 : 0) | ((s[0] & 1) ? 0x20 : 0) | (right ? 0x40 : 0);
+        uint32_t w = (uint32_t)x | (uint32_t)y << 12;
+        c[1]       = w;
+        c[2]       = w >> 8;
+        c[3]       = w >> 16;
+    }
+    o[3] = taken;
+    return SVAL_PTP_CONTACTS_LEN;
+}
+
 // --------------------------------------------------------- feature reports
 // These run in the USB ISR: they only read or store single bytes.
 
@@ -1067,6 +1135,7 @@ void sval_ptp_test_reset(void) {
 #    endif
     seen_switches = 3;
     motion[0] = motion[1] = 0;
+    lost_down[0] = lost_down[1] = 0;
     memset(last_report, 0, sizeof(last_report));
     last_report[0] = SVAL_PTP_REPORT_ID_INPUT;
     f_mode = f_latency = 0;
