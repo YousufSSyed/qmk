@@ -582,9 +582,8 @@ static inline bool sval_pointer_for_hand(bool left, sval_pointer_identity_t *id,
     return false;
 }
 
-#ifdef SVAL_AZOTEQ_MULTITOUCH
 // Hands whose pointing module is an Azoteq pad (bit 0 left, bit 1 right), for
-// the native touchpad (azoteq/multitouch.c).
+// the native touchpad (azoteq/multitouch.c) and Velocity Scroll.
 uint8_t sval_pad_hands(void) {
     uint8_t mask = 0;
     for (uint8_t hand = 0; hand < 2; hand++) {
@@ -594,7 +593,6 @@ uint8_t sval_pad_hands(void) {
     }
     return mask;
 }
-#endif
 
 #ifdef SVAL_FRAGMENT_IDX_LEFT_POINTING
 // Each hand's pointing fragment (Sval 0x18) from the module identity 0x2C reports.
@@ -670,6 +668,7 @@ void sval_pointing_motion_kb(uint8_t *out, uint8_t length) {
         sval_motion_pack_hand(&out[left ? SVAL_MOTION_LEFT_OFF : SVAL_MOTION_RIGHT_OFF], &motion_acc[hand], flags);
     }
     out[SVAL_MOTION_AXIS_OFF] = modes.axis_state;
+    if (modes.has_vs && length >= SVAL_MOTION_VS_OFF + SVAL_MOTION_VS_LEN) sval_motion_pack_vs(&out[SVAL_MOTION_VS_OFF], &modes.vs);
     memset(motion_acc, 0, sizeof(motion_acc));
 }
 #endif
