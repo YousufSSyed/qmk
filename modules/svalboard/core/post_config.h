@@ -68,6 +68,18 @@
 #    define RETRO_TAPPING_PER_KEY
 #endif
 
+// Auto Shift starts off until enabled via QMK Settings (QSID 3 bit 0), and
+// routes repeat options through the runtime getters in process_auto_shift.c.
+#ifndef AUTO_SHIFT_DISABLED_AT_STARTUP
+#    define AUTO_SHIFT_DISABLED_AT_STARTUP
+#endif
+#ifndef AUTO_SHIFT_REPEAT_PER_KEY
+#    define AUTO_SHIFT_REPEAT_PER_KEY
+#endif
+#ifndef AUTO_SHIFT_NO_AUTO_REPEAT_PER_KEY
+#    define AUTO_SHIFT_NO_AUTO_REPEAT_PER_KEY
+#endif
+
 // Per-combo and global combo terms come from get_combo_term() in sval_combo.c.
 #ifndef COMBO_TERM_PER_COMBO
 #    define COMBO_TERM_PER_COMBO

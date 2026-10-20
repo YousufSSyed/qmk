@@ -26,6 +26,28 @@
 #    define AUTO_SHIFT_STARTUP_STATE false /* disabled */
 #endif
 
+#ifdef SVAL_ENABLE
+// Svalboard: QSID 3 bits (0 enable, 1 modifiers, 2 no-special, 3 no-numeric,
+// 4 no-alpha, 5 repeat, 6 no-auto-repeat). Bit 0 is applied via
+// autoshift_enable() / autoshift_disable() in sval_qmk_settings.c.
+#    define AUTO_SHIFT_MODIFIERS_BIT (1 << 1)
+#    define AUTO_SHIFT_NO_SPECIAL_BIT (1 << 2)
+#    define AUTO_SHIFT_NO_NUMERIC_BIT (1 << 3)
+#    define AUTO_SHIFT_NO_ALPHA_BIT (1 << 4)
+#    define AUTO_SHIFT_REPEAT_BIT (1 << 5)
+#    define AUTO_SHIFT_NO_AUTO_REPEAT_BIT (1 << 6)
+#    ifndef AUTO_SHIFT_REPEAT_PER_KEY
+#        define AUTO_SHIFT_REPEAT_PER_KEY
+#    endif
+#    ifndef AUTO_SHIFT_NO_AUTO_REPEAT_PER_KEY
+#        define AUTO_SHIFT_NO_AUTO_REPEAT_PER_KEY
+#    endif
+uint8_t               sval_auto_shift(void);
+static inline uint8_t auto_shift_options(void) {
+    return sval_auto_shift();
+}
+#endif
+
 // Stores the last Auto Shift key's up or down time, for evaluation or keyrepeat.
 static uint16_t autoshift_time = 0;
 #if defined(RETRO_SHIFT) && !defined(NO_ACTION_TAPPING)
@@ -71,9 +93,17 @@ __attribute__((weak)) bool get_auto_shifted_key(uint16_t keycode, keyrecord_t *r
     switch (keycode) {
 #ifndef NO_AUTO_SHIFT_ALPHA
         case AUTO_SHIFT_ALPHA:
+#    ifdef SVAL_ENABLE
+            if (auto_shift_options() & AUTO_SHIFT_NO_ALPHA_BIT) break;
+            return true;
+#    endif
 #endif
 #ifndef NO_AUTO_SHIFT_NUMERIC
         case AUTO_SHIFT_NUMERIC:
+#    ifdef SVAL_ENABLE
+            if (auto_shift_options() & AUTO_SHIFT_NO_NUMERIC_BIT) break;
+            return true;
+#    endif
 #endif
 #ifndef NO_AUTO_SHIFT_SPECIAL
 #    ifndef NO_AUTO_SHIFT_TAB
@@ -81,6 +111,10 @@ __attribute__((weak)) bool get_auto_shifted_key(uint16_t keycode, keyrecord_t *r
 #    endif
 #    ifndef NO_AUTO_SHIFT_SYMBOLS
         case AUTO_SHIFT_SYMBOLS:
+#    endif
+#    ifdef SVAL_ENABLE
+            if (auto_shift_options() & AUTO_SHIFT_NO_SPECIAL_BIT) break;
+            return true;
 #    endif
 #endif
 #ifdef AUTO_SHIFT_ENTER
@@ -93,10 +127,18 @@ __attribute__((weak)) bool get_auto_shifted_key(uint16_t keycode, keyrecord_t *r
 
 /** \brief Called to check whether defines should apply if PER_KEY is set for it */
 __attribute__((weak)) bool get_auto_shift_repeat(uint16_t keycode, keyrecord_t *record) {
+#ifdef SVAL_ENABLE
+    return (auto_shift_options() & AUTO_SHIFT_REPEAT_BIT) != 0;
+#else
     return true;
+#endif
 }
 __attribute__((weak)) bool get_auto_shift_no_auto_repeat(uint16_t keycode, keyrecord_t *record) {
+#ifdef SVAL_ENABLE
+    return (auto_shift_options() & AUTO_SHIFT_NO_AUTO_REPEAT_BIT) != 0;
+#else
     return true;
+#endif
 }
 
 /** \brief Called when an Auto Shift key needs to be pressed */
@@ -164,16 +206,21 @@ static bool autoshift_press(uint16_t keycode, uint16_t now, keyrecord_t *record)
         // Prevents keyrepeating unshifted value of key after using it in a key combo.
         autoshift_lastkey = KC_NO;
 #ifndef AUTO_SHIFT_MODIFIERS
-        // We can't return true here anymore because custom unshifted values are
-        // possible and there's no good way to tell whether the press returned
-        // true upon release.
-        set_autoshift_shift_state(keycode, false);
-        autoshift_press_user(keycode, false, record);
-#    if !defined(NO_ACTION_ONESHOT) && !defined(NO_ACTION_TAPPING)
-        set_oneshot_mods(get_oneshot_mods() & (~MOD_BIT(KC_LSFT)));
-        clear_oneshot_layer_state(ONESHOT_OTHER_KEY_PRESSED);
+#    ifdef SVAL_ENABLE
+        if (!(auto_shift_options() & AUTO_SHIFT_MODIFIERS_BIT))
 #    endif
-        return false;
+        {
+            // We can't return true here anymore because custom unshifted values are
+            // possible and there's no good way to tell whether the press returned
+            // true upon release.
+            set_autoshift_shift_state(keycode, false);
+            autoshift_press_user(keycode, false, record);
+#    if !defined(NO_ACTION_ONESHOT) && !defined(NO_ACTION_TAPPING)
+            set_oneshot_mods(get_oneshot_mods() & (~MOD_BIT(KC_LSFT)));
+            clear_oneshot_layer_state(ONESHOT_OTHER_KEY_PRESSED);
+#    endif
+            return false;
+        }
 #endif
     }
 

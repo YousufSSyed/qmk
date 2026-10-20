@@ -22,6 +22,7 @@ class RuntimeSettings(unittest.TestCase):
 #define TAPPING_TOGGLE 5
 #define TAP_CODE_DELAY 0
 #define TAP_HOLD_CAPS_DELAY 80
+#define AUTO_SHIFT_ENABLE
 #define SVAL_QMK_SETTINGS_OFFSET 0
 #define TAPPING_PERMISSIVE_HOLD_BIT 0
 #define TAPPING_HOLD_ON_OTHER_KEY_BIT 1
@@ -35,6 +36,12 @@ static struct {
  swap_lctl_lgui, swap_rctl_rgui, oneshot_enable;
 } keymap_config;
 static uint8_t storage[44];
+static bool autoshift_enabled = true;
+static uint16_t autoshift_timeout_val = 0;
+static void set_autoshift_timeout(uint16_t timeout) { autoshift_timeout_val = timeout; }
+static void autoshift_enable(void) { autoshift_enabled = true; }
+static void autoshift_disable(void) { autoshift_enabled = false; }
+static bool get_autoshift_state(void) { return autoshift_enabled; }
 static void clear_keyboard(void) {}
 static void eeconfig_update_keymap(void *p) { (void)p; }
 static void eeconfig_read_kb_datablock(void *p, size_t off, size_t n) { assert(off==0 && n==44); memcpy(p, storage, n); }
@@ -51,12 +58,16 @@ int main(void) {
  sval_qmk_settings_reset();
  assert(sval_tap_code_delay()==0 && sval_tap_hold_caps_delay()==80);
  assert(sval_tapping_toggle()==5 && sval_grave_esc_override()==0);
- put(18,300); put(19,400); put(20,3); put(1,8);
+ assert(sval_auto_shift()==0 && !autoshift_enabled && autoshift_timeout_val==175);
+ put(18,300); put(19,400); put(20,3); put(1,8); put(3,0x7F); put(4,215);
  assert(sval_tap_code_delay()==300 && sval_tap_hold_caps_delay()==400);
  assert(sval_tapping_toggle()==3 && sval_grave_esc_override()==8);
- memset(&settings,0,sizeof(settings)); sval_qmk_settings_init();
+ assert(sval_auto_shift()==0x7F && autoshift_enabled && autoshift_timeout_val==215);
+ memset(&settings,0,sizeof(settings)); autoshift_enabled=false; autoshift_timeout_val=0; sval_qmk_settings_init();
  assert(sval_tap_code_delay()==300 && sval_tap_hold_caps_delay()==400);
  assert(sval_tapping_toggle()==3 && sval_grave_esc_override()==8);
+ assert(sval_auto_shift()==0x7F && autoshift_enabled && autoshift_timeout_val==215);
+ put(3,0x7E); assert(sval_auto_shift()==0x7E && !autoshift_enabled);
  put(20,0); assert(sval_tapping_toggle()==1);
  uint8_t raw=255; assert(sval_qmk_settings_get(20,&raw,1)==0 && raw==0);
  for (uint8_t bit=0;bit<4;bit++) { put(1,1<<bit); assert(sval_grave_esc_override()==(1<<bit)); }
