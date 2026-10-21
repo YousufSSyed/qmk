@@ -17,6 +17,8 @@ open handle.
     sval_update.py update FILE.svup [--half usb|other] [--yes] [--delay S] [--rebind-every S]
                                     [--min-rebinds N] [--no-commit] [--halt POINT [--halt-unfed]]
     sval_update.py pair FILE1.svup FILE2.svup [--yes] [--delay S] [--rebind-every S]
+    sval_update.py reset-settings [--this-half] [--blank] [--ack]
+    sval_update.py storage [--ack]
     sval_update.py reject FILE.svup
 
 update sends the manifest, prints the manifest hash you confirm, waits for the
@@ -41,8 +43,26 @@ then the half with USB over USB (the chord twice, once per image), then waits
 for the board to come back and for presence to show the same release on both
 halves within 10 s. pair picks each image by the hand each half reports, and
 asks once (or --yes) if either image names another pointing device than its
-half runs. relay prints the relay's progress; info --other asks the
-other half. The client ID is renewed every
+half runs. On updater protocol 4 (D41) the chord is made once for both: the
+first session also carries this half's manifest (PAIR_MANIFEST), its ARM
+shows both manifest hashes, and the chord approves both; this half's own
+install is then pre-approved by the board, and the tool never asks for a
+second chord (if the approval is gone it stops and says how to finish this
+half). On protocol 3 the chord is made twice, as before. A no-chord dev build
+(INFO flags bit7, D43) asks for no chord at all. relay prints the relay's
+progress; info --other asks the other half.
+
+reset-settings (protocol 4, D42) puts every stored setting on both halves back
+to the defaults of the firmware they run (--this-half: only the half with
+USB): the keymap, macros, combos, tap dances, overrides, QMK settings, layer
+colors, pointing and scan settings. Identity (serial, board name) is kept.
+--blank (D44) asks for a blank board instead: the same reset, then every key on
+every layer KC_NO; the tool reads the keymap back afterwards and checks it.
+Both halves reset; the tool waits for the board, then shows the storage notice
+(Sval GET_INFO byte 18 bit 2) that a host clears with 0x2A once it has told the
+user (--ack sends it). storage prints that byte, and --ack clears it.
+
+The client ID is renewed every
 --rebind-every seconds (50, as Keybard does) and the session moved to it with
 REBIND; after each REBIND the old ID must be refused. The number of renewals is
 printed; --min-rebinds N fails the run (before COMMIT) if there were fewer (M1
@@ -72,10 +92,10 @@ once (well under 1 s) through the RAM vector table; a reset only after about
 back as RPI-RP2 (page 0 is not valid); recover it with flash.sh.
 
 The protocol is documented at the top of keyboards/svalboard/updater/updater.c.
-This tool speaks updater protocol 3: 64-byte raw HID reports, with the MANIFEST
-and CHUNK piece sizes taken from INFO. A board on protocol 2 (32-byte reports)
-is refused: update it with the sval_update.py of its own release, or copy the
-.uf2 in BOOTSEL mode.
+This tool speaks updater protocols 3 and 4: 64-byte raw HID reports, with the
+MANIFEST and CHUNK piece sizes taken from INFO. A board on protocol 2 (32-byte
+reports) is refused: update it with the sval_update.py of its own release, or
+copy the .uf2 in BOOTSEL mode.
 """
 import argparse
 import hashlib
@@ -93,7 +113,11 @@ CHANNEL = 0x55
 SET_VALUE = 0x07
 WRAPPER, VIA_PROTO, WRAPPER_ERROR = 0xDD, 0xFE, 0xFF
 HAND_SELF = 0xFF
-INFO, MANIFEST, ARM, BEGIN, CHUNK, END, STATUS, COMMIT, ABORT, REBIND, TEST_HALT, DIAG, RELAY = range(13)
+INFO, MANIFEST, ARM, BEGIN, CHUNK, END, STATUS, COMMIT, ABORT, REBIND, TEST_HALT, DIAG, RELAY, PAIR_MANIFEST, SETTINGS_RESET = range(15)
+# ARM (protocol 4): the mode byte and the reply flags (update_manifest.h).
+ARM_SINGLE, ARM_PAIR = 0, 1
+ARM_PRE_APPROVED, ARM_BY_PAIR, ARM_NO_CHORD, ARM_PAIR_FLAG = 0x01, 0x02, 0x04, 0x08
+SVAL_PREFIX, SVAL_GET_INFO, SVAL_STORAGE_RESET_CLEAR = 0xDF, 0x00, 0x2A
 HALT_POINTS = {"invalidated": 1, "first-erase": 2, "mid-program": 3, "last-sector": 4, "page0": 5, "fault": 6, "fault-erased": 7}
 # Protocol 3: one 64-byte report each way. The updater's value bytes are what is
 # left after the client wrapper's 6 bytes and VIA's 3 (updater.c); INFO reports
@@ -102,9 +126,11 @@ REPORT = 64
 VALUE_BYTES = REPORT - 6 - 3  # 55: [status] + 54 reply bytes
 MANIFEST_PIECE_MAX = VALUE_BYTES - 3  # 52, after [hand][off][n]
 CHUNK_PIECE_MAX = VALUE_BYTES - 5  # 50, after [hand][off u24][n]
+# The half with USB: protocol 3, or 4 (one chord for both halves, SETTINGS_RESET).
+USB_HALF_PROTOS = (3, 4)
 # The other half is updated over the split cable, whose relay is the same in
-# protocols 2 and 3: a half on either can be updated through this one.
-OTHER_HALF_PROTOS = (2, 3)
+# protocols 2, 3 and 4: a half on any of them can be updated through this one.
+OTHER_HALF_PROTOS = (2, 3, 4)
 OLD_FIRMWARE = ("a board on updater protocol 2 (32-byte reports) does not answer this tool: update it with "
                 "the sval_update.py of its release, or copy the .uf2 in BOOTSEL mode")
 
@@ -233,6 +259,53 @@ class Device:
             raise ClientIdExpired(f"client wrapper error {r[6]} for client {cid.hex()}")
         return r[9], r[10:REPORT]
 
+    def via(self, body):
+        """One plain VIA command in the client wrapper: the reply from its command byte on."""
+        cid = self.client or self.bootstrap()
+        body = bytes(body)
+        r = self._exchange(bytes([WRAPPER]) + cid + bytes([VIA_PROTO]) + body, lambda r: r[0] == WRAPPER and r[1:5] == cid and (r[5] == WRAPPER_ERROR or r[6] == body[0]))
+        if r[5] == WRAPPER_ERROR:
+            raise ClientIdExpired(f"client wrapper error {r[6]} for client {cid.hex()}")
+        return r[6:REPORT]
+
+    def sval(self, cmd, args=b""):
+        """One Sval command (0xDF) in the client wrapper: the reply after [0xDF][cmd]."""
+        cid = self.client or self.bootstrap()
+        body = bytes([SVAL_PREFIX, cmd]) + bytes(args)
+        r = self._exchange(bytes([WRAPPER]) + cid + body, lambda r: r[0] == WRAPPER and r[1:5] == cid and (r[5] == WRAPPER_ERROR or r[5:7] == body[:2]))
+        if r[5] == WRAPPER_ERROR:
+            raise ClientIdExpired(f"client wrapper error {r[6]} for client {cid.hex()}")
+        return r[7:REPORT]
+
+
+def storage_flags(dev):
+    """Sval GET_INFO byte 18: bit0 storage unreadable (reset), bit1 a change could not be saved,
+    bit2 settings reset to this build's defaults (D39, D42), until 0x2A."""
+    r = dev.sval(SVAL_GET_INFO)
+    return r[16]
+
+
+VIA_GET_LAYER_COUNT, VIA_KEYMAP_GET_BUFFER = 0x11, 0x12
+KEYMAP_KEYS = 10 * 6  # MATRIX_ROWS * MATRIX_COLS (keyboards/svalboard/config.h)
+KEYMAP_PIECE = 28  # bytes per VIA get-buffer request, well inside the wrapped report
+
+
+def keymap_bytes(dev):
+    """The whole dynamic keymap through VIA: every layer, 2 bytes per key, big-endian."""
+    layers = dev.via(bytes([VIA_GET_LAYER_COUNT]))[1]
+    size = layers * KEYMAP_KEYS * 2
+    out = bytearray()
+    for off in range(0, size, KEYMAP_PIECE):
+        n = min(KEYMAP_PIECE, size - off)
+        r = dev.via(bytes([VIA_KEYMAP_GET_BUFFER, off >> 8, off & 0xFF, n]))
+        out += r[4:4 + n]
+    return layers, bytes(out)
+
+
+def storage_text(flags):
+    out = [n for b, n in ((1, "storage reset (unreadable)"), (2, "a change could not be saved"), (4, "settings reset to this build's defaults")) if flags & b]
+    return ", ".join(out) or "none"
+
 
 def decode_info(st, r):
     return dict(
@@ -255,6 +328,7 @@ def decode_info(st, r):
         release_build=bool(r[20] & 4),
         test_hooks=bool(r[20] & 8),
         other_half_mismatch=bool(r[20] & 32),
+        no_chord=bool(r[20] & 0x80),
         last_error=status_name(r[21]),
         chunk_max=r[22],
         manifest_max=r[23],
@@ -274,10 +348,10 @@ def piece_sizes(info):
 
 
 def check_protocol(info):
-    """The half with USB must speak this tool's protocol; returns its piece sizes."""
-    if info["protocol"] != make_update.UPDATER_PROTO:
+    """The half with USB must speak one of this tool's protocols; returns its piece sizes."""
+    if info["protocol"] not in USB_HALF_PROTOS:
         raise UpdaterError(f"the board speaks updater protocol {info['protocol']}, this tool "
-                           f"{make_update.UPDATER_PROTO}: {OLD_FIRMWARE}")
+                           f"{' and '.join(map(str, USB_HALF_PROTOS))}: {OLD_FIRMWARE}")
     return piece_sizes(info)
 
 
@@ -285,10 +359,11 @@ def image_refusal(m, info, other=False):
     """Why a half would refuse this manifest, as far as its INFO shows (None: no reason seen).
     The same order of checks as update_manifest_check() (update_image.c): integrity and
     structure only, never the hand or pointing device (D33; see image_mismatches). other:
-    the half without USB, reached over the split cable, whose relay protocols 2 and 3 share."""
-    if info["protocol"] not in (OTHER_HALF_PROTOS if other else (make_update.UPDATER_PROTO,)):
+    the half without USB, reached over the split cable, whose relay protocols 2 to 4 share."""
+    protos = OTHER_HALF_PROTOS if other else USB_HALF_PROTOS
+    if info["protocol"] not in protos:
         return (f"UNSUPPORTED: the half speaks updater protocol {info['protocol']}, this tool "
-                f"{make_update.UPDATER_PROTO} (flash it with BOOTSEL and the .uf2)")
+                f"{', '.join(map(str, protos))} (flash it with BOOTSEL and the .uf2)")
     if info["release_build"] and m["flags"] & make_update.FLAG_DIAGNOSTIC:
         return "BAD_IMAGE: a DIAGNOSTIC image on a release build"
     if m["security_epoch"] < info["security_epoch"]:
@@ -387,7 +462,7 @@ def decode_diag(st, r):
     return dict(status=status_name(st), stack_unused=struct.unpack_from("<H", r, 0)[0], stack_size=struct.unpack_from("<H", r, 2)[0], longest_pass_ms=struct.unpack_from("<H", r, 4)[0], longest_pass_state=state_name(r[6]), **decode_crumbs(r))
 
 
-OP_NAMES = ["INFO", "MANIFEST", "ARM", "BEGIN", "CHUNK", "END", "STATUS", "COMMIT", "ABORT", "REBIND", "TEST_HALT", "DIAG", "RELAY"]
+OP_NAMES = ["INFO", "MANIFEST", "ARM", "BEGIN", "CHUNK", "END", "STATUS", "COMMIT", "ABORT", "REBIND", "TEST_HALT", "DIAG", "RELAY", "PAIR_MANIFEST", "SETTINGS_RESET"]
 
 
 def decode_crumbs(r):
@@ -424,7 +499,10 @@ def decode_status(st, r):
         session_bound=bool(r[20] & 2),
         settings_writes_failing=bool(r[20] & 4),
         other_half=presence_name(r[21]),
-        other_half_id=r[21]
+        other_half_id=r[21],
+        # protocol 4 (D41); 0 on protocol 3
+        approval_held=bool(r[22] & 1),
+        pre_approved=bool(r[22] & 2)
     )
 
 
@@ -436,6 +514,8 @@ class Session:
         self.nonce = None
         self.renewed = time.monotonic()
         self.renewals = 0
+        self.arm_flags = 0
+        self.pair_nonce = None
 
     def need(self, what, got, *want):
         st, r = got
@@ -489,7 +569,11 @@ class Session:
             time.sleep(0.2)
         raise UpdaterError(f"{what}: no progress in {timeout} s")
 
-    def run(self, path, confirm_other=True, confirmed=False):
+    def run(self, path, confirm_other=True, confirmed=False, pair_with=None, by_pair=False):
+        """One half's install. pair_with (protocol 4, the other half's session in pair): this
+        half's 108-byte manifest, sent with PAIR_MANIFEST so one chord approves both (D41).
+        by_pair: this half's install after that; the board must pre-approve it, and the tool
+        never asks for a second chord."""
         data = Path(path).read_bytes()
         manifest, image = make_update.parse_svup(data)
         self.image = image
@@ -529,20 +613,50 @@ class Session:
             r = self.need("MANIFEST", self.dev.op(MANIFEST, bytes([off, len(piece)]) + piece, hand=self.hand), OK)
             if r[0] != off + len(piece):
                 raise UpdaterError(f"MANIFEST: board has {r[0]} bytes, expected {off + len(piece)}")
-        r = self.need("ARM", self.dev.op(ARM, hand=self.hand), OK)
-        self.nonce = struct.unpack_from("<I", r, 0)[0]
+        if pair_with is not None:
+            # Protocol 4 (D41): this half's manifest beside the other half's, then a pair ARM.
+            for off in range(0, len(pair_with), manifest_piece):
+                piece = pair_with[off:off + manifest_piece]
+                r = self.need("PAIR_MANIFEST", self.dev.op(PAIR_MANIFEST, bytes([off, len(piece)]) + piece, hand=board_hand), OK)
+                if r[0] != off + len(piece):
+                    raise UpdaterError(f"PAIR_MANIFEST: board has {r[0]} bytes, expected {off + len(piece)}")
+        mode = ARM_PAIR if pair_with is not None else ARM_SINGLE
+        r = self.need("ARM", self.dev.op(ARM, bytes([mode]), hand=self.hand), OK)
+        self.nonce = self.pair_nonce = struct.unpack_from("<I", r, 0)[0]
         self.renewed = time.monotonic()
         if r[4:8] != mhash:
             raise UpdaterError(f"ARM: board's manifest hash {r[4:8].hex()} differs from this file's {mhash.hex()}")
+        flags = r[12] if info["protocol"] >= 4 else 0
+        self.arm_flags = flags
+        pair_hash = None
+        if pair_with is not None:
+            pair_hash = hashlib.sha512(pair_with).digest()[:4]
+            if r[8:12] != pair_hash or not flags & ARM_PAIR_FLAG:
+                raise UpdaterError(f"ARM: board's pair manifest hash {r[8:12].hex()} (flags {flags:#x}) differs from "
+                                   f"this half's file's {pair_hash.hex()}")
+        if by_pair and not flags & ARM_PRE_APPROVED:
+            # Never a second chord (D41): the approval lapsed or was cleared.
+            raise UpdaterError("ARM: this half's install was not pre-approved by the pair (the approval was cleared "
+                               "or timed out); nothing was installed on this half. Finish it with: update FILE.svup "
+                               "(one chord)")
         usb_half = info["hand"]
         print()
         print(f"  MANIFEST HASH  {mhash.hex()}   ({version}, {len(image)} bytes" + (f", for the {HANDS[self.hand]} half without USB)" if self.other else ")"))
-        print(f"  Check this matches what you expect, then confirm on the keyboard: hold Index South + Middle South")
-        print(f"  for 1 second on the {usb_half} half, the one with USB (M and , on the right; C and V on the left).")
-        print("  The LED blinks blue.")
-        print()
+        if pair_hash is not None:
+            print(f"  MANIFEST HASH  {pair_hash.hex()}   (this {usb_half} half, the one with USB, installed next)")
+        if flags & ARM_BY_PAIR:
+            print("  pre-approved by the pair update: installing at once")
+            print()
+        elif flags & ARM_PRE_APPROVED or info["no_chord"]:
+            print()  # a no-chord dev build (D43)
+        else:
+            print(f"  Check {'these match' if pair_hash else 'this matches'} what you expect, then confirm on the keyboard: hold Index South + Middle South")
+            print(f"  for 1 second on the {usb_half} half, the one with USB (M and , on the right; C and V on the left).")
+            print("  The LED blinks blue." + (" This one chord approves both halves." if pair_hash else ""))
+            print()
         self.poll(lambda s: s["chord_made"], "waiting for the chord", 35)
-        print("chord recognized")
+        if not flags & ARM_PRE_APPROVED and not info["no_chord"]:
+            print("chord recognized")
         self.need("BEGIN", self.nonce_op(BEGIN), ACCEPTED)
         s = self.poll(lambda s: s["state_id"] == ST_RECEIVING, "verifying the manifest and erasing", 120)
         print(f"manifest checked; erased {s['sectors_to_erase']} sectors, longest {s['erase_ms_max']} ms")
@@ -772,19 +886,41 @@ def pair(dev, args, paths, sessions):
             raise UpdaterError(f"pair: {p.name} would be refused by the {HANDS[m['hand']]} half ({why}); nothing was sent")
     # The hands match by construction; another pointing device is a warning (D33), asked once.
     confirm_mismatches([f"{p.name}: {w}" for p, m in other + this for w in image_mismatches(m, infos[m["hand"]])], args)
-    print("pair: the chord is made twice, both times on this half (the one with USB): once for each image")
+    one_approval = infos[board]["protocol"] >= 4  # D41
+    if infos[board]["no_chord"]:
+        pass  # a no-chord dev build (D43): nothing to say
+    elif one_approval:
+        print("pair: the chord is made once, on this half (the one with USB): it approves both images")
+    else:
+        print("pair: the chord is made twice, both times on this half (the one with USB): once for each image")
     print(f"== 1/2: the other ({HANDS[board ^ 1]}) half, {other[0][0].name} ==")
     sessions.append(Session(dev, args))
-    rc = sessions[-1].run(other[0][0], confirm_other=False, confirmed=True)
+    this_manifest = make_update.parse_svup(this[0][0].read_bytes())[0] if one_approval else None
+    rc = sessions[-1].run(other[0][0], confirm_other=False, confirmed=True, pair_with=this_manifest)
     if rc != 0:
         return rc
+    if one_approval:
+        first = sessions[-1]
+        # The held approval waits for this half's install (at least 90 s after
+        # the relay is DONE). A renewed client ID moves it with REBIND first.
+        if args.rebind_every and time.monotonic() - first.renewed >= args.rebind_every:
+            old = dev.client
+            dev.bootstrap()
+            first.need("REBIND (the held approval)", dev.op(REBIND, struct.pack("<I", first.pair_nonce), hand=board), OK)
+            print(f"  renewed client ID {old.hex()} -> {dev.client.hex()}; the approval moved with REBIND")
+        s = decode_status(*dev.op(STATUS, hand=board))
+        if not s["approval_held"]:
+            raise UpdaterError(f"pair: the other ({HANDS[board ^ 1]}) half is installed, but the approval for this half is "
+                               f"gone; the halves now differ. Finish this half with: update {this[0][0].name} (one chord)")
     # Straight on, without waiting to hear from the other half: it may not be
     # able to talk to this half's old firmware (V).
     print(f"== 2/2: this ({HANDS[board]}) half, {this[0][0].name} ==")
     sessions.append(Session(dev, args))
-    rc = sessions[-1].run(this[0][0], confirmed=True)
+    rc = sessions[-1].run(this[0][0], confirmed=True, by_pair=one_approval)
     if rc != 0:
         return rc
+    if one_approval:
+        print(f"pair: this half was approved by the pair (ARM flags {sessions[-1].arm_flags:#x})")
     serial = dev.serial
     dev.close()
     print("waiting for the board to come back")
@@ -821,6 +957,78 @@ def pair(dev, args, paths, sessions):
         return 0
     finally:
         dev2.close()
+
+
+def reset_settings(dev, args):
+    """SETTINGS_RESET (protocol 4, D42): both halves (or this one) back to their build's defaults."""
+    info = decode_info(*dev.op(INFO))
+    board = info["hand_id"]
+    if info["protocol"] < 4:
+        raise UpdaterError(f"reset-settings needs updater protocol 4; the board speaks {info['protocol']}")
+    scope = 0 if args.this_half else 1
+    blank = bool(getattr(args, "blank", False))
+    st, r = dev.op(SETTINGS_RESET, b"RSET" + bytes([scope, 1 if blank else 0]), hand=board)
+    done = r[0]
+    halves = [n for b, n in ((2, f"the other ({HANDS[board ^ 1]}) half"), (1, f"this ({info['hand']}) half")) if done & b]
+    if st != OK:
+        why = {
+            5: "the updater is busy (a session, a held approval, or a reset already pending)",
+            2: "the other half does not answer (connected, and on updater protocol 4?" + (" A blank board also needs a build from after D44 there" if blank else "") + ")",
+            1: "a blank board needs a firmware build from after D44" if blank else ""
+        }.get(st, "")
+        raise UpdaterError(f"SETTINGS_RESET: {status_name(st)}" + (f": {why}" if why else "") + (f"; already reset: {', '.join(halves)}" if halves else "; nothing changed"))
+    what = "reset to a blank board (every key KC_NO)" if blank else "reset to defaults"
+    print(f"SETTINGS_RESET: OK, {' and '.join(halves)} {what} on the next boot; waiting for the board")
+    serial = dev.serial
+    t0 = time.monotonic()
+    dev.close()
+    time.sleep(1.0)  # both halves reset within 500 ms of the reply
+    dev2 = reopen(serial, 30)
+    try:
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                flags = storage_flags(dev2)
+                break
+            except (RuntimeError, OSError, IOError):
+                if time.monotonic() >= deadline:
+                    raise
+                dev2.close()
+                time.sleep(0.5)
+                dev2 = reopen(serial, max(1, deadline - time.monotonic()))
+        back_s = time.monotonic() - t0
+        s = decode_status(*dev2.op(STATUS, hand=board))
+        while scope == 1 and s["other_half_id"] == PRESENCE_NONE and time.monotonic() < deadline:
+            time.sleep(0.25)
+            s = decode_status(*dev2.op(STATUS, hand=board))
+        print(f"back after {back_s:.1f} s; storage notice: {storage_text(flags)}; the other half: {s['other_half']}")
+        if not flags & 4:
+            raise UpdaterError("the board did not report the settings reset (GET_INFO byte 18 bit 2)")
+        if blank:
+            layers, km = keymap_bytes(dev2)
+            set_keys = sum(1 for i in range(0, len(km), 2) if km[i] or km[i + 1])
+            print(f"keymap: {layers} layers, {len(km) // 2} keys, {set_keys} not KC_NO")
+            if set_keys:
+                raise UpdaterError(f"the board is not blank: {set_keys} keys are not KC_NO")
+        if args.ack:
+            dev2.sval(SVAL_STORAGE_RESET_CLEAR)
+            flags = storage_flags(dev2)
+            print(f"0x2A sent; storage notice now: {storage_text(flags)}")
+            if flags & 4:
+                raise UpdaterError("0x2A did not clear the notice")
+        return 0
+    finally:
+        dev2.close()
+
+
+def storage(dev, args):
+    flags = storage_flags(dev)
+    print(f"storage notice: {storage_text(flags)} (byte 18 = {flags:#04x})")
+    if args.ack:
+        dev.sval(SVAL_STORAGE_RESET_CLEAR)
+        flags = storage_flags(dev)
+        print(f"0x2A sent; storage notice now: {storage_text(flags)} (byte 18 = {flags:#04x})")
+    return 0
 
 
 class Rejects:
@@ -976,6 +1184,12 @@ def main():
     pr.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
     pr.add_argument("--rebind-every", type=float, default=50.0, help="renew the client ID and REBIND every S seconds (0: never)")
     pr.add_argument("--keep", action="store_true", help="on failure, leave the session for inspection instead of ABORTing")
+    rs = sub.add_parser("reset-settings", help="protocol 4: every stored setting on both halves back to defaults (D42)")
+    rs.add_argument("--this-half", action="store_true", help="only the half with USB")
+    rs.add_argument("--blank", action="store_true", help="a blank board: then every key on every layer KC_NO (D44)")
+    rs.add_argument("--ack", action="store_true", help="afterwards send 0x2A, which clears the storage notice")
+    sg = sub.add_parser("storage", help="the storage notice (Sval GET_INFO byte 18)")
+    sg.add_argument("--ack", action="store_true", help="send 0x2A, which clears bit 2 (settings reset)")
     args = ap.parse_args()
 
     if args.command == "list":
@@ -1016,6 +1230,12 @@ def main():
             st, r = dev.op(ABORT, struct.pack("<I", args.nonce), hand=hand)
             print(f"ABORT: {status_name(st)}, state {state_name(r[0])}")
             return 0 if st == OK else 1
+        if args.command in ("reset-settings", "storage"):
+            try:
+                return reset_settings(dev, args) if args.command == "reset-settings" else storage(dev, args)
+            except (UpdaterError, ClientIdExpired, RuntimeError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
         if args.command == "reject":
             try:
                 return Rejects(dev, args.svup).run()

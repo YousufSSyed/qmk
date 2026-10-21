@@ -54,3 +54,24 @@ update_status_t update_manifest_check(const sval_update_manifest_t *m, const upd
 // The image's first UPDATE_HEAD_BYTES against its manifest length: boot2 CRC,
 // initial SP, reset vector. UPDATE_OK or UPDATE_BAD_IMAGE.
 update_status_t update_image_head_check(const uint8_t head[UPDATE_HEAD_BYTES], uint32_t image_len);
+
+// The image's own build-info records (update_build_info.h, D45), read while
+// its bytes are hashed, so a release build checks what the image is, not only
+// what its manifest says. A record is "SVBI" then info_ver 3, the same match
+// as make_update.py, which packs only images with exactly one; its flags are
+// the byte after. The scan carries the last bytes across calls, so a record
+// split between two slices is still found.
+typedef struct {
+    uint8_t win[6];  // the last bytes seen: magic, info_ver, flags
+    uint8_t seen;    // bytes in win (at most 6)
+    uint8_t records; // records found (stops at 255)
+    uint8_t flags;   // their flags, ORed
+} update_build_scan_t;
+void update_build_scan_init(update_build_scan_t *sc);
+void update_build_scan(update_build_scan_t *sc, const uint8_t *p, uint32_t n);
+// Whether this build takes the image the scan saw: a release build refuses
+// one whose record says no-chord (UPDATE_BUILD_NO_CHORD) or kept settings
+// (UPDATE_BUILD_DEV_KEEP), whatever its manifest's flags say (UPDATE_BAD_IMAGE).
+// An image with no record (Vial, vLaunch2, a build without the updater) cannot
+// be a no-chord build and is taken.
+update_status_t update_image_build_check(const update_build_scan_t *sc, const update_device_t *dev);

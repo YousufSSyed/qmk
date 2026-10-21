@@ -13,6 +13,16 @@
 #include <stdint.h>
 #include "update_manifest.h"
 
+// The held approval of a pair update (D41) lasts this long after the relay to
+// the other half reaches DONE. The host sends this half's ARM within 60 s.
+#ifndef SVAL_UPDATE_PAIR_HOLD_MS
+#    define SVAL_UPDATE_PAIR_HOLD_MS 120000
+#endif
+// SETTINGS_RESET (D42): this half resets this long after its reply.
+#ifndef SVAL_UPDATE_SETTINGS_RESET_MS
+#    define SVAL_UPDATE_SETTINGS_RESET_MS 100
+#endif
+
 #ifndef SVAL_FW_VERSION
 #    define SVAL_FW_VERSION 0 // numeric release version: rules.mk sets it from updater/fw_version.txt (D17, D32)
 #endif

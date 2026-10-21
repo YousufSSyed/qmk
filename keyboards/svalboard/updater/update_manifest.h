@@ -10,12 +10,17 @@
 
 #include <stdint.h>
 
+// 4: protocol 3 plus one approval for both halves (PAIR_MANIFEST, the pair
+// ARM and the held approval, D41), SETTINGS_RESET (D42), the ARM reply flags,
+// STATUS byte 23 and INFO flags bit7 (no-chord dev builds, D43). Report and
+// piece sizes, the manifest and the relay's PAGE path are unchanged; the split
+// link gains one op (USPLIT_OP_SETTINGS_RESET).
 // 3: protocol 2 in 64-byte raw HID reports, with larger MANIFEST and CHUNK
 // pieces and the piece sizes in INFO (updater.c). The manifest is unchanged
 // (UPDATE_MANIFEST_VERSION 2), and so is the relay over the split cable.
 // 2: the manifest travels alone, 108 bytes, with nothing after it. Version 1
 // (never released) put a 64-byte signature after it.
-#define UPDATE_PROTOCOL_VERSION 3 // reported by INFO, and stored as updater_proto in images
+#define UPDATE_PROTOCOL_VERSION 4 // reported by INFO, and stored as updater_proto in images
 
 // VIA custom-value channel ('U'). The others: IDENTITY 0x49, SCANLAB 0x53, KEYTEST 0x54.
 #define UPDATE_CHANNEL 0x55
@@ -93,7 +98,19 @@ typedef enum {
     UPDATE_OP_TEST_HALT = 0x0A, // SVAL_UPDATE_TEST_HOOKS builds only
     UPDATE_OP_DIAG      = 0x0B, // measurements for the hardware tests (M1 #13)
     UPDATE_OP_RELAY     = 0x0C, // M2: progress of a relay to the other half
+    UPDATE_OP_PAIR_MANIFEST  = 0x0D, // protocol 4: this half's manifest, so one chord approves both (D41)
+    UPDATE_OP_SETTINGS_RESET = 0x0E, // protocol 4: every stored setting back to defaults, both halves (D42)
 } update_op_t;
+
+// ARM request mode (req[1], protocol 4; a protocol 3 host sends 0).
+#define UPDATE_ARM_MODE_SINGLE 0
+#define UPDATE_ARM_MODE_PAIR 1
+
+// ARM reply flags (rsp[13], protocol 4).
+#define UPDATE_ARM_PRE_APPROVED 0x01 // BEGIN is accepted with no chord, and no blue light is shown
+#define UPDATE_ARM_BY_PAIR 0x02      // pre-approved by the held approval of a pair ARM (D41)
+#define UPDATE_ARM_NO_CHORD 0x04     // pre-approved because this is a no-chord dev build (D43)
+#define UPDATE_ARM_PAIR 0x08         // a pair ARM: the chord approves both manifests
 
 // ---- status codes ------------------------------------------------------------------
 // The first three keep the values of the sibling sets (identity_status_t: OK 0,

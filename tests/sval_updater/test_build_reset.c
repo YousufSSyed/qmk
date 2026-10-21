@@ -118,6 +118,80 @@ int main(void) {
     CHECK(boot(A) == 1 && !record_failed && notice);
     CHECK(boot(A) == 0 && !record_failed);
 
+    // SETTINGS_RESET (D42): one page programmed over the record, no erase.
+    // Whatever the record held (valid with or without the notice, erased,
+    // garbage), it reads all zeros afterwards, which is never a valid record:
+    // the next boot of the same image resets once and records it again.
+    uint8_t page[BUILD_RESET_PAGE_BYTES];
+    build_reset_invalid_page(page, BUILD_RESET_TO_DEFAULTS);
+    for (size_t i = 0; i < sizeof(page); i++)
+        CHECK(page[i] == (i < BUILD_RESET_HEAD_BYTES ? 0x00 : 0xFF)); // the blank mark's bytes too
+    for (int k = 0; k < 4; k++) {
+        if (k == 0) build_reset_record_make(&sector, A, 0);
+        if (k == 1) build_reset_record_make(&sector, A, BUILD_RESET_NOTICE);
+        if (k == 2) erase();
+        if (k == 3) memset(&sector, 0x5A, sizeof(sector));
+        build_reset_program_over(&sector, page);
+        CHECK(build_reset_cleared(&sector));
+        CHECK(!build_reset_matches(&sector, A) && !build_reset_matches(&sector, 0));
+        CHECK(flash(A, 3) == 1 && notice);
+        CHECK(!build_reset_cleared(&sector));
+        host_clears(A);
+    }
+    erase();
+    CHECK(!build_reset_cleared(&sector)); // erased flash is not a SETTINGS_RESET
+    build_reset_record_make(&sector, 0, 0);
+    CHECK(!build_reset_cleared(&sector));
+
+    // P4-29, SETTINGS_RESET mode BLANK (D44): the record cleared as for
+    // defaults, and the blank mark after it, over an erased mark area.
+    {
+        uint8_t blank[BUILD_RESET_PAGE_BYTES], head[BUILD_RESET_HEAD_BYTES];
+        build_reset_invalid_page(blank, BUILD_RESET_TO_BLANK);
+        for (size_t i = 0; i < sizeof(build_reset_record_t); i++)
+            CHECK(blank[i] == 0);
+        for (size_t i = BUILD_RESET_HEAD_BYTES; i < sizeof(blank); i++)
+            CHECK(blank[i] == 0xFF);
+        CHECK(blank[16] == 'B' && blank[17] == 'L' && blank[18] == 'N' && blank[19] == 'K');
+        // over every record a sector can hold (valid, with the notice, erased,
+        // garbage), the mark area being erased as the record write leaves it
+        for (int k = 0; k < 4; k++) {
+            memset(head, 0xFF, sizeof(head));
+            build_reset_record_t rec;
+            if (k == 0) build_reset_record_make(&rec, A, 0);
+            if (k == 1) build_reset_record_make(&rec, A, BUILD_RESET_NOTICE);
+            if (k == 2) memset(&rec, 0xFF, sizeof(rec));
+            if (k == 3) memset(&rec, 0x5A, sizeof(rec));
+            memcpy(head, &rec, sizeof(rec));
+            CHECK(!build_reset_blank_requested(head));
+            build_reset_program_head(head, blank);
+            CHECK(build_reset_blank_requested(head));
+            memcpy(&rec, head, sizeof(rec));
+            CHECK(build_reset_cleared(&rec) && !build_reset_matches(&rec, A)); // the next boot resets, then blanks
+        }
+        // defaults over a blank mark (a blank reset whose boot never wrote the
+        // record): the mark is gone, so the reset is to defaults
+        build_reset_program_head(head, page);
+        CHECK(!build_reset_blank_requested(head));
+        // a blank mark programmed over a zeroed mark area reads wrong: never blank
+        // (build_reset_invalidate() then reports the failure)
+        build_reset_program_head(head, blank);
+        CHECK(!build_reset_blank_requested(head));
+        // a mark over a valid record (no SETTINGS_RESET) never counts
+        memset(head, 0xFF, sizeof(head));
+        build_reset_record_t rec;
+        build_reset_record_make(&rec, A, 0);
+        memcpy(head, &rec, sizeof(rec));
+        memcpy(head + sizeof(rec), blank + sizeof(rec), 8);
+        CHECK(!build_reset_blank_requested(head));
+        // half a mark is no mark
+        memset(head, 0, sizeof(head));
+        memcpy(head + sizeof(rec), blank + sizeof(rec), 4);
+        CHECK(!build_reset_blank_requested(head));
+        memcpy(head + sizeof(rec), blank + sizeof(rec), 8);
+        CHECK(build_reset_blank_requested(head));
+    }
+
     // No sector (a die smaller than 16 MB): nothing to compare, settings kept.
     erase();
     available = false;

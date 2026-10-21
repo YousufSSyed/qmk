@@ -34,3 +34,10 @@ uint8_t updater_port_split_presence(void);
 // Main's stack (ChibiOS's process stack): its size, and the bytes at its
 // bottom never used since boot (still crt0's fill pattern). M1 #13, R5.
 uint16_t updater_port_stack_free(uint16_t *size);
+
+// SETTINGS_RESET (D42): invalidate this half's build reset record
+// (kb/build_reset.c) so its next boot resets every stored setting; then
+// reset this half (never returns on the device). mode: BUILD_RESET_TO_DEFAULTS,
+// or BUILD_RESET_TO_BLANK, which then sets every key to KC_NO (D44).
+bool updater_port_settings_invalidate(uint8_t mode);
+void updater_port_reboot(void);

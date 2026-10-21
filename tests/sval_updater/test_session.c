@@ -47,7 +47,7 @@ uint32_t updater_port_random32(void) {
 // sim_slave says whose code is running.
 static bool            sim_slave;
 static update_device_t slave_dev;
-void update_device_self(update_device_t *dev) {
+void                   update_device_self(update_device_t *dev) {
     *dev = sim_slave ? slave_dev : self_dev;
 }
 bool updater_port_scan_override(void) {
@@ -55,7 +55,7 @@ bool updater_port_scan_override(void) {
 }
 static uint8_t port_split_presence; // update_presence_status_t
 static bool    presence_sim;        // presence from the simulated pings (update_split.c) instead
-uint8_t updater_port_split_presence(void) {
+uint8_t        updater_port_split_presence(void) {
     return presence_sim ? update_split_presence() : port_split_presence;
 }
 #define HOST_STACK_SIZE 0xAE0
@@ -67,7 +67,7 @@ uint16_t updater_port_stack_free(uint16_t *size) {
 
 static update_led_mode_t led_now;
 static int               led_seen; // bit per mode shown
-void update_led_show(update_led_mode_t mode) {
+void                     update_led_show(update_led_mode_t mode) {
     led_now = mode;
     led_seen |= 1 << mode;
 }
@@ -127,33 +127,34 @@ static update_build_id_t master_id, slave_id;
 static bool              link_up = true, link_paused, link_dead;
 static int               pause_calls, lock_depth, lock_errors, unlocks;
 static void (*unlock_hook)(int n); // after each unlock by the other half's housekeeping (a preemption point)
-static void (*lock_hook)(void);     // before each lock by the other half's housekeeping (a preemption point)
+static void (*lock_hook)(void);    // before each lock by the other half's housekeeping (a preemption point)
 // The other half with its interrupts off: while it erases a sector or runs its
 // commit (slave_irq_sim), RPCs fail as on the real link (the master's serial
 // transactions time out), and its housekeeping does not run until it is done.
 static bool     slave_irq_sim;
 static uint64_t slave_busy_until_us;
 static uint32_t slave_busy_rpcs; // RPCs that failed for it
-#define SIM_ERASE_US 50000        // M1 #13: a sector erase 50-53 ms
+#define SIM_ERASE_US 50000       // M1 #13: a sector erase 50-53 ms
 #define SIM_SLAVE_COMMIT_US 1500000
 // DMA busy when the other half programs a page (update_split_port_program_page).
-static uint32_t dma_busy_pct, dma_refusals;
-static bool     slave_hk_frozen; // the other half's housekeeping does not run (it is stuck)
-static int      drop_rsp_op = -1; // every answer to requests with this op is lost
-static const uint8_t *master_slot;  // this half's slot for the relay; NULL: the die's
+static uint32_t       dma_busy_pct, dma_refusals;
+static bool           slave_hk_frozen;  // the other half's housekeeping does not run (it is stuck)
+static int            drop_rsp_op = -1; // every answer to requests with this op is lost
+static bool           old_slave;        // the other half on protocol 3: KEYBOARD_UPDATE op 0x07 is unknown there
+static const uint8_t *master_slot;      // this half's slot for the relay; NULL: the die's
 static uint8_t        shadow[SVAL_UPDATE_MAX_IMAGE];
 static bool           auto_shadow; // the relay's pause takes a copy of the die's slot as this half's (tool tests)
 static struct {
-    uint32_t n;                                            // RPCs so far
+    uint32_t n;                                                          // RPCs so far
     uint32_t drop_req, drop_rsp, flip_req, flip_rsp, dup, replay, stale; // percent chance per RPC
-    uint32_t faults;                                       // faults injected
+    uint32_t faults;                                                     // faults injected
 } lk;
 static uint8_t  hist[8][USPLIT_MSG_MAX], hist_len[8]; // the last requests, for replays
 static uint32_t hist_n;
 static uint64_t last_ping_us;
 static uint64_t last_slave_rx_us; // when the other half last got a request
-#define SIM_RPC_US 600       // four transactions at 1 Mbaud, with the handshakes
-#define SIM_RPC_FAIL_US 20000 // a transaction that times out (SERIAL_USART_TIMEOUT)
+#define SIM_RPC_US 600            // four transactions at 1 Mbaud, with the handshakes
+#define SIM_RPC_FAIL_US 20000     // a transaction that times out (SERIAL_USART_TIMEOUT)
 
 uint32_t update_split_port_now_ms(void) {
     return (uint32_t)(sim_us / 1000);
@@ -213,6 +214,39 @@ update_status_t update_split_port_program_page(uint32_t off, const uint8_t *page
     return update_flash_program_page(off, page);
 }
 
+// SETTINGS_RESET (D42): each half's build reset record, as invalidated, and
+// its reset, which the simulation runs as a reboot into the same image.
+static int  master_invalidations, slave_invalidations, master_soft_resets, slave_soft_resets;
+static bool master_invalidate_fails, slave_invalidate_fails;
+static int  master_reset_mode = -1, slave_reset_mode = -1; // the last mode each half took (D44)
+static bool slave_pre_blank;                               // the other half is a protocol 4 build from before D44: no mode byte
+bool        updater_port_settings_invalidate(uint8_t mode) {
+    if (master_invalidate_fails) return false;
+    master_invalidations++;
+    master_reset_mode = mode;
+    return true;
+}
+void updater_port_reboot(void) {
+    master_soft_resets++;
+    master_reset_pending = true;
+    master_next_fw       = master_id.fw_version;
+}
+update_status_t update_split_port_settings_invalidate(uint8_t mode) {
+    if (chance(dma_busy_pct)) {
+        dma_refusals++;
+        return UPDATE_BUSY;
+    }
+    if (slave_invalidate_fails) return UPDATE_FLASH_ERR;
+    slave_invalidations++;
+    slave_reset_mode = mode;
+    return UPDATE_OK;
+}
+void update_split_port_reboot(void) {
+    slave_soft_resets++;
+    slave_reset_pending = true;
+    slave_next_fw       = slave_id.fw_version;
+}
+
 // The other half's callback, as the SlaveThread runs it.
 static void slave_rpc(const uint8_t *in, uint8_t len, uint8_t *out, uint8_t out_len) {
     bool was  = sim_slave;
@@ -236,6 +270,15 @@ bool update_split_port_rpc(const uint8_t *req, uint8_t req_len, uint8_t *rsp, ui
         slave_busy_rpcs++;
         sim_us += SIM_RPC_FAIL_US;
         return false;
+    }
+    if (old_slave && req[0] == USPLIT_OP_SETTINGS_RESET) {
+        memset(rsp, 0, rsp_len); // an unknown op builds no answer (update_split_slave_rpc)
+        return true;
+    }
+    if (slave_pre_blank && req[0] == USPLIT_OP_SETTINGS_RESET && req_len > USPLIT_REQ_HDR + 4 + USPLIT_CRC_BYTES) {
+        // a protocol 4 half from before D44: its payload rule takes 4 bytes only
+        usplit_rsp_build(rsp, rsp_len, UPDATE_INVALID, USPLIT_OP_SETTINGS_RESET, req[1], UPDATE_STATE_IDLE, NULL);
+        return true;
     }
     uint8_t in[USPLIT_MSG_MAX], out[USPLIT_MSG_MAX];
     memcpy(in, req, req_len);
@@ -285,7 +328,7 @@ bool update_split_port_rpc(const uint8_t *req, uint8_t req_len, uint8_t *rsp, ui
 }
 
 // The other half reboots: its RAM state is gone (a power cut, or its commit).
-static int slave_reboots, master_reboots;
+static int  slave_reboots, master_reboots;
 static void slave_reboot(void) {
     update_split_host_slave_reset();
     slave_reboots++;
@@ -295,7 +338,7 @@ static void slave_reboot(void) {
 static void slave_hk(void) {
     if (sim_us < slave_busy_until_us || slave_hk_frozen) return; // still erasing, or committing
     int erases = erase_ops, commits = slave_commit_runs;
-    sim_slave  = true;
+    sim_slave = true;
     update_split_slave_task();
     sim_slave = false;
     if (slave_irq_sim && erase_ops != erases) slave_busy_until_us = sim_us + SIM_ERASE_US;
@@ -329,10 +372,10 @@ static void presence_ping(void) {
 // The packet layout for RAW_EPSIZE (keyboards/svalboard/config.h, included
 // first): as updater.c derives it, written out again here so a change to one
 // is caught by the other.
-#define T_REPORT RAW_EPSIZE             // 64
-#define T_VALUE (T_REPORT - 6 - 3)      // value bytes after the wrapper and VIA's header: 55
-#define T_CHUNK (T_VALUE - 5)           // CHUNK data after [hand][off u24][n]: 50
-#define T_MPIECE (T_VALUE - 3)          // MANIFEST data after [hand][off][n]: 52
+#define T_REPORT RAW_EPSIZE        // 64
+#define T_VALUE (T_REPORT - 6 - 3) // value bytes after the wrapper and VIA's header: 55
+#define T_CHUNK (T_VALUE - 5)      // CHUNK data after [hand][off u24][n]: 50
+#define T_MPIECE (T_VALUE - 3)     // MANIFEST data after [hand][off][n]: 52
 _Static_assert(T_REPORT == 64, "64-byte raw HID reports");
 
 static uint8_t  rsp[T_VALUE];
@@ -368,7 +411,8 @@ static update_status_t send(uint32_t client, uint8_t opcode, const void *args, s
     if (sim_us - t0 > max_op_us) max_op_us = sim_us - t0;
     port_client = 0;
     CHECK(pkt[0] == req_cmd && pkt[1] == UPDATE_CHANNEL && pkt[2] == opcode); // header untouched
-    for (int i = 3 + T_VALUE; i < T_REPORT; i++) CHECK(pkt[i] == 0xEE);     // nothing past the value bytes
+    for (int i = 3 + T_VALUE; i < T_REPORT; i++)
+        CHECK(pkt[i] == 0xEE); // nothing past the value bytes
     memcpy(rsp, pkt + 3, sizeof(rsp));
     return (update_status_t)rsp[0];
 }
@@ -405,11 +449,13 @@ static void pass(void) {
 }
 
 static void wait_ms(uint32_t ms) {
-    for (uint32_t i = 0; i < ms; i++) pass();
+    for (uint32_t i = 0; i < ms; i++)
+        pass();
 }
 
 static void passes_until(update_state_t want, int max) {
-    for (int i = 0; i < max && updater_state() != want && updater_state() != UPDATE_STATE_ERROR; i++) pass();
+    for (int i = 0; i < max && updater_state() != want && updater_state() != UPDATE_STATE_ERROR; i++)
+        pass();
 }
 
 // ---- the chord ---------------------------------------------------------------------------
@@ -419,7 +465,7 @@ static matrix_row_t rows[5];
 // One matrix scan with the chord keys at (a, b) and an unrelated key held;
 // returns what QMK would see in rows 1 and 2, column 0.
 static uint8_t scan(bool a, bool b) {
-    rows[0] = 0x04;
+    rows[0]                       = 0x04;
     rows[SVAL_UPDATE_CHORD_ROW_A] = (a ? 1 : 0) << SVAL_UPDATE_CHORD_COL | 0x08;
     rows[SVAL_UPDATE_CHORD_ROW_B] = (b ? 1 : 0) << SVAL_UPDATE_CHORD_COL;
     update_gesture_scan(rows);
@@ -432,7 +478,8 @@ static bool hold(uint32_t ms) {
     bool leaked = false;
     for (uint32_t t = 0; t < ms; t += 10) {
         leaked |= scan(true, true) != 0;
-        for (int i = 0; i < 10; i++) pass();
+        for (int i = 0; i < 10; i++)
+            pass();
     }
     return leaked;
 }
@@ -456,7 +503,8 @@ static sval_update_manifest_t *blob_manifest(void) {
 
 static void make_update(uint32_t len) {
     img_len = len;
-    for (uint32_t i = 0; i < len; i++) img[i] = (uint8_t)(i * 13 + 5 + (i >> 9));
+    for (uint32_t i = 0; i < len; i++)
+        img[i] = (uint8_t)(i * 13 + 5 + (i >> 9));
     memcpy(img, boot2_page0, 256);
     put32(img + 0x100, 0x20041000);
     put32(img + 0x104, 0x100001F7);
@@ -487,10 +535,10 @@ static update_status_t load_manifest(uint32_t client) {
 
 static update_status_t send_chunk(uint32_t client, uint32_t off, uint8_t n, const uint8_t *data) {
     uint8_t a[4 + T_CHUNK] = {0};
-    a[0] = off & 0xFF;
-    a[1] = (off >> 8) & 0xFF;
-    a[2] = (off >> 16) & 0xFF;
-    a[3] = n;
+    a[0]                   = off & 0xFF;
+    a[1]                   = (off >> 8) & 0xFF;
+    a[2]                   = (off >> 16) & 0xFF;
+    a[3]                   = n;
     memcpy(a + 4, data, n > T_CHUNK ? T_CHUNK : n);
     return send(client, UPDATE_OP_CHUNK, a, sizeof(a));
 }
@@ -536,48 +584,53 @@ static void fresh(uint32_t len) {
     die_reset();
     scan(false, false);
     scan(false, false);
-    port_failing       = false;
-    port_scan_override = false;
+    port_failing        = false;
+    port_scan_override  = false;
     port_split_presence = UPDATE_PRESENCE_NONE;
     // the split simulation: a left half with a TrackPoint, the same release
     update_split_host_reset();
-    sim_slave         = false;
-    presence_sim      = false;
-    link_up           = true;
-    link_paused       = link_dead = false;
-    pause_calls       = lock_depth = lock_errors = unlocks = 0;
-    unlock_hook       = NULL;
-    lock_hook         = NULL;
-    slave_irq_sim     = false;
-    slave_busy_until_us = 0;
-    slave_busy_rpcs   = 0;
-    dma_busy_pct      = dma_refusals = 0;
-    slave_hk_frozen   = false;
-    drop_rsp_op       = -1;
-    master_slot       = NULL;
-    auto_shadow       = false;
+    sim_slave    = false;
+    presence_sim = false;
+    link_up      = true;
+    link_paused = link_dead = false;
+    pause_calls = lock_depth = lock_errors = unlocks = 0;
+    unlock_hook                                      = NULL;
+    lock_hook                                        = NULL;
+    slave_irq_sim                                    = false;
+    slave_busy_until_us                              = 0;
+    slave_busy_rpcs                                  = 0;
+    dma_busy_pct = dma_refusals = 0;
+    slave_hk_frozen             = false;
+    drop_rsp_op                 = -1;
+    old_slave                   = false;
+    master_slot                 = NULL;
+    auto_shadow                 = false;
     memset(&lk, 0, sizeof(lk));
-    hist_n            = 0;
-    last_ping_us      = 0;
-    master_id         = (update_build_id_t){.fw_version = 2001, .git_hash = 0x3b2ca7e1, .updater_proto = UPDATE_PROTOCOL_VERSION, .hand = UPDATE_HAND_RIGHT, .pointing_id = UPDATE_POINTING_PMW3389};
-    slave_id          = master_id;
-    slave_id.hand     = UPDATE_HAND_LEFT;
-    slave_id.pointing_id = UPDATE_POINTING_TRACKPOINT;
-    slave_dev         = test_dev;
-    slave_dev.hand    = UPDATE_HAND_LEFT;
-    slave_dev.pointing_id = UPDATE_POINTING_TRACKPOINT;
+    hist_n                   = 0;
+    last_ping_us             = 0;
+    master_id                = (update_build_id_t){.fw_version = 2001, .git_hash = 0x3b2ca7e1, .updater_proto = UPDATE_PROTOCOL_VERSION, .hand = UPDATE_HAND_RIGHT, .pointing_id = UPDATE_POINTING_PMW3389};
+    slave_id                 = master_id;
+    slave_id.hand            = UPDATE_HAND_LEFT;
+    slave_id.pointing_id     = UPDATE_POINTING_TRACKPOINT;
+    slave_dev                = test_dev;
+    slave_dev.hand           = UPDATE_HAND_LEFT;
+    slave_dev.pointing_id    = UPDATE_POINTING_TRACKPOINT;
     slave_dev.security_epoch = 0;
-    slave_commit_runs = 0;
-    slave_commit_result = UPDATE_UNSUPPORTED;
+    slave_commit_runs        = 0;
+    slave_commit_result      = UPDATE_UNSUPPORTED;
     slave_commit_resets = slave_reset_pending = master_commit_resets = master_reset_pending = false;
     slave_reboots = master_reboots = 0;
-    commit_avail  = false;
-    commit_runs   = 0;
-    commit_result = UPDATE_UNSUPPORTED;
-    req_hand      = UPDATE_HAND_RIGHT;
-    req_cmd       = 0x07;
-    self_dev      = test_dev;
-    self_dev.security_epoch = 0;
+    master_invalidations = slave_invalidations = master_soft_resets = slave_soft_resets = 0;
+    master_invalidate_fails = slave_invalidate_fails = false;
+    master_reset_mode = slave_reset_mode = -1;
+    slave_pre_blank                      = false;
+    commit_avail                         = false;
+    commit_runs                          = 0;
+    commit_result                        = UPDATE_UNSUPPORTED;
+    req_hand                             = UPDATE_HAND_RIGHT;
+    req_cmd                              = 0x07;
+    self_dev                             = test_dev;
+    self_dev.security_epoch              = 0;
     make_update(len);
 }
 
@@ -600,11 +653,12 @@ static void test_session_info_and_wrapper(void) {
     CHECK_EQ(rsp[21] & (0x10 | 0x40), 0); // reserved (protocol 1's key flags)
     // protocol 3: the largest CHUNK and MANIFEST pieces and the report size,
     // which a host sizes its requests by; nothing after them
-    CHECK_EQ(rsp[2], 3);
+    CHECK_EQ(rsp[2], 4); // protocol 4 (D41-D43)
     CHECK_EQ(rsp[23], T_CHUNK);
     CHECK_EQ(rsp[24], T_MPIECE);
     CHECK_EQ(rsp[25], T_REPORT);
-    for (int i = 26; i < T_VALUE; i++) CHECK_EQ(rsp[i], 0);
+    for (int i = 26; i < T_VALUE; i++)
+        CHECK_EQ(rsp[i], 0);
     // INFO page 1 (M3): the version from the build-info record; no wrapper needed
     const uint8_t page1 = 1, page2 = 2;
     CHECK_EQ(send(0, UPDATE_OP_INFO, &page1, 1), UPDATE_OK);
@@ -630,7 +684,8 @@ static void test_session_info_and_wrapper(void) {
     for (int h = 2; h < 0xFF; h += 37) {
         req_hand = (uint8_t)h;
         CHECK_EQ(send(0, UPDATE_OP_INFO, NULL, 0), UPDATE_UNSUPPORTED);
-        for (uint8_t op = UPDATE_OP_MANIFEST; op <= UPDATE_OP_RELAY; op++) CHECK_EQ(send(CLIENT_A, op, NULL, 0), op == UPDATE_OP_TEST_HALT ? test_halt_unknown : UPDATE_UNSUPPORTED);
+        for (uint8_t op = UPDATE_OP_MANIFEST; op <= UPDATE_OP_RELAY; op++)
+            CHECK_EQ(send(CLIENT_A, op, NULL, 0), op == UPDATE_OP_TEST_HALT ? test_halt_unknown : UPDATE_UNSUPPORTED);
     }
     // the other half (M2): TEST_HALT and DIAG are this half's only; a session
     // for it needs its presence answer (UNAVAILABLE, nothing changes)
@@ -674,7 +729,7 @@ static void test_session_info_and_wrapper(void) {
     CHECK_EQ(get24le(rsp + 2), 0);
     // a short report is refused, not read past its end
     uint8_t pkt[T_REPORT] = {0x07, UPDATE_CHANNEL, UPDATE_OP_INFO, 0xFF};
-    port_client     = CLIENT_A;
+    port_client           = CLIENT_A;
     updater_via_command(pkt, 20);
     port_client = 0;
     CHECK_EQ(pkt[3], UPDATE_INVALID);
@@ -688,13 +743,14 @@ static void test_session_info_and_wrapper(void) {
         updater_via_command(pkt, lens[i]);
         port_client = 0;
         CHECK_EQ(pkt[3], UPDATE_INVALID);
-        for (int k = 4; k < T_REPORT; k++) CHECK_EQ(pkt[k], 0xEE);
+        for (int k = 4; k < T_REPORT; k++)
+            CHECK_EQ(pkt[k], 0xEE);
     }
     CHECK_EQ(updater_state(), UPDATE_STATE_RECEIVING);
 }
 
 static void test_session_happy_path(void) {
-    fresh(0x30000); // 48 sectors, across three 64 KiB blocks
+    fresh(0x30000);                                                       // 48 sectors, across three 64 KiB blocks
     memset(update_host_flash + SVAL_UPDATE_BASE, 0x00, SVAL_UPDATE_SIZE); // every sector needs erasing
     snap();
     max_op_us = max_pass_us = sig_pass_us = 0;
@@ -705,8 +761,8 @@ static void test_session_happy_path(void) {
     // record each distinct state, in order
     update_state_t seen[16];
     int            nseen = 0;
-#define NOTE()                                                                        \
-    do {                                                                              \
+#define NOTE()                                                                                 \
+    do {                                                                                       \
         if (nseen == 0 || seen[nseen - 1] != updater_state()) seen[nseen++] = updater_state(); \
     } while (0)
     NOTE();
@@ -750,7 +806,8 @@ static void test_session_happy_path(void) {
     CHECK_EQ(send_image(CLIENT_A, 0, img_len), UPDATE_OK);
     CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_END, session_nonce), UPDATE_ACCEPTED);
     NOTE();
-    for (int i = 0; i < 5000 && updater_state() == UPDATE_STATE_VERIFYING_IMAGE; i++) pass();
+    for (int i = 0; i < 5000 && updater_state() == UPDATE_STATE_VERIFYING_IMAGE; i++)
+        pass();
     NOTE();
     CHECK_EQ(updater_state(), UPDATE_STATE_VERIFIED);
     CHECK(memcmp(update_host_flash + SVAL_UPDATE_BASE, img, img_len) == 0);
@@ -811,11 +868,11 @@ static void test_session_happy_path(void) {
     int led_shown = led_seen;
 
     const update_state_t want[] = {
-        UPDATE_STATE_IDLE,      UPDATE_STATE_MANIFEST_LOADING, UPDATE_STATE_CONFIRM_WAIT, UPDATE_STATE_VERIFYING_MANIFEST, UPDATE_STATE_ERASING,
-        UPDATE_STATE_RECEIVING, UPDATE_STATE_VERIFYING_IMAGE,  UPDATE_STATE_VERIFIED,     UPDATE_STATE_COMMITTING,         UPDATE_STATE_ERROR,
+        UPDATE_STATE_IDLE, UPDATE_STATE_MANIFEST_LOADING, UPDATE_STATE_CONFIRM_WAIT, UPDATE_STATE_VERIFYING_MANIFEST, UPDATE_STATE_ERASING, UPDATE_STATE_RECEIVING, UPDATE_STATE_VERIFYING_IMAGE, UPDATE_STATE_VERIFIED, UPDATE_STATE_COMMITTING, UPDATE_STATE_ERROR,
     };
     CHECK_EQ(nseen, (int)(sizeof(want) / sizeof(want[0])));
-    for (int i = 0; i < nseen && i < (int)(sizeof(want) / sizeof(want[0])); i++) CHECK_EQ(seen[i], want[i]);
+    for (int i = 0; i < nseen && i < (int)(sizeof(want) / sizeof(want[0])); i++)
+        CHECK_EQ(seen[i], want[i]);
     CHECK_EQ(led_shown, (1 << UPDATE_LED_CONFIRM) | (1 << UPDATE_LED_CHORD) | (1 << UPDATE_LED_APPROVED) | (1 << UPDATE_LED_PROGRESS) | (1 << UPDATE_LED_WRITING) | (1 << UPDATE_LED_ERROR));
 
     // the 50 ms budget, in simulated flash time
@@ -1008,8 +1065,8 @@ static void test_session_clients_and_abort(void) {
     passes_until(UPDATE_STATE_VERIFIED, 2000);
     uint8_t c[6];
     put32(c, session_nonce);
-    c[4] = body_crc() & 0xFF;
-    c[5] = (body_crc() >> 8) & 0xFF;
+    c[4]         = body_crc() & 0xFF;
+    c[5]         = (body_crc() >> 8) & 0xFF;
     commit_avail = true;
     CHECK_EQ(send(CLIENT_B, UPDATE_OP_COMMIT, c, 6), UPDATE_OTHER_CLIENT);
     // a COMMIT for another image (wrong CRC) is refused and the session stays verified
@@ -1219,22 +1276,46 @@ static void mutate(void (*f)(sval_update_manifest_t *)) {
     f(blob_manifest());
 }
 
-static void m_hand(sval_update_manifest_t *m) { m->hand = UPDATE_HAND_LEFT; }
-static void m_pointing(sval_update_manifest_t *m) { m->pointing_id = UPDATE_POINTING_PMW3360; }
-static void m_auto(sval_update_manifest_t *m) { m->pointing_id = UPDATE_POINTING_AUTO; }
+static void m_hand(sval_update_manifest_t *m) {
+    m->hand = UPDATE_HAND_LEFT;
+}
+static void m_pointing(sval_update_manifest_t *m) {
+    m->pointing_id = UPDATE_POINTING_PMW3360;
+}
+static void m_auto(sval_update_manifest_t *m) {
+    m->pointing_id = UPDATE_POINTING_AUTO;
+}
 static void m_hand_pointing(sval_update_manifest_t *m) {
     m->hand        = UPDATE_HAND_LEFT;
     m->pointing_id = UPDATE_POINTING_TRACKPOINT;
 }
-static void m_large(sval_update_manifest_t *m) { m->image_len = SVAL_UPDATE_MAX_IMAGE + 0x100; }
-static void m_unaligned(sval_update_manifest_t *m) { m->image_len = 0x3010; }
-static void m_storage(sval_update_manifest_t *m) { m->storage_format = SVAL_UPDATE_STORAGE_FORMAT - 1; }
-static void m_magic(sval_update_manifest_t *m) { m->magic ^= 0x100; }
-static void m_v1(sval_update_manifest_t *m) { m->manifest_ver = 1; }
-static void m_reserved0(sval_update_manifest_t *m) { m->reserved0 = 1; } // version 1's key_id
-static void m_diagnostic(sval_update_manifest_t *m) { m->flags = UPDATE_FLAG_DIAGNOSTIC; }
-static void m_release(sval_update_manifest_t *m) { m->flags = UPDATE_FLAG_RELEASE; }
-static void m_hash(sval_update_manifest_t *m) { m->sha512[17] ^= 0x20; }
+static void m_large(sval_update_manifest_t *m) {
+    m->image_len = SVAL_UPDATE_MAX_IMAGE + 0x100;
+}
+static void m_unaligned(sval_update_manifest_t *m) {
+    m->image_len = 0x3010;
+}
+static void m_storage(sval_update_manifest_t *m) {
+    m->storage_format = SVAL_UPDATE_STORAGE_FORMAT - 1;
+}
+static void m_magic(sval_update_manifest_t *m) {
+    m->magic ^= 0x100;
+}
+static void m_v1(sval_update_manifest_t *m) {
+    m->manifest_ver = 1;
+}
+static void m_reserved0(sval_update_manifest_t *m) {
+    m->reserved0 = 1;
+} // version 1's key_id
+static void m_diagnostic(sval_update_manifest_t *m) {
+    m->flags = UPDATE_FLAG_DIAGNOSTIC;
+}
+static void m_release(sval_update_manifest_t *m) {
+    m->flags = UPDATE_FLAG_RELEASE;
+}
+static void m_hash(sval_update_manifest_t *m) {
+    m->sha512[17] ^= 0x20;
+}
 
 static void test_session_refusals(void) {
     // refused at ARM, latched: length, floors, magic, version 1, a nonzero
@@ -1243,8 +1324,7 @@ static void test_session_refusals(void) {
         void (*mutate)(sval_update_manifest_t *);
         update_status_t want;
     } const arm_cases[] = {
-        {m_large, UPDATE_TOO_LARGE}, {m_unaligned, UPDATE_BAD_IMAGE}, {m_storage, UPDATE_STORAGE},
-        {m_magic, UPDATE_INVALID},   {m_v1, UPDATE_UNSUPPORTED},      {m_reserved0, UPDATE_INVALID},
+        {m_large, UPDATE_TOO_LARGE}, {m_unaligned, UPDATE_BAD_IMAGE}, {m_storage, UPDATE_STORAGE}, {m_magic, UPDATE_INVALID}, {m_v1, UPDATE_UNSUPPORTED}, {m_reserved0, UPDATE_INVALID},
     };
     for (size_t i = 0; i < sizeof(arm_cases) / sizeof(arm_cases[0]); i++) {
         fresh(0x3000);
@@ -1291,8 +1371,8 @@ static void test_session_refusals(void) {
         uint32_t        value;
         update_status_t want;
     } const image_cases[] = {
-        {0x40, 0x12345678, UPDATE_BAD_HASH},  // a byte differs from the manifest's hash (made over the original)
-        {0x10, 0, UPDATE_BAD_IMAGE},          // boot2 CRC
+        {0x40, 0x12345678, UPDATE_BAD_HASH},   // a byte differs from the manifest's hash (made over the original)
+        {0x10, 0, UPDATE_BAD_IMAGE},           // boot2 CRC
         {0x100, 0x1FFFFFF0, UPDATE_BAD_IMAGE}, // initial SP
         {0x104, 0x100001F6, UPDATE_BAD_IMAGE}, // reset vector even
         {0x104, 0x10003001, UPDATE_BAD_IMAGE}, // reset vector past the image
@@ -1417,8 +1497,7 @@ static void test_session_presence(void) {
         uint8_t presence;
         bool    mismatch;
     } cases[] = {
-        {UPDATE_PRESENCE_NONE, false},     {UPDATE_PRESENCE_MATCH, false},   {UPDATE_PRESENCE_VERSION, true},
-        {UPDATE_PRESENCE_SAME_HAND, true}, {UPDATE_PRESENCE_INVALID, true},
+        {UPDATE_PRESENCE_NONE, false}, {UPDATE_PRESENCE_MATCH, false}, {UPDATE_PRESENCE_VERSION, true}, {UPDATE_PRESENCE_SAME_HAND, true}, {UPDATE_PRESENCE_INVALID, true},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         fresh(0x3000);

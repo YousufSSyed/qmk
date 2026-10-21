@@ -45,7 +45,7 @@ from pathlib import Path
 
 MANIFEST_MAGIC = 0x50555653  # "SVUP"
 MANIFEST_VERSION = 2  # 1: protocol 1, signed (never released); refused
-UPDATER_PROTO = 3  # 3: 64-byte raw HID reports (updater.c)
+UPDATER_PROTO = 4  # 4: 3 plus one approval for both halves and SETTINGS_RESET; 3: 64-byte raw HID reports (updater.c)
 MANIFEST_FMT = "<IHBBBBHHBBIII16s64s"
 MANIFEST_BYTES = 108
 assert struct.calcsize(MANIFEST_FMT) == MANIFEST_BYTES
@@ -64,8 +64,9 @@ BUILD_INFO_BYTES = 32
 BI_HOST_TEST = 0xFF  # hand and pointing_id of a host-test build
 assert struct.calcsize(BUILD_INFO_FMT) == BUILD_INFO_BYTES
 BI_RELEASE, BI_TEST_HOOKS, BI_KEYTEST, BI_HOST_BOOTLOADER = 0x01, 0x04, 0x08, 0x10
-BI_RESERVED = 0x02 | 0x20 | 0x40 | 0x80  # 0x02 and 0x20: protocol 1's key flags, retired
-BI_NOT_IN_RELEASE = {BI_TEST_HOOKS: "test hooks", BI_KEYTEST: "SVAL_KEYTEST", BI_HOST_BOOTLOADER: "SVAL_HOST_BOOTLOADER"}
+BI_NO_CHORD, BI_DEV_KEEP = 0x40, 0x80  # dev builds only
+BI_RESERVED = 0x02 | 0x20  # protocol 1's key flags, retired
+BI_NOT_IN_RELEASE = {BI_TEST_HOOKS: "test hooks", BI_KEYTEST: "SVAL_KEYTEST", BI_HOST_BOOTLOADER: "SVAL_HOST_BOOTLOADER", BI_NO_CHORD: "SVAL_UPDATE_NO_CHORD", BI_DEV_KEEP: "SVAL_DEV_KEEP_SETTINGS"}
 VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]{0,16}$")
 
 # ---- image rules (update_image.c, config.h) ---------------------------------------
@@ -274,6 +275,9 @@ def manifest_from_args(image, args):
     if args.release and args.diagnostic:
         raise Refused("a RELEASE image cannot be DIAGNOSTIC")
     info = build_info(image)
+    if info and info["flags"] & (BI_NO_CHORD | BI_DEV_KEEP) and not args.release:
+        # D43: a dev build is always DIAGNOSTIC, so a release board refuses it however it was packed.
+        flags |= FLAG_DIAGNOSTIC
     keymap_id = keymap_id_for(info, args)
     if args.release and keymap_id not in KEYMAP.values():
         raise Refused(f"RELEASE images are release keymaps only ({', '.join(KEYMAP)})")

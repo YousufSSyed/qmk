@@ -23,7 +23,8 @@
 //                                                flags (bit0 die is 16 MiB, bit1 settings writes failing,
 //                                                bit2 release build, bit3 test hooks, bit4 reserved,
 //                                                bit5 the other half's version differs: see STATUS,
-//                                                bit6 reserved), last error; then (protocol 3) the
+//                                                bit6 reserved, bit7 a no-chord dev build: every ARM
+//                                                counts as confirmed, D43), last error; then (protocol 3) the
 //                                                largest CHUNK data u8 (CHUNK_DATA_MAX, 50), the
 //                                                largest MANIFEST piece u8 (MANIFEST_DATA_MAX, 52)
 //                                                and the raw HID report size u8 (RAW_EPSIZE, 64).
@@ -31,7 +32,10 @@
 //                page 1 (M3; this half only)     1, fw_version u32, version string (16 chars, NUL-padded:
 //                                                the release tag). Other pages: INVALID.
 //  0x01 MANIFEST off u8, n 1..52, bytes          filled u8 (of the 108-byte manifest)
-//  0x02 ARM      -                               nonce u32, first 4 bytes of sha512(108 B manifest)
+//  0x02 ARM      mode u8 (protocol 4: 0 single,  nonce u32, first 4 bytes of sha512(108 B manifest),
+//                1 pair; see "One approval")     first 4 bytes of sha512(the pair manifest) (pair; else 0),
+//                                                flags (bit0 PRE_APPROVED: BEGIN needs no chord, bit1
+//                                                BY_PAIR, bit2 NO_CHORD, bit3 PAIR; update_manifest.h)
 //  0x03 BEGIN    nonce u32                       state
 //  0x04 CHUNK    off u24, n 1..50, bytes         next offset u24
 //  0x05 END      nonce u32                       state
@@ -41,7 +45,9 @@
 //                                                image CRC low 16 bits (once VERIFIED), flags (bit0
 //                                                chord made, bit1 session bound, bit2 settings writes
 //                                                failing), the other half by split presence
-//                                                (update_presence_status_t; M2, V)
+//                                                (update_presence_status_t; M2, V); flags2 (protocol 4:
+//                                                bit0 an approval is held for this half's next install,
+//                                                bit1 the current session was pre-approved)
 //  0x07 COMMIT   nonce u32, CRC low 16 bits      state
 //  0x08 ABORT    nonce u32                       state
 //  0x09 REBIND   nonce u32                       state
@@ -60,10 +66,52 @@
 //                                                answer from the other half after COMMIT, unconfirmed),
 //                                                the relay's error, this
 //                                                half's session state. Any hand.
+//  0x0D PAIR_MANIFEST off u8, n 1..52, bytes     filled u8 (of the 108-byte pair manifest). Protocol 4,
+//                [hand] = this half's own        D41: this half's manifest, while a session for the
+//                                                other hand is in MANIFEST_LOADING (see "One approval")
+//  0x0E SETTINGS_RESET 'R' 'S' 'E' 'T', scope u8 done u8 (bit0 this half, bit1 the other half).
+//                (0 this half, 1 both),          Protocol 4, D42: see "Settings reset"
+//                mode u8 (0 defaults, 1 blank: D44)
 //
 // Protocol 3 is protocol 2 in 64-byte reports: the same ops and fields, with
 // larger MANIFEST and CHUNK pieces and the three sizes at the end of INFO page
-// 0. A host sizes its pieces from INFO and refuses any other protocol.
+// 0. A host sizes its pieces from INFO. Protocol 4 is protocol 3 plus
+// PAIR_MANIFEST, the ARM mode and reply flags, the held approval, STATUS byte
+// 23, SETTINGS_RESET and INFO flags bit7; a protocol 3 host that sends ARM
+// with no mode byte gets a single ARM, as before.
+//
+// One approval for both halves (protocol 4, D41). A pair update sends
+// MANIFEST(other hand) in pieces, then PAIR_MANIFEST(this hand) with this
+// half's own manifest, then ARM(other hand, mode 1). The pair ARM checks the
+// other manifest against the other half (as a single ARM does) and the pair
+// manifest against this half's build; either refusal latches ERROR, so the
+// user is never asked to approve a file one half would refuse. The chord, made
+// once in that session, creates the held approval: SHA-512 of the pair
+// manifest, the session's client ID and its nonce, in RAM only (on a no-chord
+// build it is created at the pair ARM). Once the relay reaches DONE the
+// approval lasts SVAL_UPDATE_PAIR_HOLD_MS. This half's own single ARM from the
+// bound client whose manifest has that SHA-512 is then pre-approved (flags
+// PRE_APPROVED and BY_PAIR, no blue light): BEGIN is ACCEPTED at once. Any
+// ARM for this half uses the approval up, matching or not. REBIND with the
+// pair session's nonce moves the approval to the sender in any state, IDLE
+// included. ABORT, any ERROR, a MANIFEST from another client or for the other
+// hand, a reset and the timeout clear it.
+//
+// Settings reset (protocol 4, D42). SETTINGS_RESET, only in IDLE with no held
+// approval and no relay (else BUSY), invalidates the build reset record
+// (kb/build_reset.c, D39) of the other half first (scope 1: over
+// KEYBOARD_UPDATE; UNAVAILABLE and nothing changed if it does not answer),
+// then of this half, replies, and resets this half
+// SVAL_UPDATE_SETTINGS_RESET_MS later (the other half resets itself). Each
+// half's next boot then resets every stored setting as for a different build,
+// keeping its identity, and sets the notice (GET_INFO byte 18 bit 2) until 0x2A.
+// Mode 1 (D44) asks both halves for a blank board: the same reset, then every
+// key on every layer KC_NO (the blank mark, kb/build_reset.h).
+//
+// The image's own build info (D45). While VERIFYING_IMAGE hashes an image, a
+// release build also reads its build-info records (update_build_scan) and
+// refuses a no-chord or kept-settings dev image with BAD_IMAGE, whatever the
+// manifest's flags say. The half without USB checks a relayed image again.
 //
 // The image CRC is CRC-32/MPEG-2 over image bytes [0x100, image_len): the
 // range the commit checks after copying (page 0 is written last).
@@ -126,6 +174,7 @@
 #include "update_led.h"
 #include "update_commit.h"
 #include "update_split.h"
+#include "build_reset.h" // BUILD_RESET_TO_* (SETTINGS_RESET modes, D44)
 #include "sha512.h" // vendor/: SHA-512 from Monocypher
 
 #ifdef SVAL_UPDATER_HOST_TEST
@@ -151,6 +200,7 @@ _Static_assert(CHUNK_DATA_MAX <= 0xFF, "a CHUNK fits its u8 count");
 #define VERIFY_SLICE 2048   // image bytes hashed per updater_task() pass
 #define COMMIT_DELAY_MS 100 // so the COMMIT reply reaches the host first (as scanlab.c's reboot)
 #define CHORD_FLASH_MS 300  // white double flash after the chord (D4)
+_Static_assert(SVAL_UPDATE_PAIR_HOLD_MS >= 90000 && SVAL_UPDATE_PAIR_HOLD_MS <= 180000, "the held approval lasts 90-180 s after DONE (D41)");
 
 typedef struct {
     update_state_t  state;
@@ -171,17 +221,37 @@ typedef struct {
     uint32_t        commit_due_ms;
     bool            relay; // a session for the other half (M2)
     update_device_t dev;   // relay: the other half, as ARM checked the manifest against it
+    // Protocol 4 (D41, D43).
+    uint8_t pair_filled;  // bytes of the pair manifest received (a session for the other hand)
+    bool    pair;         // a pair ARM: the chord approves both manifests
+    bool    pre_approved; // ARM counted the chord as made (no-chord build, or the held approval)
+    uint8_t pair_hash[UPDATE_SHA512_BYTES]; // sha512(pair manifest), at the pair ARM
+    update_build_scan_t bi;                 // VERIFYING_IMAGE: the image's build-info records (D45)
 } session_t;
+
+// The held approval (D41): RAM only, so a reset clears it.
+typedef enum { HELD_NONE = 0, HELD_PENDING, HELD_READY } held_state_t;
+static struct {
+    uint8_t  state;    // held_state_t: PENDING while the pair session runs, READY after its relay is DONE
+    uint32_t client;   // the bound client (REBIND moves it)
+    uint32_t nonce;    // the pair session's nonce
+    uint32_t ready_ms; // when the relay reached DONE
+    uint8_t  hash[UPDATE_SHA512_BYTES]; // sha512 of the pair manifest
+} held;
 
 static session_t         s;
 static uint32_t          now_ms;
+static bool              reset_due; // SETTINGS_RESET (D42): this half resets at reset_due_ms
+static uint32_t          reset_due_ms;
 static uint8_t           manifest[UPDATE_MANIFEST_BYTES] __attribute__((aligned(4)));
+static uint8_t           pair_manifest[UPDATE_MANIFEST_BYTES] __attribute__((aligned(4))); // this half's, for one approval (D41)
 static uint8_t           page[UPDATE_FLASH_PAGE] __attribute__((aligned(4)));
 static crypto_sha512_ctx sha;
 static uint16_t          pass_max_ms; // DIAG: the longest updater_task() pass since boot or the last clear
 static uint8_t           pass_max_state;
 
 #define MANIFEST ((const sval_update_manifest_t *)manifest)
+#define PAIR_MANIFEST ((const sval_update_manifest_t *)pair_manifest)
 
 // ---- helpers ------------------------------------------------------------------------
 
@@ -238,10 +308,27 @@ static void reset_session(void) {
 #endif
     memset(&s, 0, sizeof(s)); // IDLE, last_error OK
     memset(manifest, 0, sizeof(manifest));
+    memset(pair_manifest, 0, sizeof(pair_manifest));
     memset(page, 0, sizeof(page));
 }
 
+static void held_clear(void) {
+    memset(&held, 0, sizeof(held));
+}
+
+// The chord made (or counted as made) in a pair session: one approval for
+// this half's install too (D41), bound to the pair manifest, the client and
+// the nonce.
+static void held_capture(void) {
+    if (!s.pair || !s.bound || held.state != HELD_NONE || !update_gesture_done(NULL)) return;
+    held.state  = HELD_PENDING;
+    held.client = s.client;
+    held.nonce  = s.nonce;
+    memcpy(held.hash, s.pair_hash, sizeof(held.hash));
+}
+
 static update_status_t fail(update_status_t status) {
+    held_clear(); // any error, in either session (D41)
     stop_relay();
     update_gesture_disarm();
     s.state      = UPDATE_STATE_ERROR;
@@ -329,6 +416,9 @@ static update_status_t op_info(const uint8_t *req, uint8_t *rsp) {
 #ifdef SVAL_UPDATE_TEST_HOOKS
     rsp[21] |= 0x08;
 #endif
+#ifdef SVAL_UPDATE_NO_CHORD
+    rsp[21] |= 0x80; // D43: every ARM counts as confirmed
+#endif
     rsp[22] = s.last_error;
     info_sizes(rsp);
     return die_ok && !failing ? UPDATE_OK : UPDATE_UNAVAILABLE;
@@ -370,6 +460,9 @@ static update_status_t manifest_load(uint32_t client, const uint8_t *req, bool t
     // In order; offset 0 starts the load again.
     if (off != 0 && (s.state == UPDATE_STATE_IDLE || off != s.filled)) return UPDATE_OUT_OF_ORDER;
     if (s.state == UPDATE_STATE_IDLE) {
+        // A new session: the held approval survives only this half's own
+        // install from its bound client (D41).
+        if (held.state != HELD_NONE && (to_other || client != held.client)) held_clear();
         reset_session();
         s.state  = UPDATE_STATE_MANIFEST_LOADING;
         s.client = client;
@@ -387,12 +480,40 @@ static update_status_t op_manifest(uint32_t client, const uint8_t *req, uint8_t 
     return st;
 }
 
-static update_status_t op_arm(uint32_t client, uint8_t *rsp) {
+// PAIR_MANIFEST (D41): this half's own manifest, into its own buffer, while a
+// session for the other hand loads its manifest. Refusals change nothing.
+static update_status_t pair_manifest_load(uint32_t client, const uint8_t *req, bool to_other) {
+    if (to_other) return UPDATE_INVALID; // [hand] is this half's own
+    if (s.state == UPDATE_STATE_IDLE) return UPDATE_INVALID;
+    if (s.state != UPDATE_STATE_MANIFEST_LOADING) return UPDATE_BUSY;
+    if (!s.relay) return UPDATE_INVALID; // only beside a session for the other hand
+    if (client != s.client) return UPDATE_OTHER_CLIENT;
+    uint8_t off = req[1], n = req[2];
+    if (n == 0 || n > MANIFEST_DATA_MAX || off + n > UPDATE_MANIFEST_BYTES) return UPDATE_INVALID;
+    if (off != 0 && off != s.pair_filled) return UPDATE_OUT_OF_ORDER; // in order; offset 0 starts again
+    memcpy(pair_manifest + off, &req[3], n);
+    s.pair_filled = off + n;
+    s.op_ms       = now_ms;
+    return UPDATE_OK;
+}
+
+static update_status_t op_pair_manifest(uint32_t client, const uint8_t *req, uint8_t *rsp, bool to_other) {
+    update_status_t st = pair_manifest_load(client, req, to_other);
+    rsp[1]             = s.state == UPDATE_STATE_MANIFEST_LOADING && s.relay ? s.pair_filled : 0;
+    return st;
+}
+
+static update_status_t op_arm(uint32_t client, const uint8_t *req, uint8_t *rsp) {
     if (s.state == UPDATE_STATE_IDLE) return UPDATE_INVALID;
     if (s.state != UPDATE_STATE_MANIFEST_LOADING) return UPDATE_BUSY;
     if (client != s.client) return UPDATE_OTHER_CLIENT;
     s.op_ms = now_ms;
     if (s.filled != UPDATE_MANIFEST_BYTES) return UPDATE_INVALID;
+    // Protocol 4: the mode (a protocol 3 host sends 0). A pair ARM is for the
+    // other hand, with the whole pair manifest loaded.
+    uint8_t mode = req[1];
+    if (mode > UPDATE_ARM_MODE_PAIR) return UPDATE_INVALID;
+    if (mode == UPDATE_ARM_MODE_PAIR && (!s.relay || s.pair_filled != UPDATE_MANIFEST_BYTES)) return UPDATE_INVALID;
     if (!update_flash_available() || updater_port_settings_failing()) return UPDATE_UNAVAILABLE; // D26, D12
     // A Scan Lab sweep sets the scan timing from the host; the chord is only
     // read from normally scanned frames (and scanlab.c refuses to start a
@@ -408,18 +529,52 @@ static update_status_t op_arm(uint32_t client, uint8_t *rsp) {
     }
     update_status_t st = update_manifest_check(MANIFEST, &dev);
     if (st != UPDATE_OK) return fail(st);
+    if (mode == UPDATE_ARM_MODE_PAIR) {
+        // The pair manifest against this half's own build and floors too (D41),
+        // so the one chord never approves a file this half would refuse.
+        update_device_t self;
+        update_device_self(&self);
+        st = update_manifest_check(PAIR_MANIFEST, &self);
+        if (st != UPDATE_OK) return fail(st);
+    }
 
-    s.dev       = dev;
-    s.image_len = MANIFEST->image_len;
-    s.nonce     = updater_port_random32();
-    s.bound     = true;
-    s.armed_ms  = now_ms;
-    s.state     = UPDATE_STATE_CONFIRM_WAIT;
-    update_gesture_arm();
     uint8_t hash[UPDATE_SHA512_BYTES];
     crypto_sha512(hash, manifest, UPDATE_MANIFEST_BYTES); // the host shows these bytes (D5)
+    uint8_t flags = 0;
+#ifdef SVAL_UPDATE_NO_CHORD
+    flags |= UPDATE_ARM_PRE_APPROVED | UPDATE_ARM_NO_CHORD; // D43
+#endif
+    if (mode == UPDATE_ARM_MODE_PAIR) {
+        s.pair = true;
+        flags |= UPDATE_ARM_PAIR;
+        crypto_sha512(s.pair_hash, pair_manifest, UPDATE_MANIFEST_BYTES);
+    } else if (!s.relay && held.state == HELD_READY && client == held.client) {
+        // This half's own install after a pair session (D41): pre-approved if
+        // it is the very manifest that was approved. Used up either way.
+        bool match = memcmp(hash, held.hash, UPDATE_SHA512_BYTES) == 0;
+        held_clear();
+        if (match) flags |= UPDATE_ARM_PRE_APPROVED | UPDATE_ARM_BY_PAIR;
+    } else if (!s.relay) {
+        held_clear(); // an ARM for this half uses the approval up
+    }
+
+    s.dev          = dev;
+    s.image_len    = MANIFEST->image_len;
+    s.nonce        = updater_port_random32();
+    s.bound        = true;
+    s.armed_ms     = now_ms;
+    s.state        = UPDATE_STATE_CONFIRM_WAIT;
+    s.pre_approved = (flags & UPDATE_ARM_PRE_APPROVED) != 0;
+    if (flags & UPDATE_ARM_BY_PAIR) {
+        update_gesture_preapprove();
+    } else {
+        update_gesture_arm(); // a no-chord build counts the chord as made here
+    }
+    held_capture(); // a pair ARM on a no-chord build: approved now
     put32(&rsp[1], s.nonce);
     memcpy(&rsp[5], hash, 4);
+    if (s.pair) memcpy(&rsp[9], s.pair_hash, 4);
+    rsp[13] = flags;
     return UPDATE_OK;
 }
 
@@ -429,6 +584,7 @@ static update_status_t op_begin(uint32_t client, const uint8_t *req) {
     if (s.state != UPDATE_STATE_CONFIRM_WAIT) return UPDATE_INVALID;
     if (updater_port_settings_failing()) return UPDATE_UNAVAILABLE;
     if (!update_gesture_done(NULL)) return UPDATE_NOT_CONFIRMED;
+    held_capture(); // a pair session: the chord approved this half's install too (D41)
     update_gesture_disarm();
     s.state = UPDATE_STATE_VERIFYING_MANIFEST;
     return UPDATE_ACCEPTED;
@@ -475,6 +631,7 @@ static update_status_t op_end(uint32_t client, const uint8_t *req) {
     if (s.state != UPDATE_STATE_RECEIVING) return UPDATE_INVALID;
     if (s.staged != s.image_len) return UPDATE_OUT_OF_ORDER; // END before the last byte
     crypto_sha512_init(&sha);
+    update_build_scan_init(&s.bi);
     s.verify_off = 0;
     s.crc_body   = UPDATE_CRC32_INIT;
     s.work_ms    = now_ms;
@@ -496,6 +653,7 @@ static update_status_t op_status(uint32_t client, uint8_t *rsp) {
     put16(&rsp[19], s.state == UPDATE_STATE_VERIFIED || s.state == UPDATE_STATE_COMMITTING ? s.crc_body & 0xFFFF : 0);
     rsp[21] = (update_gesture_done(NULL) && s.bound ? 0x01 : 0) | (s.bound ? 0x02 : 0) | (updater_port_settings_failing() ? 0x04 : 0);
     rsp[22] = updater_port_split_presence();
+    rsp[23] = (held.state != HELD_NONE ? 0x01 : 0) | (s.bound && s.pre_approved ? 0x02 : 0); // protocol 4
     return UPDATE_OK;
 }
 
@@ -531,6 +689,7 @@ static update_status_t op_commit(uint32_t client, const uint8_t *req) {
 static update_status_t op_abort(uint32_t client, const uint8_t *req) {
     switch (s.state) {
         case UPDATE_STATE_IDLE:
+            held_clear(); // between the two sessions of a pair update (D41)
             return UPDATE_OK;
         case UPDATE_STATE_ERROR:
             break; // anyone
@@ -543,6 +702,7 @@ static update_status_t op_abort(uint32_t client, const uint8_t *req) {
             break;
         }
     }
+    held_clear();
     reset_session(); // never erases: BEGIN erases anyway
     return UPDATE_OK;
 }
@@ -646,10 +806,44 @@ static bool session_op(uint8_t op) {
 }
 
 static update_status_t op_rebind(uint32_t client, const uint8_t *req) {
-    if (!s.bound) return UPDATE_INVALID;
-    if (get32(&req[1]) != s.nonce) return UPDATE_OTHER_CLIENT;
+    uint32_t nonce = get32(&req[1]);
+    bool     moved = false;
+    if (held.state != HELD_NONE && nonce == held.nonce) {
+        // The held approval follows its client in any state (D41); so does a
+        // manifest that client is loading for this half's install.
+        if (s.state == UPDATE_STATE_MANIFEST_LOADING && s.client == held.client) s.client = client;
+        held.client = client;
+        moved       = true;
+    }
+    if (!s.bound) return moved ? UPDATE_OK : UPDATE_INVALID;
+    if (nonce != s.nonce) return moved ? UPDATE_OK : UPDATE_OTHER_CLIENT;
     s.client = client; // the old ID is no longer accepted
     s.op_ms  = now_ms;
+    return UPDATE_OK;
+}
+
+// SETTINGS_RESET (D42; see the top of this file).
+static update_status_t op_settings_reset(const uint8_t *req, uint8_t *rsp, bool to_other) {
+    if (to_other) return UPDATE_INVALID; // [hand] is this half's own
+    // req[6]: the mode (D44): 0 firmware defaults (a protocol 4 host from
+    // before D44 sends 0 there), 1 a blank board.
+    uint8_t mode = req[6];
+    if (req[1] != 'R' || req[2] != 'S' || req[3] != 'E' || req[4] != 'T' || req[5] > 1 || mode > BUILD_RESET_MODE_MAX) return UPDATE_INVALID;
+    if (s.state != UPDATE_STATE_IDLE || held.state != HELD_NONE || reset_due || update_relay_busy() || update_split_slave_active()) return UPDATE_BUSY;
+    if (!update_flash_available()) return UPDATE_UNAVAILABLE; // no build reset record on a smaller die
+    if (req[5] == 1) {
+        // The other half first: with no answer from it, nothing changes.
+        update_presence_t p;
+        uint8_t           pr = update_split_other(&p);
+        if (pr != UPDATE_PRESENCE_MATCH && pr != UPDATE_PRESENCE_VERSION) return UPDATE_UNAVAILABLE;
+        update_status_t st = update_split_other_settings_reset(mode);
+        if (st != UPDATE_OK) return st;
+        rsp[1] |= 0x02;
+    }
+    if (!updater_port_settings_invalidate(mode)) return UPDATE_FLASH_ERR;
+    rsp[1] |= 0x01;
+    reset_due    = true;
+    reset_due_ms = now_ms + SVAL_UPDATE_SETTINGS_RESET_MS; // the reply goes out first
     return UPDATE_OK;
 }
 
@@ -676,7 +870,7 @@ void updater_via_command(uint8_t *data, uint8_t length) {
 #endif
     uint8_t me       = self_hand();
     bool    to_other = req[0] == (me ^ 1);
-    if (op > UPDATE_OP_RELAY || test_halt_op) {
+    if (op > UPDATE_OP_SETTINGS_RESET || test_halt_op) {
         st = UPDATE_INVALID;
     } else if (op != UPDATE_OP_INFO && !wrapped) {
         st = UPDATE_INVALID; // unwrapped VIA reaches here too (sval.c); only INFO is open
@@ -684,7 +878,10 @@ void updater_via_command(uint8_t *data, uint8_t length) {
         st = UPDATE_UNSUPPORTED;
     } else if (to_other && (op == UPDATE_OP_TEST_HALT || op == UPDATE_OP_DIAG)) {
         st = UPDATE_UNSUPPORTED; // this half's only
-    } else if ((s.state == UPDATE_STATE_COMMITTING || s.state == UPDATE_STATE_SUBSIDE_COMMITTING) && op != UPDATE_OP_INFO && op != UPDATE_OP_STATUS && op != UPDATE_OP_RELAY) {
+    } else if ((s.state == UPDATE_STATE_COMMITTING || s.state == UPDATE_STATE_SUBSIDE_COMMITTING) && op != UPDATE_OP_INFO && op != UPDATE_OP_STATUS && op != UPDATE_OP_RELAY &&
+               !(op == UPDATE_OP_REBIND && s.state == UPDATE_STATE_SUBSIDE_COMMITTING)) {
+        // Protocol 4: REBIND is answered while the other half commits, so a
+        // client ID renewed then keeps the session and the held approval (D41).
         st = UPDATE_BUSY;
     } else if (s.state != UPDATE_STATE_IDLE && session_op(op) && to_other != s.relay) {
         st = UPDATE_BUSY; // a session for the other hand is running
@@ -700,7 +897,13 @@ void updater_via_command(uint8_t *data, uint8_t length) {
                 st = op_manifest(client, req, rsp, to_other);
                 break;
             case UPDATE_OP_ARM:
-                st = op_arm(client, rsp);
+                st = op_arm(client, req, rsp);
+                break;
+            case UPDATE_OP_PAIR_MANIFEST:
+                st = op_pair_manifest(client, req, rsp, to_other);
+                break;
+            case UPDATE_OP_SETTINGS_RESET:
+                st = op_settings_reset(req, rsp, to_other);
                 break;
             case UPDATE_OP_BEGIN:
                 st = op_begin(client, req);
@@ -791,6 +994,7 @@ static void verify_image_step(void) {
             return;
         }
         crypto_sha512_update(&sha, buf, n);
+        update_build_scan(&s.bi, buf, n);
         uint32_t skip = s.verify_off < UPDATE_VECTORS_OFFSET ? UPDATE_VECTORS_OFFSET - s.verify_off : 0;
         if (skip < n) s.crc_body = update_crc32_mpeg2_update(s.crc_body, buf + skip, n - skip);
         s.verify_off += n;
@@ -804,6 +1008,11 @@ static void verify_image_step(void) {
         uint8_t head[UPDATE_HEAD_BYTES] __attribute__((aligned(4)));
         st = slot_copy(0, head, sizeof(head)) ? update_image_head_check(head, s.image_len) : UPDATE_FLASH_ERR;
     }
+    // D45: what the image itself says it is. A release build never takes a
+    // no-chord or kept-settings dev image, even from a manifest without
+    // DIAGNOSTIC. s.dev is the half the image is for (this build's floors and
+    // release state either way); the other half checks again itself (D7).
+    if (st == UPDATE_OK) st = update_image_build_check(&s.bi, &s.dev);
     s.verify_ms = ms16(updater_port_now_ms() - s.work_ms);
     if (st != UPDATE_OK) {
         fail(st);
@@ -844,6 +1053,8 @@ static update_led_mode_t led_mode(void) {
         default:
             break;
     }
+    // Pre-approved (D41, D43): no blue and no white flash, straight to the rainbow.
+    if (s.pre_approved) return UPDATE_LED_PROGRESS;
     if (update_gesture_done(&done_ms)) {
         if (now_ms - done_ms < CHORD_FLASH_MS) return UPDATE_LED_CHORD;
         if (s.state == UPDATE_STATE_CONFIRM_WAIT) return UPDATE_LED_APPROVED;
@@ -866,6 +1077,7 @@ void updater_task(void) {
         // A host that went away before the other half's COMMIT stops the relay (D23).
         // A half-sent manifest was never shown to the user: just drop it.
         if (s.state == UPDATE_STATE_MANIFEST_LOADING) {
+            held_clear();
             reset_session();
         } else {
             fail(UPDATE_TIMEOUT);
@@ -873,6 +1085,12 @@ void updater_task(void) {
     }
     if (s.state == UPDATE_STATE_CONFIRM_WAIT && !update_gesture_done(NULL) && now_ms - s.armed_ms >= SVAL_UPDATE_CONFIRM_WINDOW_MS) {
         fail(UPDATE_NOT_CONFIRMED);
+    }
+    if (s.state == UPDATE_STATE_CONFIRM_WAIT) held_capture(); // the chord in a pair session (D41)
+    if (held.state == HELD_READY && now_ms - held.ready_ms >= SVAL_UPDATE_PAIR_HOLD_MS) held_clear();
+    if (reset_due && (int32_t)(now_ms - reset_due_ms) >= 0) {
+        reset_due = false;
+        updater_port_reboot(); // SETTINGS_RESET (D42): the next boot resets every stored setting
     }
 
     switch (s.state) {
@@ -895,6 +1113,14 @@ void updater_task(void) {
             } else if (s.state == UPDATE_STATE_RELAYING && ri.phase == RELAY_VERIFIED) {
                 s.state = UPDATE_STATE_RELAYED;
             } else if (s.state == UPDATE_STATE_SUBSIDE_COMMITTING && ri.phase == RELAY_DONE) {
+                // The held approval of a pair session now waits for this half's
+                // install, for SVAL_UPDATE_PAIR_HOLD_MS (D41).
+                if (held.state == HELD_PENDING && held.nonce == s.nonce) {
+                    held.state    = HELD_READY;
+                    held.ready_ms = now_ms;
+                } else {
+                    held_clear();
+                }
                 reset_session(); // the other half took COMMIT and reset (or never answered again: V)
             } else if (ri.phase == RELAY_IDLE || ri.phase == RELAY_DONE) {
                 fail(UPDATE_INVALID); // cannot happen: the relay ended outside its session
@@ -940,6 +1166,8 @@ update_state_t updater_state(void) {
 #ifdef SVAL_UPDATER_HOST_TEST
 void updater_host_reset(void) {
     reset_session();
+    held_clear();
+    reset_due = false;
 }
 #endif
 
@@ -951,6 +1179,8 @@ void updater_host_reset(void) {
 #    include "client_wrapper.h"
 _Static_assert(WRAPPER_BYTES == CLIENT_WRAPPER_OVERHEAD, "the client wrapper's header");
 #    include "scanlab.h"
+#    include "build_reset.h"
+#    include "quantum.h" // soft_reset_keyboard
 #    include "hardware/structs/rosc.h"
 #    ifdef EEPROM_WEAR_LEVELING
 #        include "wear_leveling.h"
@@ -989,6 +1219,14 @@ bool updater_port_scan_override(void) {
 
 uint8_t updater_port_split_presence(void) {
     return update_split_presence();
+}
+
+bool updater_port_settings_invalidate(uint8_t mode) {
+    return build_reset_invalidate(mode);
+}
+
+void updater_port_reboot(void) {
+    soft_reset_keyboard();
 }
 
 // crt0 (ChibiOS crt0_v6m.S, CRT0_INIT_STACKS on by default) fills the process
