@@ -64,9 +64,16 @@ bool sval_hw_rev_is_flipfet(void) {
     return sval_hw_rev() == SVAL_HW_REV_FLIPFET;
 }
 
-// Thumb handedness strap (report only). A left thumb (TCL Gen 2) with R7
-// fitted has 10k from LED_DIN to GND; LED_DIN is the WS2812 data pin. Read
-// once at boot, before the LED driver and split init touch the pin.
+// Thumb handedness strap. A left thumb (TCL Gen 2) with R7 fitted has 10k
+// from LED_DIN to GND; a right thumb (TCR) with its R7 fitted has 10k from
+// LED_DIN to the thumb row. LED_DIN is the WS2812 data pin. Read once at
+// boot, before the LED driver, the matrix and split init touch the pins.
+//
+// The thumb row is switched on for the read, so a right thumb's pull-up has a
+// row to pull to. GPIO8 drives a P-channel FET's gate directly on every main
+// board (V3.2, CV3.3, Mini1.0): low is on. On V3.2 the FET is reversed and its
+// body diode keeps the row near 2.6 V even when off; on CV3.3 and Mini1.0 the
+// row floats when off. The row-off pull-down read is kept for diagnosis only.
 static uint8_t thumb_hand_class = SVAL_THUMB_HAND_NOT_PROBED;
 static uint8_t thumb_hand_raw   = 0;
 
@@ -75,7 +82,14 @@ static void sval_thumb_hand_probe(void) {
     // GP19 is I2C1 SCL on the Pimoroni build: no probe.
     thumb_hand_class = SVAL_THUMB_HAND_SKIPPED;
 #else
+    const pin_t row = SVAL_THUMB_ROW_PIN;
+    gpio_set_pin_output(row);
+    gpio_write_pin_high(row); // thumb row off
     gpio_set_pin_input_low(SVAL_THUMB_HAND_PIN);
+    wait_us(200);
+    const uint8_t down_off = gpio_read_pin(SVAL_THUMB_HAND_PIN) ? 1 : 0;
+
+    gpio_write_pin_low(row); // thumb row on
     wait_us(200);
     const uint8_t down = gpio_read_pin(SVAL_THUMB_HAND_PIN) ? 1 : 0;
 
@@ -89,15 +103,18 @@ static void sval_thumb_hand_probe(void) {
     const uint8_t up = ones >= 5 ? 1 : 0; // majority of 8 (4/8 counts as low)
 
     gpio_set_pin_input(SVAL_THUMB_HAND_PIN); // plain input, no pull
+    gpio_write_pin_high(row);                // thumb row off; matrix_init() takes the pin over
 
     if (!up && !down) {
         thumb_hand_class = SVAL_THUMB_HAND_LEFT;
+    } else if (up && down) {
+        thumb_hand_class = SVAL_THUMB_HAND_RIGHT;
     } else if (up && !down) {
-        thumb_hand_class = SVAL_THUMB_HAND_DEFAULT; // never means right
+        thumb_hand_class = SVAL_THUMB_HAND_DEFAULT; // no strap: never means right
     } else {
         thumb_hand_class = SVAL_THUMB_HAND_ANOMALY;
     }
-    thumb_hand_raw = (uint8_t)(down | (up << 1) | (ones << 4));
+    thumb_hand_raw = (uint8_t)(down | (up << 1) | (down_off << 2) | (ones << 4));
 #endif
 }
 

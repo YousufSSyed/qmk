@@ -156,6 +156,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef SVAL_THUMB_HAND_PIN
     #define SVAL_THUMB_HAND_PIN GP19 // thumb LED_DIN; R7 strap on a left thumb
 #endif
+// The thumb row's FET gate (matrix row 0), on during the strap read: low is on.
+#ifndef SVAL_THUMB_ROW_PIN
+    #define SVAL_THUMB_ROW_PIN GP8
+#endif
 
 // Hardware revision strap. The pin is read with the internal pull-up enabled:
 // open = revision A, bridged to ground = revision B ("flipfet"). Override the
