@@ -64,6 +64,51 @@ bool sval_hw_rev_is_flipfet(void) {
     return sval_hw_rev() == SVAL_HW_REV_FLIPFET;
 }
 
+// Thumb handedness strap (report only). A left thumb (TCL Gen 2) with R7
+// fitted has 10k from LED_DIN to GND; LED_DIN is the WS2812 data pin. Read
+// once at boot, before the LED driver and split init touch the pin.
+static uint8_t thumb_hand_class = SVAL_THUMB_HAND_NOT_PROBED;
+static uint8_t thumb_hand_raw   = 0;
+
+static void sval_thumb_hand_probe(void) {
+#if defined(POINTING_DEVICE_IS_PIMORONI)
+    // GP19 is I2C1 SCL on the Pimoroni build: no probe.
+    thumb_hand_class = SVAL_THUMB_HAND_SKIPPED;
+#else
+    gpio_set_pin_input_low(SVAL_THUMB_HAND_PIN);
+    wait_us(200);
+    const uint8_t down = gpio_read_pin(SVAL_THUMB_HAND_PIN) ? 1 : 0;
+
+    gpio_set_pin_input_high(SVAL_THUMB_HAND_PIN);
+    wait_us(200);
+    uint8_t ones = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+        if (i) wait_us(10);
+        ones += gpio_read_pin(SVAL_THUMB_HAND_PIN) ? 1 : 0;
+    }
+    const uint8_t up = ones >= 5 ? 1 : 0; // majority of 8 (4/8 counts as low)
+
+    gpio_set_pin_input(SVAL_THUMB_HAND_PIN); // plain input, no pull
+
+    if (!up && !down) {
+        thumb_hand_class = SVAL_THUMB_HAND_LEFT;
+    } else if (up && !down) {
+        thumb_hand_class = SVAL_THUMB_HAND_DEFAULT; // never means right
+    } else {
+        thumb_hand_class = SVAL_THUMB_HAND_ANOMALY;
+    }
+    thumb_hand_raw = (uint8_t)(down | (up << 1) | (ones << 4));
+#endif
+}
+
+uint8_t sval_thumb_hand(void) {
+    return thumb_hand_class;
+}
+
+uint8_t sval_thumb_hand_raw(void) {
+    return thumb_hand_raw;
+}
+
 // Store svalboard data in VIA custom config at offset 0
 #define SVALBOARD_VIA_CONFIG_OFFSET 0
 #define SVALBOARD_VIA_CONFIG_SIZE sizeof(saved_values_t)
@@ -195,6 +240,7 @@ void sval_storage_reset_clear_kb(void) {
 // stored settings.
 void keyboard_pre_init_kb(void) {
     identity_init();
+    sval_thumb_hand_probe(); // before ws2812/rgblight and split init use GP19
     build_reset_pre_init(); // a different firmware build: reset stored settings
     keyboard_pre_init_user();
 }
@@ -862,6 +908,7 @@ enum sval_via_value_id {
     id_idle_low_clock      = 28, // toggle: 48 MHz system clock in deep idle
     id_idle_long_nap       = 29, // toggle: long naps in deep idle
     id_scan_deep_clock_idx = 30, // u8 dropdown: deep-idle clock 0 = 48 MHz, 1 = 24 MHz, 2 = 12 MHz
+    id_thumb_hand          = 31, // read-only: [0] class (enum sval_thumb_hand), [1] raw bits (sval_thumb_hand_raw)
     id_tapping_term        = 16,
     id_permissive_hold     = 17,
     id_hold_on_other_key   = 18,
@@ -1068,6 +1115,10 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                     break;
                 case id_hw_revision:
                     value_data[0] = sval_hw_rev();
+                    break;
+                case id_thumb_hand:
+                    value_data[0] = sval_thumb_hand();
+                    value_data[1] = sval_thumb_hand_raw();
                     break;
                 case id_scan_period_us:
                     value_data[0] = global_saved_values.scan_period_us & 0xFF;

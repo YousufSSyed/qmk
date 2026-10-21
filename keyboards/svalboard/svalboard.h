@@ -135,6 +135,22 @@ enum sval_hw_rev {
 };
 uint8_t sval_hw_rev(void);
 bool    sval_hw_rev_is_flipfet(void);
+
+// Thumb handedness strap, read once at boot from SVAL_THUMB_HAND_PIN (the
+// WS2812 data pin). A left thumb with R7 (10k LED_DIN to GND) reads low under
+// both pulls. Report only: DEFAULT is not "right" (it is also an unmodified
+// left thumb, no thumb, or a thumb on the 8-pin cable).
+enum sval_thumb_hand {
+    SVAL_THUMB_HAND_DEFAULT     = 0, // pull-up 1, pull-down 0
+    SVAL_THUMB_HAND_LEFT        = 1, // pull-up 0, pull-down 0: R7 fitted
+    SVAL_THUMB_HAND_ANOMALY     = 2, // pull-down read 1: something drives the pin high
+    SVAL_THUMB_HAND_SKIPPED     = 3, // not probed (Pimoroni build: GP19 is I2C1 SCL)
+    SVAL_THUMB_HAND_NOT_PROBED  = 0xFF,
+};
+uint8_t sval_thumb_hand(void);
+// Raw readings: bit 0 = pull-down read, bit 1 = pull-up majority,
+// bits 4-7 = how many of the 8 pull-up reads were high.
+uint8_t sval_thumb_hand_raw(void);
 bool    sval_other_half_connected(void);
 uint8_t sval_pad_hands(void); // hands whose pointing module is an Azoteq pad (bit 0 left, bit 1 right)
 void    sval_scan_timing(uint16_t *pre, uint16_t *post); // matrix.c
