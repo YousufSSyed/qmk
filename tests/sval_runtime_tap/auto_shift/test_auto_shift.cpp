@@ -178,3 +178,29 @@ TEST_F(RuntimeTap, AutoShiftModifiersAndRepeatBitsFollowRuntimeSettings) {
         testing::Mock::VerifyAndClearExpectations(&driver);
     }
 }
+
+TEST_F(RuntimeTap, AutoShiftDisabledWhileKeyPendingSendsItUnshiftedAtOnce) {
+    TestDriver driver;
+    auto       key = KeymapKey(0, 0, 0, KC_A);
+    set_keymap({key});
+    set_autoshift_timeout(1000);
+    autoshift_enable();
+    {
+        InSequence order;
+        EXPECT_REPORT(driver, (KC_A));
+        EXPECT_EMPTY_REPORT(driver);
+        key.press();
+        run_one_scan_loop();
+        idle_for(100);
+        // QMK Settings switches Auto Shift off while the key is still held.
+        autoshift_disable();
+        idle_for(50);
+        testing::Mock::VerifyAndClearExpectations(&driver);
+    }
+    // Releasing the key and waiting past the old timeout sends nothing more.
+    EXPECT_NO_REPORT(driver);
+    key.release();
+    run_one_scan_loop();
+    idle_for(1200);
+    testing::Mock::VerifyAndClearExpectations(&driver);
+}

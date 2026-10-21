@@ -370,7 +370,23 @@ void autoshift_matrix_scan(void) {
     }
 }
 
+#ifdef SVAL_ENABLE
+// Svalboard: Auto Shift can be switched off from QMK Settings while a key is
+// pending. Finish that key now, as an interrupting key would, so the matrix
+// scan doesn't send it shifted after the timeout.
+static void autoshift_end_pending(void) {
+    if (autoshift_flags.in_progress) {
+        autoshift_end(KC_NO, timer_read(), false, &autoshift_lastrecord);
+    }
+}
+#endif
+
 void autoshift_toggle(void) {
+#ifdef SVAL_ENABLE
+    if (autoshift_flags.enabled) {
+        autoshift_end_pending();
+    }
+#endif
     autoshift_flags.enabled = !autoshift_flags.enabled;
     autoshift_flush_shift();
 }
@@ -380,6 +396,9 @@ void autoshift_enable(void) {
 }
 
 void autoshift_disable(void) {
+#ifdef SVAL_ENABLE
+    autoshift_end_pending();
+#endif
     autoshift_flags.enabled = false;
     autoshift_flush_shift();
 }
