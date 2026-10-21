@@ -241,7 +241,7 @@ void sval_storage_reset_clear_kb(void) {
 void keyboard_pre_init_kb(void) {
     identity_init();
     sval_thumb_hand_probe(); // before ws2812/rgblight and split init use GP19
-    build_reset_pre_init(); // a different firmware build: reset stored settings
+    build_reset_pre_init();  // a different firmware build: reset stored settings
     keyboard_pre_init_user();
 }
 
@@ -913,7 +913,7 @@ enum sval_via_value_id {
     id_permissive_hold     = 17,
     id_hold_on_other_key   = 18,
     id_retro_tapping       = 19,
-    // 25-31 reserved
+    // 31: id_thumb_hand (above)
     id_layer0_color = 32,
     // 32-47 are layer colors (id_layer0_color + layer)
 };
