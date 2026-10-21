@@ -64,14 +64,15 @@ static update_status_t release_check(const uint8_t *buf, size_t len) {
     memcpy(&m, buf, sizeof(m));
     const uint8_t  *image = buf + UPDATE_MANIFEST_BYTES;
     size_t          ilen  = len - UPDATE_MANIFEST_BYTES;
-    update_device_t dev   = {
-        .hand           = m.hand,
-        .pointing_id    = m.pointing_id,
-        .security_epoch = SVAL_UPDATE_SECURITY_EPOCH,
-        .storage_format = SVAL_UPDATE_STORAGE_FORMAT,
-        .release_build  = true,
-        .max_image      = SVAL_UPDATE_MAX_IMAGE,
-    };
+    update_device_t dev;
+    memset(&dev, 0, sizeof(dev));
+    dev.hand           = m.hand;
+    dev.pointing_id    = m.pointing_id;
+    dev.security_epoch = SVAL_UPDATE_SECURITY_EPOCH;
+    dev.storage_format = SVAL_UPDATE_STORAGE_FORMAT;
+    dev.release_build  = true;
+    dev.max_image      = SVAL_UPDATE_MAX_IMAGE;
+
     update_status_t st = update_manifest_check(&m, &dev);
     if (st != UPDATE_OK) return st;
     if (m.image_len != ilen) return UPDATE_BAD_HASH;
