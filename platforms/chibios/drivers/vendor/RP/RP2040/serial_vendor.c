@@ -427,11 +427,23 @@ static inline void pio_init(pin_t tx_pin, pin_t rx_pin) {
     enter_rx_state();
 }
 
+#if defined(SERIAL_USART_PINS_RUNTIME)
+#    if !defined(SERIAL_USART_FULL_DUPLEX)
+#        error "SERIAL_USART_PINS_RUNTIME needs SERIAL_USART_FULL_DUPLEX"
+#    endif
+// The keyboard picks the TX and RX pins at run time (for example from a side
+// it learns at boot), once for each role, before the PIO takes them.
+void serial_usart_pins_kb(bool master, pin_t *tx_pin, pin_t *rx_pin);
+#endif
+
 /**
  * @brief PIO driver specific initialization function for the master side.
  */
 void serial_transport_driver_master_init(void) {
-#if defined(SERIAL_USART_FULL_DUPLEX)
+#if defined(SERIAL_USART_PINS_RUNTIME)
+    pin_t tx_pin, rx_pin;
+    serial_usart_pins_kb(true, &tx_pin, &rx_pin);
+#elif defined(SERIAL_USART_FULL_DUPLEX)
     pin_t tx_pin = SERIAL_USART_TX_PIN;
     pin_t rx_pin = SERIAL_USART_RX_PIN;
 #else
@@ -450,7 +462,10 @@ void serial_transport_driver_master_init(void) {
  * @brief PIO driver specific initialization function for the slave side.
  */
 void serial_transport_driver_slave_init(void) {
-#if defined(SERIAL_USART_FULL_DUPLEX)
+#if defined(SERIAL_USART_PINS_RUNTIME)
+    pin_t tx_pin, rx_pin;
+    serial_usart_pins_kb(false, &tx_pin, &rx_pin);
+#elif defined(SERIAL_USART_FULL_DUPLEX)
     pin_t tx_pin = SERIAL_USART_TX_PIN;
     pin_t rx_pin = SERIAL_USART_RX_PIN;
 #else

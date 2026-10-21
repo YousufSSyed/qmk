@@ -84,6 +84,7 @@ enum sval_pointer_sensor {
 #define SVAL_POINTER_INIT_OK  0x04 // the sensor driver initialised
 #define SVAL_POINTER_AUTO     0x08 // the firmware drives whichever module is attached; built_for is the one it chose
 #define SVAL_POINTER_OS_TOUCHPAD 0x10 // the OS drives this pad as a touchpad (native touchpad builds): pointer settings do not apply
+#define SVAL_POINTER_SIDE_UNKNOWN 0x20 // either-hand builds: the half has no side yet, and SVAL_POINTER_LEFT means nothing
 typedef struct __attribute__((__packed__)) {
     uint8_t flags;              // SVAL_POINTER_*
     uint8_t built_for;          // enum sval_pointer_sensor

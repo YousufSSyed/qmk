@@ -16,7 +16,7 @@ open handle.
     sval_update.py abort [--nonce N]
     sval_update.py update FILE.svup [--half usb|other] [--yes] [--delay S] [--rebind-every S]
                                     [--min-rebinds N] [--no-commit] [--halt POINT [--halt-unfed]]
-    sval_update.py pair FILE1.svup FILE2.svup [--yes] [--delay S] [--rebind-every S]
+    sval_update.py pair FILE1.svup [FILE2.svup] [--yes] [--delay S] [--rebind-every S]
     sval_update.py reject FILE.svup
 
 update sends the manifest, prints the manifest hash you confirm, waits for the
@@ -39,7 +39,8 @@ only one half updated the halves differ, which is not supported (V): the half
 with USB blinks red until both match. pair does both: the other half first,
 then the half with USB over USB (the chord twice, once per image), then waits
 for the board to come back and for presence to show the same release on both
-halves within 10 s. pair picks each image by the hand each half reports, and
+halves within 10 s. pair picks each image by the hand each half reports (an
+either-hand image, hand 2, goes to both: give it once), and
 asks once (or --yes) if either image names another pointing device than its
 half runs. relay prints the relay's progress; info --other asks the
 other half. The client ID is renewed every
@@ -118,6 +119,8 @@ ST_RELAYING, ST_RELAYED, ST_SUBSIDE_COMMITTING = 10, 11, 12
 RELAY_PHASES = ["idle", "start", "manifest", "checking and erasing", "sending", "end", "verifying", "verified", "commit", "committing", "probe", "done", "failed", "aborting"]
 PRESENCE_NONE, PRESENCE_MATCH, PRESENCE_VERSION = 0, 1, 2
 HANDS = {0: "left", 1: "right"}
+HAND_EITHER = 2  # an image for both halves (make_update.py --kb svalboard/either)
+HAND_NAMES = {**HANDS, HAND_EITHER: "either", 0xFF: "unknown"}
 POINTING = {v: k for k, v in make_update.POINTING.items()}
 
 
@@ -310,7 +313,7 @@ def image_mismatches(m, info):
     """Where the image was built for another hand or pointing device than the half runs,
     as warnings. The firmware takes such an image (D33); the tool asks first."""
     out = []
-    if m["hand"] != info["hand_id"]:
+    if m["hand"] != info["hand_id"] and m["hand"] != HAND_EITHER:
         side = HANDS.get(m["hand"], m["hand"])
         out.append(f"the image was built for the {side} hand; this half runs a {info['hand']} build. "
                    f"Afterwards its updater and split presence report it as the {side} half")
@@ -738,6 +741,26 @@ def reopen(serial, timeout):
             time.sleep(0.5)
 
 
+def pair_images(images, board):
+    """[(path, manifest, hand)] for the other half, then this one: each image by its
+    hand, an either-hand image (hand 2) for a half with none of its own; one
+    either-hand image alone serves both."""
+    if board not in HANDS:
+        raise UpdaterError("pair: this half has no side yet; set it first (Sval 0x33, SIDE)")
+    other = [(p, m) for p, m in images if m["hand"] == board ^ 1]
+    this = [(p, m) for p, m in images if m["hand"] == board]
+    either = [(p, m) for p, m in images if m["hand"] == HAND_EITHER]
+    if len(images) == 1 and either:
+        either = either * 2
+    if not other and either:
+        other = [either.pop(0)]
+    if not this and either:
+        this = [either.pop(0)]
+    if len(other) != 1 or len(this) != 1 or either:
+        raise UpdaterError(f"pair needs one image for each half; this half is {HANDS.get(board, board)}, the images are for " + ", ".join(HAND_NAMES.get(m["hand"], str(m["hand"])) for _, m in images))
+    return [(other[0][0], other[0][1], board ^ 1), (this[0][0], this[0][1], board)]
+
+
 def pair(dev, args, paths, sessions):
     """Both halves: the other one through this one, then this one over USB; then presence must match (V)."""
     images = []
@@ -745,10 +768,8 @@ def pair(dev, args, paths, sessions):
         manifest, _ = make_update.parse_svup(Path(p).read_bytes())
         images.append((Path(p), make_update.parse_manifest(manifest)))
     board = decode_info(*dev.op(INFO))["hand_id"]
-    other = [(p, m) for p, m in images if m["hand"] == board ^ 1]
-    this = [(p, m) for p, m in images if m["hand"] == board]
-    if len(other) != 1 or len(this) != 1:
-        raise UpdaterError(f"pair needs one image for each half; this half is {HANDS.get(board, board)}, the images are for " + ", ".join(HANDS.get(m["hand"], str(m["hand"])) for _, m in images))
+    halves = pair_images(images, board)
+    other, this = [halves[0][:2]], [halves[1][:2]]
     # Both images are checked against both halves before anything is sent:
     # a refusal of the second image after the first half committed would
     # leave the halves on different releases.
@@ -766,12 +787,12 @@ def pair(dev, args, paths, sessions):
         raise UpdaterError(f"pair: the other half does not answer INFO ({status_name(st)})")
     infos = {board: decode_info(*dev.op(INFO)), board ^ 1: decode_info(st, r)}
     check_protocol(infos[board])
-    for p, m in other + this:
-        why = image_refusal(m, infos[m["hand"]], other=m["hand"] != board)
+    for p, m, h in halves:
+        why = image_refusal(m, infos[h], other=h != board)
         if why:
-            raise UpdaterError(f"pair: {p.name} would be refused by the {HANDS[m['hand']]} half ({why}); nothing was sent")
+            raise UpdaterError(f"pair: {p.name} would be refused by the {HANDS[h]} half ({why}); nothing was sent")
     # The hands match by construction; another pointing device is a warning (D33), asked once.
-    confirm_mismatches([f"{p.name}: {w}" for p, m in other + this for w in image_mismatches(m, infos[m["hand"]])], args)
+    confirm_mismatches([f"{p.name}: {w}" for p, m, h in halves for w in image_mismatches(m, infos[h])], args)
     print("pair: the chord is made twice, both times on this half (the one with USB): once for each image")
     print(f"== 1/2: the other ({HANDS[board ^ 1]}) half, {other[0][0].name} ==")
     sessions.append(Session(dev, args))
@@ -971,7 +992,7 @@ def main():
     up.add_argument("--halt", choices=sorted(HALT_POINTS, key=HALT_POINTS.get), help="test-hooks builds: stop the commit at this point for good (M1 #8-#10)")
     up.add_argument("--halt-unfed", action="store_true", help="with --halt: let the watchdog reset the board (M1 #9)")
     pr = sub.add_parser("pair", help="update both halves: the other one through this one, then this one (M2)")
-    pr.add_argument("svup", type=Path, nargs=2, help="one image for each half, in any order")
+    pr.add_argument("svup", type=Path, nargs="+", help="one image for each half, in any order, or one either-hand image for both")
     pr.add_argument("--yes", action="store_true", help="flash images built for another pointing device without asking")
     pr.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
     pr.add_argument("--rebind-every", type=float, default=50.0, help="renew the client ID and REBIND every S seconds (0: never)")

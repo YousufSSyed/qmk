@@ -201,6 +201,20 @@ bool identity_build_record_write(const void *data, uint32_t len) {
     return memcmp((const void *)(XIP_NOCACHE_NOALLOC_BASE + BUILD_RESET_SECTOR), data, len) == 0;
 }
 
+#ifdef SVAL_EITHER_HAND
+#    include "side.h"
+bool identity_side_record_write(uint32_t sector, const void *data, uint32_t len) {
+    identity_init();
+    if (!region_ok || len > sizeof(page_buf) || (sector != SVAL_SIDE_SECTOR_A && sector != SVAL_SIDE_SECTOR_B)) return false;
+    memset(page_buf, 0xFF, sizeof(page_buf));
+    memcpy(page_buf, data, len);
+    uint32_t irq = save_and_disable_interrupts();
+    identity_flash_write(sector, page_buf);
+    restore_interrupts(irq);
+    return memcmp((const void *)(XIP_NOCACHE_NOALLOC_BASE + sector), data, len) == 0;
+}
+#endif
+
 bool identity_available(void) {
     identity_init();
     return region_ok;
@@ -256,7 +270,12 @@ hardware_id_t get_hardware_id(void) {
 // The USB product string: the user's name, or the compiled PRODUCT when unset.
 const char *usb_product_string(void) {
     const char *name = identity_name();
+#ifdef SVAL_EITHER_HAND
+    // An either-hand build names each half as its per-hand build did.
+    return name[0] ? name : sval_side_product_name();
+#else
     return name[0] ? name : NULL;
+#endif
 }
 
 // ---- host protocol: VIA custom values on channel IDENTITY_CHANNEL --------------

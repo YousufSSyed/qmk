@@ -15,10 +15,16 @@ trap 'rm -rf "$out"' EXIT
 python3 -I "$tests/test_make_update.py" "$out/cross" "$@"
 python3 -I "$tests/test_release_version.py" "$out/release_version"
 python3 -I "$tests/test_release_artifacts.py" "$out/release_artifacts"
+python3 -I "$tests/test_either_hand.py"
 
 # Settings reset on the first boot of a different firmware build (kb/build_reset.c).
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
     -DBUILD_RESET_HOST_TEST -I"$kb" "$tests/test_build_reset.c" "$kb/build_reset.c" -o "$out/test_build_reset"
+
+# The side record of the either-hand builds (kb/side.c): priority, migration
+# from per-hand boards, the record across build resets, the pairing report.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all     -DSVAL_SIDE_HOST_TEST -DBUILD_RESET_HOST_TEST -I"$kb" "$tests/test_side.c" "$kb/side.c" "$kb/build_reset.c" -o "$out/test_side"
+"$out/test_side"
 "$out/test_build_reset"
 
 # Raw HID framing (tmk_core/protocol/chibios/usb_packet.h) against ChibiOS's

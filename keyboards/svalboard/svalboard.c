@@ -18,6 +18,9 @@
 #include "identity.h"
 #include "build_reset.h"
 #include "nvm_via.h"
+#ifdef SVAL_EITHER_HAND
+#    include "side.h"
+#endif
 #ifdef SVAL_AZOTEQ_MULTITOUCH
 #    include "azoteq/multitouch.h"
 #endif
@@ -258,7 +261,10 @@ void sval_storage_reset_clear_kb(void) {
 void keyboard_pre_init_kb(void) {
     identity_init();
     sval_thumb_hand_probe(); // before ws2812/rgblight and split init use GP19
-    build_reset_pre_init();  // a different firmware build: reset stored settings
+#ifdef SVAL_EITHER_HAND
+    sval_side_init(); // the side, before split_pre_init() asks and before the build reset formats the settings
+#endif
+    build_reset_pre_init(); // a different firmware build: reset stored settings
     keyboard_pre_init_user();
 }
 
@@ -508,6 +514,9 @@ static void sval_local_pointer_identity(sval_pointer_identity_t *id) {
         id->inverse_product_id = found->id1;
     }
     id->flags |= SVAL_POINTER_REPORTED | (is_keyboard_left() ? SVAL_POINTER_LEFT : 0);
+#ifdef SVAL_EITHER_HAND
+    if (!sval_side_known()) id->flags = (id->flags & ~SVAL_POINTER_LEFT) | SVAL_POINTER_SIDE_UNKNOWN;
+#endif
 }
 
 void sval_idle_status(sval_idle_status_t *st) {
@@ -576,6 +585,9 @@ static void scanlab_rpc_listener(uint8_t in_buflen, const void *in_data, uint8_t
 #endif
 #ifdef SVAL_PERF_STATS
     if (sval_perf_split_rpc(in_buflen, (const uint8_t *)in_data, out_buflen, (uint8_t *)out_data)) return;
+#endif
+#ifdef SVAL_EITHER_HAND
+    if (sval_side_rpc(in_buflen, (const uint8_t *)in_data, out_buflen, (uint8_t *)out_data)) return; // Sval 0x33 for this half
 #endif
     uint8_t req[SCANLAB_REQ_LEN] = {0};
     uint8_t rsp[SCANLAB_RSP_LEN] = {0};
@@ -708,6 +720,11 @@ report_mouse_t pointing_device_task_combined_kb(report_mouse_t left_report, repo
     if (sval_mt_suppress_hand(0)) left_report = (report_mouse_t){0};
     if (sval_mt_suppress_hand(1)) right_report = (report_mouse_t){0};
 #endif
+#ifdef SVAL_EITHER_HAND
+    // As keys (side.c): nothing from a hand whose side is not sound.
+    if (!sval_side_row_allowed(0)) left_report = (report_mouse_t){0};
+    if (!sval_side_row_allowed(MATRIX_ROWS / 2)) right_report = (report_mouse_t){0};
+#endif
     return pointing_device_task_combined_user(left_report, right_report);
 }
 
@@ -805,6 +822,9 @@ void housekeeping_task_kb(void) {
 #    endif
 #endif
     sval_pointer_probe_task();
+#ifdef SVAL_EITHER_HAND
+    sval_side_task();
+#endif
     sval_usb_wake_handler();
     scanlab_housekeeping();
 #ifdef SVAL_KEYTEST
@@ -842,6 +862,12 @@ void housekeeping_task_kb(void) {
                 } else {
                     memset(&other_pointer, 0, sizeof(other_pointer));
                 }
+#ifdef SVAL_EITHER_HAND
+                {
+                    const uint8_t f = other_pointer.flags;
+                    sval_side_other_set(true, (f & SVAL_POINTER_REPORTED) != 0, (f & SVAL_POINTER_SIDE_UNKNOWN) ? SVAL_SIDE_UNKNOWN : (f & SVAL_POINTER_LEFT) ? SVAL_SIDE_LEFT : SVAL_SIDE_RIGHT);
+                }
+#endif
 #ifdef SVAL_UPDATER
                 // The other half's update_presence_t, after the pointer block.
                 update_split_presence_result(true, rpcin.update, sizeof(rpcin.update));
@@ -859,6 +885,9 @@ void housekeeping_task_kb(void) {
             } else {
 #ifdef SVAL_UPDATER
                 update_split_presence_result(false, NULL, 0);
+#endif
+#ifdef SVAL_EITHER_HAND
+                sval_side_other_set(false, false, SVAL_SIDE_UNKNOWN);
 #endif
                 is_connected = false;
             }

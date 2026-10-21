@@ -50,7 +50,7 @@ MANIFEST_FMT = "<IHBBBBHHBBIII16s64s"
 MANIFEST_BYTES = 108
 assert struct.calcsize(MANIFEST_FMT) == MANIFEST_BYTES
 
-HAND = {"left": 0, "right": 1}
+HAND = {"left": 0, "right": 1, "either": 2}  # either: one image for both halves (SVAL_EITHER_HAND)
 POINTING = {"none": 0, "trackpoint": 1, "pmw3360": 2, "pmw3389": 3, "azoteq": 4, "auto": 5}
 KEYMAP = {"sval": 1, "blank": 2}  # the release keymaps (D22)
 FLAG_RELEASE, FLAG_DIAGNOSTIC = 0x0001, 0x0002
@@ -218,7 +218,7 @@ def kb_fields(kb):
     """hand and pointing_id from a keyboard path such as svalboard/trackball/pmw3389/right."""
     parts = kb.strip("/").split("/")
     if not parts or parts[0] != "svalboard" or parts[-1] not in HAND:
-        raise Refused(f"--kb {kb!r}: expected svalboard/.../left or svalboard/.../right")
+        raise Refused(f"--kb {kb!r}: expected svalboard/.../left, svalboard/.../right or svalboard/.../either")
     middle = parts[1:-1]
     table = {(): "auto",
              ("trackpoint",): "trackpoint",
