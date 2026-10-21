@@ -41,7 +41,7 @@ Check feature flags before using an extension, send one request at a time per co
 
 ## Pointing hardware
 
-`POINTING_HARDWARE` (`0x2C`) tells a host which side each half thinks it is, which pointing module its firmware drives, and which module actually answered. Released firmware drives whichever module is attached: one image per side, which probes for the module at startup (flags bit 3). The per-module builds (`svalboard/trackball/pmw3360`, `pmw3389`, `trackpoint`, `azoteq`) still build but are not released; on one of those the wrong module stays dead with no other sign, so a host can use this report to tell the user. On an auto build, `built_for` `0` with a module attached means the probe missed it: replugging the half probes again.
+`POINTING_HARDWARE` (`0x2C`) tells a host which side each half thinks it is, which pointing module its firmware drives, and which module actually answered. Released firmware drives whichever module is attached: one image per side, which probes for the module at startup (flags bit 3). The per-module builds (`svalboard/trackball/pmw3360`, `pmw3389`, `trackpoint`, `azoteq`) still build but are not released; on one of those the wrong module stays dead with no other sign, so a host can use this report to tell the user. On an auto build, `built_for` `0` means no module has answered yet. The half looks again during its first 30 s (below), so a module that comes up or is plugged in by then starts on its own and the report changes; one plugged in later starts after a replug.
 
 - Discovery: GET_INFO byte 19 (the second feature byte), bit 1 (`sval_flag2_pointing_hardware`). Older firmware leaves it zero.
 - Request: `DF 2C`
@@ -50,14 +50,14 @@ Check feature flags before using an extension, send one request at a time per co
   - `flags`: bit 0 the block holds a report, bit 1 the half is the left half, bit 2 the sensor driver initialized, bit 3 the firmware drives whichever module is attached (the plain `left`/`right` builds), so `built_for` is the module it chose after the probe, or `0` when none answered.
   - `built_for`: `0` no pointing module, `1` PMW3360 trackball, `2` PMW3389 trackball, `5` Azoteq trackpad, `6` TrackPoint.
   - `detected`: `0` not checked yet, `1` PMW3360 (`42 BD`), `2` PMW3389 (`47 B8`), `3` no module answered, `4` the trackball bus answered with some other ID, `5` Azoteq (IDs: product number, high byte first), `6` TrackPoint (first ID byte: its PS/2 device ID).
-  - Each build checks its own module at startup. When that module doesn't answer, or the build has none, the half checks the other modules' buses once, about 1.5 s after boot (PS/2, then I2C, then SPI), so `detected` names whatever is attached. Until then it reads `0` (no module build) or `3` (its own module missing).
+  - Each build checks its own module at startup. When that module doesn't answer, or the build has none, the half checks the other modules' buses about 1.5 s after boot (PS/2, then I2C, then SPI), so `detected` names whatever is attached. Until then it reads `0` (no module build) or `3` (its own module missing). While nothing works, the half looks again, its own module first, then the other buses: 3, 6, 12 and 30 s after boot, and never after that, so a board with no pointing module isn't probed again. It stops sooner once a module works, once a per-module build finds a module it can't drive, or once a module that answers has failed to start four times. A half whose module works is never probed. So `detected`, `built_for` and bit 2 can change during a half's first 30 s, after a host has connected (the other half's block follows within a presence ping, 0.5 s); a host that shows `3` or `0` should read again until then.
 - The other half reports through the split link's half-second presence ping, so its block is zero while it is disconnected, for up to half a second after it connects, and when it runs firmware without this command.
 
 ## Pointing fragments
 
 The keyboard definition (`sval.json`, keymaps `sval` and `blank`) describes each hand's pointing module as a zero-key fragment, so a host can draw it in the layout. Fragments `pointing_none` (4), `pointing_trackball_pmw3360` (5), `pointing_trackball_pmw3389` (6), `pointing_touchpad_azoteq` (7), `pointing_trackpoint` (8) and `pointing_unknown` (9) have `"kle": []` and a `widget` object (`kind`, `module`, `sensor`, `w`, `h` in key units). Instances `left_pointing` (10) and `right_pointing` (11) have `hardware_detect: true`; their selection bytes are not used.
 
-`FRAGMENT_GET_HARDWARE` (`0x18`) reports them from the same identity `POINTING_HARDWARE` returns, for whichever half is on that hand (the other half's only while it is connected): `detected` 1 → 5, 2 → 6, 3 → 4, 4 → 9, 5 → 7, 6 → 8. It reads `0xFF` while that hand isn't known yet: no half on that side, `detected` still `0`, or `3` before the boot probe of the other buses has run (for the other half, until 2.5 s after the USB half booted). A host can re-read `0x18` until both bytes settle.
+`FRAGMENT_GET_HARDWARE` (`0x18`) reports them from the same identity `POINTING_HARDWARE` returns, for whichever half is on that hand (the other half's only while it is connected): `detected` 1 → 5, 2 → 6, 3 → 4, 4 → 9, 5 → 7, 6 → 8. It reads `0xFF` while that hand isn't known yet: no half on that side, `detected` still `0`, or `3` before the boot probe of the other buses has run (for the other half, until 2.5 s after the USB half booted). A host can re-read `0x18` until both bytes settle. A hand that reads `4` (no module) can still change until that half has run for 30 s, if its search finds one.
 
 ## Pointing motion
 
@@ -93,5 +93,60 @@ Each hand:
 - Motion is counted only while a host app has read `POINTING_MOTION` within the last 1.5 s (`SVAL_HOST_ACTIVE_MS`). These reads don't count as host activity, so a host that keeps polling doesn't hold the board out of deep idle; a read can then take up to one deep-idle nap (20 ms) to answer.
 - A hand that is not valid (no module, the driver didn't start, or the other half is disconnected) has an all-zero block.
 - Touch positions and finger counts are not reported yet: bit 4 and bits 5-6 read `0`.
+
+### Velocity Scroll
+
+Builds with Velocity Scroll (`SV_VELOCITY_SCROLL`) add a 24-byte block at offsets 29-52, so a host can show the key held, the offset from the anchor and the speed it sets, and draw the dead zone and the curve without knowing the build's tunables. Bytes 24-28 are left for the per-reader extension, so the two never overlap.
+
+- Discovery: byte 29 reads `0x56` (`V`). Firmware without the block leaves it zero (the reply is zero-filled), and so does a client-wrapped 32-byte report, which has no room for it.
+- The block is in every reply from such a build, held or not; only the state fields are zero while the key is up.
+
+| off | size | field |
+|---|---|---|
+| 29 | 1 | `0x56`: the block is present (format 1) |
+| 30 | 1 | bit 0 Velocity Scroll is held, bit 1 a finger on a touchpad sets the offset (else the relative pointers: trackball, TrackPoint), bit 2 that touchpad is the right hand's, bit 3 the axis lock tunable is on, bits 4-5 the axis the lock picked: `1` vertical, `2` horizontal, `0` none yet |
+| 31 | 2 | offset x, int16 little-endian, 0.01 mm (+right) |
+| 33 | 2 | offset y, int16, 0.01 mm (+toward the user) |
+| 35 | 2 | speed h, int16, 0.01 notch/s (+right) |
+| 37 | 2 | speed v, int16, 0.01 notch/s (+up), before natural scroll |
+| 39 | 2 | maximum speed, uint16, 0.01 notch/s |
+| 41 | 2 | trackball dead zone, uint16, 0.01 mm per axis |
+| 43 | 2 | trackball gain, uint16, 0.01 notch/s at 10 mm past the dead zone |
+| 45 | 2 | trackball exponent, uint16, 0.001 |
+| 47 | 2 | touchpad dead zone, uint16, 0.01 mm |
+| 49 | 2 | touchpad gain, uint16, 0.01 notch/s |
+| 51 | 2 | touchpad exponent, uint16, 0.001 |
+
+- The offset is the one that sets the speed now. While bit 1 is set, it is a touchpad finger's position minus its anchor: where the finger was at the first sample after key-down, or where it touched down if it landed later. Otherwise it is the trackball's counts since key-down, in mm of ball surface, clamped per axis where the speed reaches its maximum.
+- Per axis, speed = gain × ((|offset| − dead zone) / 10 mm) ^ exponent, capped at the maximum, zero inside the dead zone, with the offset's sign. The speeds are the ones the board last sent at (every 8 ms), after the axis lock.
+- A notch is one wheel click; the board sends high-resolution units (120 a notch) where the computer takes them.
+
+## Pointing contacts
+
+`POINTING_CONTACTS` (`0x2F`) returns every touch contact down now, each on its own pad, for a live picture of the touchpads. With the native touchpad the computer owns the pads and `POINTING_MOTION` carries no touch positions, so this is how a host app draws the fingers. It is a snapshot: reading clears nothing, so any number of apps can poll it.
+
+- Discovery: GET_INFO byte 19, bit 5 (`sval_flag2_pointing_contacts`, `0x20`). Firmware without the native touchpad leaves it zero.
+- Request: `DF 2F`
+- Response: `DF 2F` then 28 bytes (offsets from the first of them). `format` `0` means no data (the half without USB, or no native touchpad). Firmware before 6 contacts sent 24 bytes and at most 5; read `n` contacts, not a fixed count.
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | format = `1` |
+| 1 | 1 | bit 0 the touchpad is reporting to the computer (Input Mode 3 and the surface switch on), bit 1 the left pad is part of it, bit 2 the right pad is |
+| 2 | 1 | ms since the report these contacts come from, up to 255 |
+| 3 | 1 | contacts `n`, 0 to 6 |
+| 4 | 4 × n | the contacts, then zeros |
+
+Each contact:
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | bits 0-3 contact ID (the touchpad's own, stable while the finger is down), bit 4 tip (down), bit 5 confidence (clear: a palm), bit 6 right pad, bit 7 the computer doesn't have this contact (see below) |
+| 1 | 3 | `x \| y << 12`, 24-bit little-endian: `x` 0-2047 across that pad, `y` 0-1791 down it |
+
+- The contacts are the last input report the computer took from the touchpad, so they are exactly what the operating system has. A contact with tip clear is lifting: that report is its last.
+- The touchpad reports at most 5 contacts, the most a Windows Precision Touchpad allows. A finger that lands while 5 are down is left out of the touchpad for as long as it stays down. `POINTING_CONTACTS` still lists such fingers after the reported ones, at their live position, with bit 7 set, up to 6 contacts in all, so three fingers on each pad all show. Contacts with bit 7 have IDs of their own (also stable while the finger is down), so the touchpad's IDs are unchanged: bit 7 and the ID together identify a contact.
+- Coordinates are per pad, in the touchpad's own orientation (the one the operating system sees), not the merged surface: the right pad does not carry the 2048 + gap offset.
+- While the touchpad isn't reporting, or its last report is older than 150 ms (the computer stopped reading), `n` is `0`.
 
 Packet formats: [client-ID protocol](../../../modules/svalboard/core/docs/CLIENT_ID_PROTOCOL.md), [layer state](../../../modules/svalboard/core/docs/LAYER_STATE_PROTOCOL.md), [command definitions](../../../modules/svalboard/core/sval.h).

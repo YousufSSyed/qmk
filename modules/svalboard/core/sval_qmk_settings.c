@@ -95,6 +95,9 @@ enum sval_qsid {
 // leader_options bit positions
 #define LEADER_PER_KEY_TIMING_BIT 0
 
+// auto_shift bit positions (QSID 3)
+#define AUTO_SHIFT_ENABLE_BIT 0
+
 // Setting descriptor
 typedef struct {
     uint16_t qsid;
@@ -107,8 +110,10 @@ typedef struct {
 static const sval_setting_desc_t setting_descs[] = {
     {QSID_GRAVE_ESC_OVERRIDE, 1, offsetof(sval_qmk_settings_t, grave_esc_override), 0},
     {QSID_COMBO_TERM, 2, offsetof(sval_qmk_settings_t, combo_term), 0},
+#ifdef AUTO_SHIFT_ENABLE
     {QSID_AUTO_SHIFT, 1, offsetof(sval_qmk_settings_t, auto_shift), 0},
     {QSID_AUTO_SHIFT_TIMEOUT, 2, offsetof(sval_qmk_settings_t, auto_shift_timeout), 0},
+#endif
     {QSID_OSK_TAP_TOGGLE, 1, offsetof(sval_qmk_settings_t, osk_tap_toggle), 0},
     {QSID_OSK_TIMEOUT, 2, offsetof(sval_qmk_settings_t, osk_timeout), 0},
     {QSID_TAPPING_TERM, 2, offsetof(sval_qmk_settings_t, tapping_term), 0},
@@ -172,6 +177,11 @@ static void sval_qmk_settings_save(void) {
 static void sval_qmk_settings_apply(void) {
 #ifdef AUTO_SHIFT_ENABLE
     set_autoshift_timeout(settings.auto_shift_timeout);
+    if (settings.auto_shift & (1 << AUTO_SHIFT_ENABLE_BIT)) {
+        autoshift_enable();
+    } else if (get_autoshift_state()) {
+        autoshift_disable();
+    }
 #endif
 
 #ifdef MOUSEKEY_ENABLE
@@ -552,4 +562,10 @@ void sval_qmk_settings_set_one_shot(uint16_t timeout, uint8_t tap_toggle) {
 // Bits as Keybard writes them: 0 Alt, 1 Control, 2 GUI, 3 Shift.
 uint8_t sval_grave_esc_override(void) {
     return settings.grave_esc_override;
+}
+
+// Bits as Keybard writes them: 0 enable, 1 modifiers, 2 no-special,
+// 3 no-numeric, 4 no-alpha, 5 repeat, 6 no-auto-repeat.
+uint8_t sval_auto_shift(void) {
+    return settings.auto_shift;
 }

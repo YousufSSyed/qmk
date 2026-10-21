@@ -22,7 +22,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "axis_scale.h"
 #include "caps_word.h"
 #include "pointing_motion.h"
+#include "velocity_scroll.h"
 #include <string.h>
+#ifdef SVAL_NATIVE_PTP
+#    include "../azoteq/ptp.h"
+#    include "../azoteq/ptp_descriptor.h"
+#endif
 
 // in keymap.c:
 #ifdef POINTING_DEVICE_AUTO_MOUSE_ENABLE
@@ -49,7 +54,8 @@ void mouse_mode(bool);
 #define SCROLL_MULTIPLIER 1
 bool mouse_mode_enabled = false;
 
-// Automouse threshold accumulator (normalized to 800 DPI)
+// Automouse threshold accumulator (normalized to 800 DPI, fixed point: AUTOMOUSE_FP_SCALE units per count)
+#define AUTOMOUSE_FP_SCALE 16
 static int32_t automouse_accumulator = 0;
 static uint16_t automouse_accumulator_timer = 0;
 
@@ -238,9 +244,124 @@ void update_boost_multiplier(void) {
     set_mult_axis(&boost_v, (uint8_t)mult);
 }
 
+#ifdef SVAL_NATIVE_PTP
+// Native touchpad contact motion feeds the same accumulator as mouse motion,
+// with the same per-hand gates, threshold and decay, normalized to the
+// mouse's 800 DPI. A pad is SVAL_PTP_PAD_X counts over 43 mm.
+#    define SVAL_PTP_COUNTS_PER_INCH ((SVAL_PTP_PAD_X * 254 + 215) / 430)
+#    define SVAL_PTP_AUTOMOUSE_DPI 800
+static void sval_ptp_automouse(void) {
+    int32_t left  = sval_ptp_take_motion(0);
+    int32_t right = sval_ptp_take_motion(1);
+    if (!global_saved_values.left_automouse) left = 0;
+    if (!global_saved_values.right_automouse) right = 0;
+    int32_t movement = ((left > right ? left : right) * SVAL_PTP_AUTOMOUSE_DPI) / SVAL_PTP_COUNTS_PER_INCH;
+    if (movement <= 0) return;
+    uint16_t decay_ms = global_saved_values.automouse_decay * 10;
+    if (decay_ms > 0 && timer_elapsed(automouse_accumulator_timer) > decay_ms) automouse_accumulator = 0;
+    automouse_accumulator_timer = timer_read();
+    automouse_accumulator += movement;
+    if (global_saved_values.automouse_threshold == 0 || automouse_accumulator >= global_saved_values.automouse_threshold) mouse_mode(true);
+}
+#endif
+
+// ------------------------------------------------------------ Velocity Scroll
+// Hold SV_VELOCITY_SCROLL: the pointer's offset from where it was at key-down
+// sets a scroll speed (velocity_scroll.h has the design and the tunables).
+// Precedence while held: it owns every pointer. The cursor is frozen, Drag
+// Scroll and the per-pointer scroll modes are set aside, and sniper and boost
+// do not scale it (its speed comes from distance, not from counts). Its motion
+// never counts toward the auto-mouse threshold, and the auto-mouse layer
+// never times out while it is held. Natural scroll applies as everywhere.
+static const sval_vs_curve_t vs_ball = {SVAL_VS_BALL_DEAD_MM, SVAL_VS_BALL_GAIN, SVAL_VS_BALL_EXPONENT, SVAL_VS_MAX_NPS};
+static const sval_vs_curve_t vs_pad  = {SVAL_VS_PAD_DEAD_MM, SVAL_VS_PAD_GAIN, SVAL_VS_PAD_EXPONENT, SVAL_VS_MAX_NPS};
+static sval_vs_t             vs;
+static uint8_t               vs_keys; // velocity scroll keys down
+static bool                  vs_dev;  // velocity_scroll_dev_hold (dev builds)
+static uint32_t              vs_sent_at;
+#    ifdef SVAL_TOUCH_DEV
+static uint32_t vs_dev_at;
+#    endif
+
+bool velocity_scroll_active(void) {
+    return vs.active;
+}
+
+static void velocity_scroll_update(void) {
+    bool on = vs_keys || vs_dev;
+    if (on == vs.active) return;
+    if (on) {
+        sval_vs_start(&vs);
+        vs_sent_at = timer_read32();
+        // Drag Scroll's pending remainder belongs to the motion before.
+        scroll_timer_running = false;
+        scroll_accumulator_h = scroll_accumulator_v = 0;
+        m_scroll_accumulator_h = m_scroll_accumulator_v = 0;
+    } else {
+        sval_vs_stop(&vs);
+    }
+#    ifdef SVAL_NATIVE_PTP
+    sval_ptp_set_grab(on);
+#    endif
+}
+
+#    ifdef SVAL_TOUCH_DEV
+void velocity_scroll_dev_hold(bool on) {
+    vs_dev    = on;
+    vs_dev_at = timer_read32();
+    velocity_scroll_update();
+}
+#    endif
+
+static report_mouse_t velocity_scroll_report(report_mouse_t left, report_mouse_t right) {
+#    ifdef SVAL_TOUCH_DEV
+    if (vs_dev && timer_elapsed32(vs_dev_at) > 500) velocity_scroll_dev_hold(false);
+#    endif
+    const report_mouse_t *hands[2] = {&left, &right};
+    int16_t               dpi[2]   = {get_left_dpi(), get_right_dpi()};
+    float                 clamp    = SVAL_VS_BALL_CLAMP_MARGIN_MM < 0 ? -1.0f : sval_vs_full_mm(&vs_ball) + SVAL_VS_BALL_CLAMP_MARGIN_MM;
+#    ifdef SVAL_NATIVE_PTP
+    uint8_t pads = sval_pad_hands();
+#    endif
+    for (uint8_t hand = 0; hand < 2; hand++) {
+#    ifdef SVAL_NATIVE_PTP
+        // A pad whose contacts reach the firmware: its finger's absolute position.
+        if ((pads & (1u << hand)) && sval_ptp_grab_ready(hand)) {
+            uint16_t x = 0, y = 0, touch = sval_ptp_grab_finger(hand, &x, &y);
+            sval_vs_pad(&vs, hand, touch, x * (SVAL_VS_PAD_MM_X / SVAL_PTP_PAD_X), y * (SVAL_VS_PAD_MM_Y / SVAL_PTP_PAD_Y));
+            continue;
+        }
+#    endif
+        // Anything else is relative: its counts since key-down, in mm.
+        if (dpi[hand] > 0 && (hands[hand]->x || hands[hand]->y)) {
+            float mm_per_count = 25.4f / dpi[hand];
+            sval_vs_add_relative(&vs, hands[hand]->x * mm_per_count, hands[hand]->y * mm_per_count, clamp);
+        }
+    }
+
+    report_mouse_t out = {0};
+    out.buttons        = left.buttons | right.buttons;
+    uint32_t elapsed   = timer_elapsed32(vs_sent_at);
+    if (elapsed >= SVAL_VS_PERIOD_MS) {
+        vs_sent_at = timer_read32();
+#    ifdef POINTING_DEVICE_HIRES_SCROLL_ENABLE
+        float units = (float)POINTING_DEVICE_HIRES_SCROLL_MULTIPLIER / (is_mac ? MAC_DIVISOR : 1);
+#    else
+        float units = 1.0f;
+#    endif
+        int16_t h, v;
+        sval_vs_step(&vs, &vs_ball, &vs_pad, SVAL_VS_AXIS_LOCK, (float)elapsed, units, &h, &v);
+        out.h = h;
+        out.v = v;
+    }
+    if (global_saved_values.natural_scroll) out.v = -out.v;
+    return pointing_device_task_user(out);
+}
 
 report_mouse_t pointing_device_task_combined_user(report_mouse_t reportMouse1, report_mouse_t reportMouse2) {
     report_mouse_t ret_mouse;
+
+    if (vs.active) return velocity_scroll_report(reportMouse1, reportMouse2);
 
     if (any_sniper_active()) {
         reportMouse1.x = add_to_axis(&sniper_x, reportMouse1.x);
@@ -267,6 +388,10 @@ report_mouse_t pointing_device_task_combined_user(report_mouse_t reportMouse1, r
         reportMouse2.v = add_to_axis(&boost_v, reportMouse2.v);
     }
 
+#ifdef SVAL_NATIVE_PTP
+    sval_ptp_automouse();
+#endif
+
     if (reportMouse1.x == 0 && reportMouse1.y == 0 && reportMouse2.x == 0 && reportMouse2.y == 0)
         return pointing_device_combine_reports(reportMouse1, reportMouse2);
 
@@ -283,10 +408,12 @@ report_mouse_t pointing_device_task_combined_user(report_mouse_t reportMouse1, r
     // Per-pointer gate: a side with auto mouse disabled never activates (or refreshes) the layer.
     if (!global_saved_values.left_automouse) left_movement = 0;
     if (!global_saved_values.right_automouse) right_movement = 0;
-    int32_t left_normalized = (left_movement > 0) ? (left_movement * 800) / get_left_dpi() : 0;
-    int32_t right_normalized = (right_movement > 0) ? (right_movement * 800) / get_right_dpi() : 0;
+    // Normalize in fixed point so sub-reference-unit motion (common at DPI > 800) isn't truncated to 0.
+    int32_t left_normalized = (left_movement > 0) ? (left_movement * 800 * AUTOMOUSE_FP_SCALE) / get_left_dpi() : 0;
+    int32_t right_normalized = (right_movement > 0) ? (right_movement * 800 * AUTOMOUSE_FP_SCALE) / get_right_dpi() : 0;
     int32_t normalized_movement = (left_normalized > right_normalized) ? left_normalized : right_normalized;
-    if (normalized_movement > 0) {
+    // Gate on raw movement: normalized_movement can still be 0 for tiny reports at very high DPI.
+    if (left_movement > 0 || right_movement > 0) {
         uint16_t decay_ms = global_saved_values.automouse_decay * 10;
         if (decay_ms > 0 && timer_elapsed(automouse_accumulator_timer) > decay_ms) {
             automouse_accumulator = 0;
@@ -295,7 +422,7 @@ report_mouse_t pointing_device_task_combined_user(report_mouse_t reportMouse1, r
         automouse_accumulator += normalized_movement;
 
         if (global_saved_values.automouse_threshold == 0 ||
-            automouse_accumulator >= global_saved_values.automouse_threshold) {
+            automouse_accumulator >= (int32_t)global_saved_values.automouse_threshold * AUTOMOUSE_FP_SCALE) {
             mouse_mode(true);
         }
     }
@@ -378,6 +505,24 @@ void sval_pointing_modes(sval_pointing_modes_t *m) {
     m->right_scroll    = (global_saved_values.right_scroll != scroll_hold) != scroll_toggle;
     m->left_automouse  = global_saved_values.left_automouse;
     m->right_automouse = global_saved_values.right_automouse;
+    // Velocity Scroll: its state, and the curves so a host can draw them.
+    m->has_vs = true;
+    if (vs.active) {
+        m->vs.flags = SVAL_MOTION_VS_HELD;
+        if (sval_vs_touching(&vs)) m->vs.flags |= SVAL_MOTION_VS_TOUCHING | (vs.pad == 1 ? SVAL_MOTION_VS_RIGHT_PAD : 0);
+        m->vs.flags |= (uint8_t)((vs.lock & 3) << SVAL_MOTION_VS_LOCK_SHIFT);
+        sval_vs_offset(&vs, &m->vs.off_x, &m->vs.off_y);
+        m->vs.speed_h = vs.speed_h;
+        m->vs.speed_v = vs.speed_v;
+    }
+    if (SVAL_VS_AXIS_LOCK) m->vs.flags |= SVAL_MOTION_VS_AXIS_LOCK;
+    m->vs.max_nps   = SVAL_VS_MAX_NPS;
+    m->vs.ball_dead = vs_ball.dead_mm;
+    m->vs.ball_gain = vs_ball.gain;
+    m->vs.ball_exp  = vs_ball.exponent;
+    m->vs.pad_dead  = vs_pad.dead_mm;
+    m->vs.pad_gain  = vs_pad.gain;
+    m->vs.pad_exp   = vs_pad.exponent;
 }
 
 void toggle_axis_scroll_lock(void) {
@@ -466,12 +611,14 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
         // Sniper toggles are instant actions, not held keys — they should not
         // affect mouse_keys_pressed or reset the timer. Only mouse movement
         // should keep the mouse layer active when a sniper toggle is used.
+        // Velocity Scroll never ends the mouse layer either, from any layer;
+        // the layer does not time out while it is held (matrix_scan_kb).
 #define MOUSE_PASSTHROUGH_KEYCODE (keycode == SV_SNIPER_2_TG || \
                         keycode == SV_SNIPER_3_TG || \
                         keycode == SV_SNIPER_5_TG || \
                         keycode == SV_BOOST_2_TG || \
                         keycode == SV_BOOST_3_TG || \
-                        keycode == SV_BOOST_5_TG)
+                        keycode == SV_BOOST_5_TG ||                         keycode == SV_VELOCITY_SCROLL)
 
         uint16_t layer_keycode = keymap_key_to_keycode(MH_AUTO_BUTTONS_LAYER, record->event.key);
         if (MOUSE_PASSTHROUGH_KEYCODE) {
@@ -500,6 +647,13 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
             }
         }
     }
+
+#if defined(SVAL_NATIVE_PTP) && SVAL_PTP_KEY_BUTTONS
+    // Build option: while the native touchpad reports and the host takes its
+    // buttons, MS_BTN1/2 are its buttons and never reach the mouse report. A
+    // release follows its press.
+    if (keycode >= MS_BTN1 && keycode <= MS_BTN3 && sval_ptp_key_button(keycode - MS_BTN1, record->event.pressed)) return false;
+#endif
 
     if (record->event.pressed) { // key pressed
         switch (keycode) {
@@ -571,6 +725,10 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
                 return false;
             case SV_SCROLL_HOLD:
                 scroll_hold = true;
+                return false;
+            case SV_VELOCITY_SCROLL:
+                if (vs_keys < 255) vs_keys++;
+                velocity_scroll_update();
                 return false;
             case SV_SCROLL_TOGGLE:
                 return false;
@@ -666,6 +824,10 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
             case SV_SCROLL_HOLD:
                 scroll_hold = false;
                 return false;
+            case SV_VELOCITY_SCROLL:
+                if (vs_keys > 0) vs_keys--;
+                velocity_scroll_update();
+                return false;
             case SV_SCROLL_TOGGLE:
                 scroll_toggle ^= true;
                 return false;
@@ -683,7 +845,7 @@ void ps2_mouse_moved_user(report_mouse_t *mouse_report) {
 #endif
 
 void matrix_scan_kb(void) {
-    if ((mh_timer_choices[global_saved_values.mh_timer_index] >= 0) && mouse_mode_enabled && (timer_elapsed(mh_auto_buttons_timer) > mh_timer_choices[global_saved_values.mh_timer_index]) && mouse_keys_pressed == 0) {
+    if ((mh_timer_choices[global_saved_values.mh_timer_index] >= 0) && mouse_mode_enabled && (timer_elapsed(mh_auto_buttons_timer) > mh_timer_choices[global_saved_values.mh_timer_index]) && mouse_keys_pressed == 0 && !velocity_scroll_active()) {
         if (!tp_buttons) {
             mouse_mode(false);
 #if defined CONSOLE_ENABLE

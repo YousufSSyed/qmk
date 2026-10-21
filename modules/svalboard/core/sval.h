@@ -91,6 +91,7 @@ enum sval_command_id {
     sval_cmd_default_layer_set    = 0x2B, // advertised by sval_flag2_default_layer_set
     sval_cmd_pointing_hardware    = 0x2C, // advertised by sval_flag2_pointing_hardware
     sval_cmd_pointing_motion      = 0x2D, // advertised by sval_flag2_pointing_motion
+    sval_cmd_pointing_contacts    = 0x2F, // advertised by sval_flag2_pointing_contacts
     sval_cmd_error                = 0xFF,
 };
 
@@ -112,6 +113,8 @@ enum sval_feature_flags2 {
     sval_flag2_pointing_hardware = (1 << 1), // 0x2C reports each half's side and pointing sensor
     sval_flag2_modifier_state    = (1 << 2), // 0x16 appends the board's modifiers, Caps Word and Caps Lock
     sval_flag2_pointing_motion   = (1 << 3), // 0x2D reports pointing motion since the last read
+    // Bit 4 is allocated by the per-reader motion branch (0x2D reader ids).
+    sval_flag2_pointing_contacts = (1 << 5), // 0x2F reports each touch contact on its pad
 };
 
 // Status byte after the modifiers in the 0x16 reply (sval_flag2_modifier_state).
@@ -164,6 +167,11 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(sval_tap_dance_entry_t) == 10, "sval_tap_dance_entry_t must be 10 bytes");
 // Check if tap dance entry is enabled (bit 15 of custom_tapping_term)
 #define TD_ENABLED(entry) ((entry).custom_tapping_term & 0x8000)
+
+// Term stored in every tap dance slot on reset, in ms. A term of 0 breaks a tap dance.
+#ifndef SVAL_TAP_DANCE_DEFAULT_TERM
+#    define SVAL_TAP_DANCE_DEFAULT_TERM 200
+#endif
 
 // Combo entry structure (12 bytes)
 // Enabled when custom_combo_term bit 15 = 1
@@ -368,6 +376,11 @@ void sval_pointing_hardware_kb(uint8_t *out, uint8_t length);
 // the motion since the previous read, then clears it. Weak no-op in the module;
 // out[0] = 0 means no data.
 void sval_pointing_motion_kb(uint8_t *out, uint8_t length);
+
+// POINTING_CONTACTS (0x2F): the keyboard fills out[0..length-1] (already zeroed)
+// with the touch contacts down now. Weak no-op in the module; out[0] = 0 means
+// no data.
+void sval_pointing_contacts_kb(uint8_t *out, uint8_t length);
 
 void sval_keycode_down(uint16_t keycode);
 void sval_keycode_up(uint16_t keycode);

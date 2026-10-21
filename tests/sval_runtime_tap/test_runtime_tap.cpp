@@ -8,7 +8,7 @@ using testing::_;
 using testing::InSequence;
 
 static uint16_t     code_delay, caps_delay;
-static uint8_t      toggle_count, overrides;
+static uint8_t      toggle_count, overrides, auto_shift_bits;
 extern "C" uint16_t sval_tap_code_delay(void) {
     return code_delay;
 }
@@ -21,6 +21,9 @@ extern "C" uint8_t sval_tapping_toggle(void) {
 extern "C" uint8_t sval_grave_esc_override(void) {
     return overrides;
 }
+extern "C" uint8_t sval_auto_shift(void) {
+    return auto_shift_bits;
+}
 extern "C" uint8_t sval_oneshot_tap_toggle(void) {
     return 0;
 }
@@ -31,10 +34,11 @@ extern "C" uint8_t sval_context_layer(void) {
 class RuntimeTap : public TestFixture {
    public:
     void SetUp() override {
-        code_delay   = 0;
-        caps_delay   = 80;
-        toggle_count = 5;
-        overrides    = 0;
+        code_delay      = 0;
+        caps_delay      = 80;
+        toggle_count    = 5;
+        overrides       = 0;
+        auto_shift_bits = 0;
     }
     void expect_timed_tap(TestDriver &driver, uint8_t code, uint16_t delay, const std::function<void()> &act) {
         InSequence order;
