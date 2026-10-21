@@ -156,7 +156,6 @@ class FakeBoard(su.Device):
 class Proto3Board(FakeBoard):
     """The same state machine, reporting updater protocol 3 in this half's INFO: the
     tool must then take protocol 3's path (one chord per half, no PAIR_MANIFEST)."""
-
     def op(self, op, args=b"", hand=su.HAND_SELF, client=None):
         st, r = super().op(op, args, hand, client)
         if op == su.INFO and hand in (su.HAND_SELF, 1) and r[0] != 0xFF and not (args and args[0] == 1):
@@ -183,7 +182,6 @@ def args_with(**kw):
 
 class Answers:
     """Stands in for the y/N question: each call takes the next answer (EOFError for None)."""
-
     def __init__(self, *answers):
         self.answers = list(answers)
         self.asked = 0
@@ -237,8 +235,7 @@ def main():
     su.ask = no_question  # a matching image is never asked about
 
     img = image(0x5100)
-    manifest = mu.build_manifest(img, hand=1, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2,
-                                 fw_version=7, version="tool-test")
+    manifest = mu.build_manifest(img, hand=1, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2, fw_version=7, version="tool-test")
     svup = out / "tool_test.svup"
     svup.write_bytes(manifest + img)
     # A .svup is the manifest, then the image; the tool reads it as (manifest, image).
@@ -308,9 +305,10 @@ def main():
     check(text.count("  PASS  ") == 26 and "FAIL" not in text, f"reject: {text.count('  PASS  ')} passed\n{text}")
     check(board.chords >= 2, f"reject: chord made {board.chords} times")
     check(lib.host_state() == 0 and lib.host_commit_runs() == 0, "reject: IDLE afterwards, nothing committed")
-    for what in ("unwrapped ARM: INVALID", "BEGIN before the chord: NOT_CONFIRMED", "CHUNK ahead of the next offset: OUT_OF_ORDER",
-                 "END too early: OUT_OF_ORDER", "REBIND with the wrong nonce: OTHER_CLIENT", "COMMIT with the wrong CRC: BAD_HASH",
-                 "ABORT from a second client: OTHER_CLIENT", "CHUNK past the end (overrun): OVERRUN, state ERROR"):
+    for what in (
+        "unwrapped ARM: INVALID", "BEGIN before the chord: NOT_CONFIRMED", "CHUNK ahead of the next offset: OUT_OF_ORDER", "END too early: OUT_OF_ORDER", "REBIND with the wrong nonce: OTHER_CLIENT", "COMMIT with the wrong CRC: BAD_HASH",
+        "ABORT from a second client: OTHER_CLIENT", "CHUNK past the end (overrun): OVERRUN, state ERROR"
+    ):
         check(what in text, f"reject: no '{what}'")
     # reject's own check: the right status in the wrong state is a failure
     lib.host_lib_reset(0)
@@ -343,9 +341,7 @@ def main():
     check(su.check_protocol(info) == (52, 50), "piece sizes from INFO")
     # a board on another protocol, or with piece sizes that do not fit, is refused before any session op
     check(su.check_protocol({**info, "protocol": 3}) == (52, 50), "protocol 3 boards still taken")
-    for change, want in ((dict(protocol=2), "protocol 2"), (dict(protocol=5), "protocol 5"),
-                         (dict(chunk_max=51), "do not fit"), (dict(chunk_max=0), "do not fit"),
-                         (dict(manifest_max=53), "do not fit"), (dict(report_bytes=32), "32-byte")):
+    for change, want in ((dict(protocol=2), "protocol 2"), (dict(protocol=5), "protocol 5"), (dict(chunk_max=51), "do not fit"), (dict(chunk_max=0), "do not fit"), (dict(manifest_max=53), "do not fit"), (dict(report_bytes=32), "32-byte")):
         try:
             su.check_protocol({**info, **change})
             check(False, f"check_protocol took {change}")
@@ -357,6 +353,7 @@ def main():
         def op(self, op, args=b"", hand=su.HAND_SELF, client=None):
             st, r = super().op(op, args, hand, client)
             return (st, bytes([r[0], 2]) + r[2:]) if op == su.INFO else (st, r)
+
     lib.host_lib_reset(0)
     try:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -395,12 +392,10 @@ def main():
     check(lib.host_state() == 0, "no session without the other half")
 
     # ---- M2: the other half, through this one ----
-    left_m = mu.build_manifest(img, hand=0, pointing_id=1, keymap_id=1, flags=0, epoch=0, storage_format=2,
-                               fw_version=9, version="left-9")
+    left_m = mu.build_manifest(img, hand=0, pointing_id=1, keymap_id=1, flags=0, epoch=0, storage_format=2, fw_version=9, version="left-9")
     left = out / "left9.svup"
     left.write_bytes(left_m + img)
-    right_m = mu.build_manifest(img, hand=1, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2,
-                                fw_version=9, version="right-9")
+    right_m = mu.build_manifest(img, hand=1, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2, fw_version=9, version="right-9")
     right = out / "right9.svup"
     right.write_bytes(right_m + img)
     crc = mu.crc32_mpeg2(img[0x100:])
@@ -418,8 +413,7 @@ def main():
     check(lib.host_slave_fw() == 9 and lib.host_master_fw() == 2001, f"fw {lib.host_slave_fw()} / {lib.host_master_fw()}")
     check(lib.host_commit_runs() == 0 and lib.host_master_reboots() == 0, "this half did not commit")
     check(lib.host_state() == 0 and not lib.host_link_paused(), "IDLE, link running afterwards")
-    for what in ("for the other (left) half", "relaying to the other half", "relayed:", "the other half took COMMIT",
-                 "the other half answers again: fw 9, presence version differs", "halves now run different releases"):
+    for what in ("for the other (left) half", "relaying to the other half", "relayed:", "the other half took COMMIT", "the other half answers again: fw 9, presence version differs", "halves now run different releases"):
         check(what in text, f"other half: no '{what}' in\n{text}")
     check("the left half without USB" in text and "on the right half, the one with USB" in text, f"chord text\n{text}")
     rl = su.decode_relay(*board.op(su.RELAY, hand=0))
@@ -440,8 +434,7 @@ def main():
 
     # Gentle (D33): another pointing device for the other half is a warning and a
     # question, never a refusal. No, or no answer (EOF): nothing is sent.
-    wrong_m = mu.build_manifest(img, hand=0, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2,
-                                fw_version=9, version="left-3389")
+    wrong_m = mu.build_manifest(img, hand=0, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2, fw_version=9, version="left-3389")
     wrong = out / "left3389.svup"
     wrong.write_bytes(wrong_m + img)
     for answers in (("n",), ("",), (None,)):
@@ -471,8 +464,7 @@ def main():
 
     # an image for the other hand, sent to the half with USB (--half usb, an MCU moved
     # between hands): warned, asked, then committed; the auto image is a pointing mismatch too
-    auto_left_m = mu.build_manifest(img, hand=0, pointing_id=5, keymap_id=1, flags=0, epoch=0, storage_format=2,
-                                    fw_version=9, version="left-auto")
+    auto_left_m = mu.build_manifest(img, hand=0, pointing_id=5, keymap_id=1, flags=0, epoch=0, storage_format=2, fw_version=9, version="left-auto")
     auto_left = out / "left_auto.svup"
     auto_left.write_bytes(auto_left_m + img)
     lib.host_lib_reset(1)
@@ -507,13 +499,11 @@ def main():
     # P4-25: protocol 4, one chord for both halves (D41)
     check("the chord is made once" in text and text.index("the chord is made once") < text.index("1/2"), f"pair:\n{text}")
     check(board.chords == 1, f"pair, protocol 4: the chord made {board.chords} times")
-    check(sessions[0].arm_flags == su.ARM_PAIR_FLAG and sessions[1].arm_flags == su.ARM_PRE_APPROVED | su.ARM_BY_PAIR,
-          f"pair, protocol 4: ARM flags {sessions[0].arm_flags:#x}, {sessions[1].arm_flags:#x}")
+    check(sessions[0].arm_flags == su.ARM_PAIR_FLAG and sessions[1].arm_flags == su.ARM_PRE_APPROVED | su.ARM_BY_PAIR, f"pair, protocol 4: ARM flags {sessions[0].arm_flags:#x}, {sessions[1].arm_flags:#x}")
     pm = [r for op, r in board.ops if op == su.PAIR_MANIFEST]
     check(b"".join(r[2:2 + r[1]] for r in pm) == right_m and [r[1] for r in pm] == [52, 52, 4], "pair: PAIR_MANIFEST carries this half's manifest")
     hashes = [ln.split()[2] for ln in text.splitlines() if "MANIFEST HASH" in ln]
-    check(hashes[:2] == [__import__("hashlib").sha512(left_m).hexdigest()[:8], __import__("hashlib").sha512(right_m).hexdigest()[:8]],
-          f"pair: both codes shown at the one chord {hashes}")
+    check(hashes[:2] == [__import__("hashlib").sha512(left_m).hexdigest()[:8], __import__("hashlib").sha512(right_m).hexdigest()[:8]], f"pair: both codes shown at the one chord {hashes}")
     check("pre-approved by the pair update" in text and "approved by the pair (ARM flags 0x3)" in text, f"pair:\n{text}")
     check(text.count("chord recognized") == 1, f"pair: one chord\n{text}")
     check(len(sessions) == 2, "pair: two sessions")
@@ -539,6 +529,7 @@ def main():
         rc = su.pair(board, args_with(rebind_every=1e-9), [right, left], [])
     text = log.getvalue()
     check(rc == 0 and board.chords == 1 and "the approval moved with REBIND" in text, f"pair with renewals: exit {rc}, {board.chords} chords\n{text[-2000:]}")
+
     # F9: the approval gone between the halves: the tool stops, never asks for a second chord
 
     class ClearsApproval(FakeBoard):
@@ -549,6 +540,7 @@ def main():
                 self.cleared = True
                 super().op(su.ABORT, bytes(4), hand=1)  # in IDLE: clears the held approval
             return super().op(op, args, hand, client)
+
     for how in ("abort", "timeout"):
         lib.host_lib_reset(1)
         lib.host_lib_split(1)
@@ -560,24 +552,22 @@ def main():
                 if kw.get("by_pair"):
                     lib.host_passes(181000)  # past the held approval's window
                 return real_run(self, path, *a, **kw)
+
             su.Session.run = slow_run
         try:
             with contextlib.redirect_stdout(io.StringIO()) as log:
                 su.pair(board, Args(), [right, left], [])
             check(False, f"pair went on without the approval ({how})")
         except su.UpdaterError as exc:
-            check(("approval for this half is gone" in str(exc) or "not pre-approved" in str(exc)) and "one chord" in str(exc),
-                  f"pair, approval {how}: {exc}")
+            check(("approval for this half is gone" in str(exc) or "not pre-approved" in str(exc)) and "one chord" in str(exc), f"pair, approval {how}: {exc}")
         finally:
             if how == "timeout":
                 su.Session.run = real_run
-        check(board.chords == 1 and lib.host_commit_runs() == 0 and lib.host_slave_commits() == 1,
-              f"pair, approval {how}: {board.chords} chords, this half not installed\n{log.getvalue()}")
+        check(board.chords == 1 and lib.host_commit_runs() == 0 and lib.host_slave_commits() == 1, f"pair, approval {how}: {board.chords} chords, this half not installed\n{log.getvalue()}")
     # pair asks once, before anything is sent, when an image names another pointing
     # device than its half runs (D33): no stops it before the left half is touched,
     # --yes goes ahead with both
-    right_wrong_m = mu.build_manifest(img, hand=1, pointing_id=1, keymap_id=1, flags=0, epoch=0,
-                                      storage_format=2, fw_version=9, version="right-tp")
+    right_wrong_m = mu.build_manifest(img, hand=1, pointing_id=1, keymap_id=1, flags=0, epoch=0, storage_format=2, fw_version=9, version="right-tp")
     right_wrong = out / "right_tp.svup"
     right_wrong.write_bytes(right_wrong_m + img)
     for imgs in ([right_wrong, left], [right, wrong]):
@@ -590,39 +580,30 @@ def main():
             check(False, f"pair with {imgs[0].name} + {imgs[1].name} sent without a yes")
         except su.UpdaterError as exc:
             check("not confirmed" in str(exc) and "nothing was sent" in str(exc) and q.asked == 1, f"pair precheck: {exc}")
-        check(lib.host_state() == 0 and lib.host_slave_state() == 0 and lib.host_slave_commits() == 0,
-              "pair precheck: nothing started on either half")
+        check(lib.host_state() == 0 and lib.host_slave_state() == 0 and lib.host_slave_commits() == 0, "pair precheck: nothing started on either half")
         lib.host_lib_reset(1)
         lib.host_lib_split(1)
         su.ask = no_question
         with contextlib.redirect_stdout(io.StringIO()) as log:
             rc = su.pair(FakeBoard(), args_with(yes=True), imgs, [])
-        check(rc == 0 and lib.host_slave_commits() == 1 and lib.host_master_reboots() == 1,
-              f"pair --yes with {imgs[0].name} + {imgs[1].name}: exit {rc}\n{log.getvalue()}")
+        check(rc == 0 and lib.host_slave_commits() == 1 and lib.host_master_reboots() == 1, f"pair --yes with {imgs[0].name} + {imgs[1].name}: exit {rc}\n{log.getvalue()}")
     # the board's view of an image: the checks update_manifest_check() makes
-    base_info = dict(hand_id=1, hand="right", pointing_id=3, pointing="pmw3389", release_build=False, protocol=3,
-                     security_epoch=1, storage_format=2, max_image="0x160000")
-    base_m = dict(flags=0, hand=1, pointing_id=3, security_epoch=1, storage_format=2, image_len=0x1000,
-                  fw_version=5)
+    base_info = dict(hand_id=1, hand="right", pointing_id=3, pointing="pmw3389", release_build=False, protocol=3, security_epoch=1, storage_format=2, max_image="0x160000")
+    base_m = dict(flags=0, hand=1, pointing_id=3, security_epoch=1, storage_format=2, image_len=0x1000, fw_version=5)
     check(su.image_refusal(base_m, base_info) is None, "image_refusal: a fitting image")
     check(su.image_mismatches(base_m, base_info) == [], "image_mismatches: a fitting image")
     # another hand or pointing device is never a refusal (D33), only a warning
-    for change, info_change, want in ((dict(hand=0), {}, ["left hand"]), (dict(pointing_id=2), {}, ["pmw3360"]),
-                                      (dict(pointing_id=5), {}, ["auto (any module)"]),
-                                      ({}, dict(pointing_id=5, pointing="auto"), ["build drives auto (any module)"]),
+    for change, info_change, want in ((dict(hand=0), {}, ["left hand"]), (dict(pointing_id=2), {}, ["pmw3360"]), (dict(pointing_id=5), {}, ["auto (any module)"]), ({}, dict(pointing_id=5, pointing="auto"), ["build drives auto (any module)"]),
                                       (dict(hand=0, pointing_id=1), {}, ["left hand", "trackpoint"])):
         m2, i2 = {**base_m, **change}, {**base_info, **info_change}
         check(su.image_refusal(m2, i2) is None, f"image_refusal takes {change} {info_change}")
         got = su.image_mismatches(m2, i2)
         check(len(got) == len(want) and all(w in g for w, g in zip(want, got)), f"image_mismatches {change} {info_change}: {got}")
-    for change, info_change, want in (({}, dict(protocol=1), "UNSUPPORTED"), ({}, dict(protocol=2), "UNSUPPORTED"),
-                                      (dict(flags=2), dict(release_build=True), "BAD_IMAGE"),
-                                      (dict(security_epoch=0), {}, "EPOCH"), (dict(storage_format=1), {}, "STORAGE"),
+    for change, info_change, want in (({}, dict(protocol=1), "UNSUPPORTED"), ({}, dict(protocol=2), "UNSUPPORTED"), (dict(flags=2), dict(release_build=True), "BAD_IMAGE"), (dict(security_epoch=0), {}, "EPOCH"), (dict(storage_format=1), {}, "STORAGE"),
                                       (dict(image_len=0x161000), {}, "TOO_LARGE")):
         got = su.image_refusal({**base_m, **change}, {**base_info, **info_change})
         check(got is not None and got.startswith(want), f"image_refusal {change} {info_change}: {got}")
-    for change, info_change in ((dict(flags=1), {}), ({}, dict(release_build=True)), (dict(flags=1), dict(release_build=True)),
-                                (dict(flags=2), {})):
+    for change, info_change in ((dict(flags=1), {}), ({}, dict(release_build=True)), (dict(flags=1), dict(release_build=True)), (dict(flags=2), {})):
         got = su.image_refusal({**base_m, **change}, {**base_info, **info_change})
         check(got is None, f"image_refusal takes {change} {info_change}: {got}")
     # the other half, over the split cable: protocol 2 or 3 (the relay is the same)

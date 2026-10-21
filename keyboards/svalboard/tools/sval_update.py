@@ -287,7 +287,7 @@ def storage_flags(dev):
 
 VIA_GET_LAYER_COUNT, VIA_KEYMAP_GET_BUFFER = 0x11, 0x12
 KEYMAP_KEYS = 10 * 6  # MATRIX_ROWS * MATRIX_COLS (keyboards/svalboard/config.h)
-KEYMAP_PIECE = 28     # bytes per VIA get-buffer request, well inside the wrapped report
+KEYMAP_PIECE = 28  # bytes per VIA get-buffer request, well inside the wrapped report
 
 
 def keymap_bytes(dev):
@@ -303,8 +303,7 @@ def keymap_bytes(dev):
 
 
 def storage_text(flags):
-    out = [n for b, n in ((1, "storage reset (unreadable)"), (2, "a change could not be saved"),
-                          (4, "settings reset to this build's defaults")) if flags & b]
+    out = [n for b, n in ((1, "storage reset (unreadable)"), (2, "a change could not be saved"), (4, "settings reset to this build's defaults")) if flags & b]
     return ", ".join(out) or "none"
 
 
@@ -972,12 +971,12 @@ def reset_settings(dev, args):
     done = r[0]
     halves = [n for b, n in ((2, f"the other ({HANDS[board ^ 1]}) half"), (1, f"this ({info['hand']}) half")) if done & b]
     if st != OK:
-        why = {5: "the updater is busy (a session, a held approval, or a reset already pending)",
-               2: "the other half does not answer (connected, and on updater protocol 4?"
-                  + (" A blank board also needs a build from after D44 there" if blank else "") + ")",
-               1: "a blank board needs a firmware build from after D44" if blank else ""}.get(st, "")
-        raise UpdaterError(f"SETTINGS_RESET: {status_name(st)}" + (f": {why}" if why else "") +
-                           (f"; already reset: {', '.join(halves)}" if halves else "; nothing changed"))
+        why = {
+            5: "the updater is busy (a session, a held approval, or a reset already pending)",
+            2: "the other half does not answer (connected, and on updater protocol 4?" + (" A blank board also needs a build from after D44 there" if blank else "") + ")",
+            1: "a blank board needs a firmware build from after D44" if blank else ""
+        }.get(st, "")
+        raise UpdaterError(f"SETTINGS_RESET: {status_name(st)}" + (f": {why}" if why else "") + (f"; already reset: {', '.join(halves)}" if halves else "; nothing changed"))
     what = "reset to a blank board (every key KC_NO)" if blank else "reset to defaults"
     print(f"SETTINGS_RESET: OK, {' and '.join(halves)} {what} on the next boot; waiting for the board")
     serial = dev.serial

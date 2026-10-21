@@ -36,8 +36,7 @@ def main():
     img = t.image(0x5100)
     files = {}
     for side, hand, pointing in (("left", 0, 1), ("right", 1, 3)):
-        m = mu.build_manifest(img, hand=hand, pointing_id=pointing, keymap_id=0, flags=0, epoch=0, storage_format=2,
-                              fw_version=9, version="dev")
+        m = mu.build_manifest(img, hand=hand, pointing_id=pointing, keymap_id=0, flags=0, epoch=0, storage_format=2, fw_version=9, version="dev")
         files[side] = out / f"{side}.svup"
         files[side].write_bytes(m + img)
 

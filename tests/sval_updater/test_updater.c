@@ -25,23 +25,23 @@
 
 static int checks, failures;
 
-#define CHECK(cond)                                                                   \
-    do {                                                                              \
-        checks++;                                                                     \
-        if (!(cond)) {                                                                \
-            failures++;                                                               \
+#define CHECK(cond)                                                                  \
+    do {                                                                             \
+        checks++;                                                                    \
+        if (!(cond)) {                                                               \
+            failures++;                                                              \
             fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
-        }                                                                             \
+        }                                                                            \
     } while (0)
 
-#define CHECK_EQ(a, b)                                                                                                       \
-    do {                                                                                                                     \
-        long long _a = (long long)(a), _b = (long long)(b);                                                                  \
-        checks++;                                                                                                            \
-        if (_a != _b) {                                                                                                      \
-            failures++;                                                                                                      \
+#define CHECK_EQ(a, b)                                                                                                        \
+    do {                                                                                                                      \
+        long long _a = (long long)(a), _b = (long long)(b);                                                                   \
+        checks++;                                                                                                             \
+        if (_a != _b) {                                                                                                       \
+            failures++;                                                                                                       \
             fprintf(stderr, "%s:%d: CHECK_EQ failed: %s == %lld, expected %s == %lld\n", __FILE__, __LINE__, #a, _a, #b, _b); \
-        }                                                                                                                    \
+        }                                                                                                                     \
     } while (0)
 
 static void hex(const char *s, uint8_t *out, size_t n) {
@@ -114,7 +114,7 @@ static void test_manifest_layout(void) {
     CHECK_EQ(UPDATE_MANIFEST_BYTES, 108); // the MANIFEST op's buffer: no signature after it (protocol 2)
     CHECK_EQ(UPDATE_MANIFEST_VERSION, 2);
     CHECK_EQ(UPDATE_PROTOCOL_VERSION, 4); // 3 plus one approval for both halves and SETTINGS_RESET (D41, D42)
-    CHECK_EQ(UPDATE_BAD_SIG, 8); // retired, never returned; the codes after it keep their values
+    CHECK_EQ(UPDATE_BAD_SIG, 8);          // retired, never returned; the codes after it keep their values
     CHECK_EQ(UPDATE_BAD_HASH, 9);
     CHECK_EQ(offsetof(sval_update_manifest_t, reserved0), 6); // key_id in version 1
     CHECK_EQ(offsetof(sval_update_manifest_t, flags), 10);
@@ -122,8 +122,8 @@ static void test_manifest_layout(void) {
     CHECK_EQ(offsetof(sval_update_manifest_t, fw_version), 20);
     CHECK_EQ(offsetof(sval_update_manifest_t, reserved), 24);
     CHECK_EQ(offsetof(sval_update_manifest_t, version), 28);
-    const uint8_t magic[4] = {'S', 'V', 'U', 'P'};
-    sval_update_manifest_t m = good_manifest();
+    const uint8_t          magic[4] = {'S', 'V', 'U', 'P'};
+    sval_update_manifest_t m        = good_manifest();
     CHECK(memcmp(&m.magic, magic, 4) == 0);
 }
 
@@ -132,10 +132,10 @@ static void test_manifest_check(void) {
     rel.release_build   = true;
     sval_update_manifest_t m;
 
-#define EXPECT(dev, mutate, status)       \
-    do {                                  \
-        m = good_manifest();              \
-        mutate;                           \
+#define EXPECT(dev, mutate, status)                          \
+    do {                                                     \
+        m = good_manifest();                                 \
+        mutate;                                              \
         CHECK_EQ(update_manifest_check(&m, &(dev)), status); \
     } while (0)
 
@@ -204,7 +204,8 @@ static void test_manifest_check(void) {
 // ---- image head checks ---------------------------------------------------------------
 
 static void put32(uint8_t *p, uint32_t v) {
-    for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i));
+    for (int i = 0; i < 4; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
 }
 
 static void make_head(uint8_t head[UPDATE_HEAD_BYTES], uint32_t sp, uint32_t reset) {
@@ -231,19 +232,22 @@ static void test_head_check(void) {
     head[253] ^= 1;
     CHECK_EQ(update_image_head_check(head, len), UPDATE_BAD_IMAGE);
     // initial SP within [0x20000000, 0x20042000]
-    const struct { uint32_t sp; update_status_t want; } sps[] = {
-        {0x20000000, UPDATE_OK}, {0x20042000, UPDATE_OK}, {0x1FFFFFFC, UPDATE_BAD_IMAGE}, {0x20042004, UPDATE_BAD_IMAGE},
-        {0x00000000, UPDATE_BAD_IMAGE}, {0xFFFFFFFF, UPDATE_BAD_IMAGE}, {0x10000400, UPDATE_BAD_IMAGE},
+    const struct {
+        uint32_t        sp;
+        update_status_t want;
+    } sps[] = {
+        {0x20000000, UPDATE_OK}, {0x20042000, UPDATE_OK}, {0x1FFFFFFC, UPDATE_BAD_IMAGE}, {0x20042004, UPDATE_BAD_IMAGE}, {0x00000000, UPDATE_BAD_IMAGE}, {0xFFFFFFFF, UPDATE_BAD_IMAGE}, {0x10000400, UPDATE_BAD_IMAGE},
     };
     for (size_t i = 0; i < sizeof(sps) / sizeof(sps[0]); i++) {
         make_head(head, sps[i].sp, 0x100001F7);
         CHECK_EQ(update_image_head_check(head, len), sps[i].want);
     }
     // reset vector: odd, inside [0x10000100, 0x10000000 + len)
-    const struct { uint32_t reset; update_status_t want; } resets[] = {
-        {0x10000101, UPDATE_OK}, {0x10000000 + len - 1, UPDATE_OK}, {0x100001F6, UPDATE_BAD_IMAGE},
-        {0x100000FF, UPDATE_BAD_IMAGE}, {0x10000001, UPDATE_BAD_IMAGE}, {0x10000000 + len + 1, UPDATE_BAD_IMAGE},
-        {0x20000001, UPDATE_BAD_IMAGE}, {0x00000001, UPDATE_BAD_IMAGE}, {0xFFFFFFFF, UPDATE_BAD_IMAGE},
+    const struct {
+        uint32_t        reset;
+        update_status_t want;
+    } resets[] = {
+        {0x10000101, UPDATE_OK}, {0x10000000 + len - 1, UPDATE_OK}, {0x100001F6, UPDATE_BAD_IMAGE}, {0x100000FF, UPDATE_BAD_IMAGE}, {0x10000001, UPDATE_BAD_IMAGE}, {0x10000000 + len + 1, UPDATE_BAD_IMAGE}, {0x20000001, UPDATE_BAD_IMAGE}, {0x00000001, UPDATE_BAD_IMAGE}, {0xFFFFFFFF, UPDATE_BAD_IMAGE},
     };
     for (size_t i = 0; i < sizeof(resets) / sizeof(resets[0]); i++) {
         make_head(head, 0x20041000, resets[i].reset);
@@ -268,7 +272,8 @@ static void test_sha512(void) {
     CHECK(memcmp(got, want, 64) == 0);
     // Incremental, in uneven pieces, as the verify slices will feed it.
     static uint8_t big[3000];
-    for (size_t i = 0; i < sizeof(big); i++) big[i] = (uint8_t)(i * 7 + 1);
+    for (size_t i = 0; i < sizeof(big); i++)
+        big[i] = (uint8_t)(i * 7 + 1);
     uint8_t           one[64];
     crypto_sha512_ctx ctx;
     crypto_sha512(one, big, sizeof(big));
@@ -357,22 +362,22 @@ static void test_cross(const char *dir) {
 
 // ---- staging-slot flash (mock die) --------------------------------------------------------
 
-uint8_t              update_host_flash[UPDATE_HOST_FLASH_BYTES] __attribute__((aligned(4096)));
-static uint8_t       before[UPDATE_HOST_FLASH_BYTES];
-const uint8_t        BOOT2_ROM[256] = BOOT2_PAGE0_BYTES;
-static bool          xip_on = true, irq_off, connected;
-static int           erase_ops, program_ops, sequence_errors, outside_ops;
-static int           tear_next; // the next ROM erase/program leaves random bytes
-static int           sector_erases, block_erases;
+uint8_t        update_host_flash[UPDATE_HOST_FLASH_BYTES] __attribute__((aligned(4096)));
+static uint8_t before[UPDATE_HOST_FLASH_BYTES];
+const uint8_t  BOOT2_ROM[256] = BOOT2_PAGE0_BYTES;
+static bool    xip_on         = true, irq_off, connected;
+static int     erase_ops, program_ops, sequence_errors, outside_ops;
+static int     tear_next; // the next ROM erase/program leaves random bytes
+static int     sector_erases, block_erases;
 // Simulated time (test_session.c's clock). Each ROM flash operation costs what
 // it would on a W25Q128JV-class die: a 4 KiB sector erase 45 ms and a 64 KiB
 // block erase 150 ms (typical), a page program 3 ms (maximum).
 #define SIM_SECTOR_ERASE_US 45000u
 #define SIM_BLOCK_ERASE_US 150000u
 #define SIM_PAGE_PROGRAM_US 3000u
-static uint64_t      sim_us;
-static uint8_t       capacity = 0x18;
-static uint32_t      rng      = 12345;
+static uint64_t sim_us;
+static uint8_t  capacity = 0x18;
+static uint32_t rng      = 12345;
 
 // Where ROM erases and programs may land: the slot while staging (invariant
 // (a)); test_commit.c widens it to [0, round_up(image_len, 64 KiB)) for the
@@ -417,7 +422,8 @@ static void wd_spend(uint64_t us) {
 
 static void log_op(char op, uint32_t addr, uint32_t count, const uint8_t *data) {
     bool zeros = data != NULL;
-    for (uint32_t i = 0; data && i < count; i++) zeros &= data[i] == 0;
+    for (uint32_t i = 0; data && i < count; i++)
+        zeros &= data[i] == 0;
     if (noplog < (int)(sizeof(oplog) / sizeof(oplog[0]))) oplog[noplog] = (oplog_t){op, addr, count, zeros};
     noplog++;
 }
@@ -476,7 +482,8 @@ static void mock_erase(uint32_t addr, size_t count, uint32_t block_size, uint8_t
     if (!slot_only(addr, count)) return;
     bool cut = cut_now();
     if (cut && cut_tear) tear_next = 1;
-    for (size_t i = 0; i < count; i++) update_host_flash[addr + i] = tear_next ? rnd() : 0xFF;
+    for (size_t i = 0; i < count; i++)
+        update_host_flash[addr + i] = tear_next ? rnd() : 0xFF;
     tear_next = 0;
     if (cut) longjmp(cut_env, 1);
 }
@@ -495,7 +502,8 @@ static void mock_program(uint32_t addr, const uint8_t *data, size_t count) {
     bool    bad  = bad_at >= addr && bad_at < addr + count && ++bad_seen >= bad_nth && bad_times > 0;
     uint8_t keep = bad ? update_host_flash[bad_at] : 0;
     if (cut && cut_tear) tear_next = 1;
-    for (size_t i = 0; i < count; i++) update_host_flash[addr + i] = tear_next ? rnd() : (update_host_flash[addr + i] & data[i]); // NOR clears bits
+    for (size_t i = 0; i < count; i++)
+        update_host_flash[addr + i] = tear_next ? rnd() : (update_host_flash[addr + i] & data[i]); // NOR clears bits
     if (bad) {
         update_host_flash[bad_at] = keep; // this byte did not take
         bad_times--;
@@ -506,12 +514,18 @@ static void mock_program(uint32_t addr, const uint8_t *data, size_t count) {
 
 void *rom_func_lookup_inline(uint32_t code) {
     switch (code) {
-        case ROM_FUNC_CONNECT_INTERNAL_FLASH: return (void *)mock_connect;
-        case ROM_FUNC_FLASH_EXIT_XIP: return (void *)mock_exit_xip;
-        case ROM_FUNC_FLASH_RANGE_ERASE: return (void *)mock_erase;
-        case ROM_FUNC_FLASH_RANGE_PROGRAM: return (void *)mock_program;
-        case ROM_FUNC_FLASH_FLUSH_CACHE: return (void *)mock_flush;
-        default: return NULL;
+        case ROM_FUNC_CONNECT_INTERNAL_FLASH:
+            return (void *)mock_connect;
+        case ROM_FUNC_FLASH_EXIT_XIP:
+            return (void *)mock_exit_xip;
+        case ROM_FUNC_FLASH_RANGE_ERASE:
+            return (void *)mock_erase;
+        case ROM_FUNC_FLASH_RANGE_PROGRAM:
+            return (void *)mock_program;
+        case ROM_FUNC_FLASH_FLUSH_CACHE:
+            return (void *)mock_flush;
+        default:
+            return NULL;
     }
 }
 uint32_t save_and_disable_interrupts(void) {
@@ -536,22 +550,23 @@ void update_host_enter_xip(const uint32_t *copy) {
 }
 
 static void die_reset(void) {
-    for (size_t i = 0; i < sizeof(update_host_flash); i++) update_host_flash[i] = rnd() | 0x01; // never all 0xFF, rarely erased-looking
+    for (size_t i = 0; i < sizeof(update_host_flash); i++)
+        update_host_flash[i] = rnd() | 0x01; // never all 0xFF, rarely erased-looking
     memset(update_host_flash + SVAL_UPDATE_BASE, 0x00, SVAL_UPDATE_SIZE);
-    probed = false; // update_flash.c state
+    probed    = false; // update_flash.c state
     erase_ops = program_ops = sequence_errors = outside_ops = tear_next = sector_erases = block_erases = 0;
-    capacity   = 0x18;
-    allow_lo   = SVAL_UPDATE_BASE;
-    allow_hi   = SVAL_UPDATE_BASE + SVAL_UPDATE_SIZE;
-    multi_page = false;
+    capacity                                                                                           = 0x18;
+    allow_lo                                                                                           = SVAL_UPDATE_BASE;
+    allow_hi                                                                                           = SVAL_UPDATE_BASE + SVAL_UPDATE_SIZE;
+    multi_page                                                                                         = false;
     flash_ops = cut_at = noplog = 0;
-    cut_tear  = false;
-    bad_at    = 0xFFFFFFFFu;
+    cut_tear                    = false;
+    bad_at                      = 0xFFFFFFFFu;
     bad_nth = bad_times = bad_seen = 0;
-    after_op  = NULL;
-    mock_wd_on       = false;
+    after_op                       = NULL;
+    mock_wd_on                     = false;
     wd_since_feed_us = wd_gap_max_us = 0;
-    xip_on           = true;
+    xip_on                           = true;
     irq_off = connected = false;
 }
 
@@ -569,7 +584,8 @@ static void test_session(void);
 static void test_flash(void) {
     const uint32_t slot_lo = SVAL_UPDATE_BASE, slot_hi = SVAL_UPDATE_BASE + SVAL_UPDATE_SIZE;
     uint8_t        page[256];
-    for (int i = 0; i < 256; i++) page[i] = (uint8_t)(i ^ 0x5A);
+    for (int i = 0; i < 256; i++)
+        page[i] = (uint8_t)(i ^ 0x5A);
 
     // JEDEC and availability
     die_reset();
@@ -605,7 +621,8 @@ static void test_flash(void) {
     // erase refusals: misaligned, outside, wrapping; nothing touched
     snap();
     const uint32_t bad_erase[] = {0x1000, 0xFF, SVAL_UPDATE_SIZE, SVAL_UPDATE_SIZE + UPDATE_FLASH_BLOCK, 0xFFFF0000u, 0x80000000u, 0xFFFFFFFFu, (uint32_t)-SVAL_UPDATE_BASE};
-    for (size_t i = 0; i < sizeof(bad_erase) / sizeof(bad_erase[0]); i++) CHECK_EQ(update_flash_erase_block(bad_erase[i]), UPDATE_INVALID);
+    for (size_t i = 0; i < sizeof(bad_erase) / sizeof(bad_erase[0]); i++)
+        CHECK_EQ(update_flash_erase_block(bad_erase[i]), UPDATE_INVALID);
     CHECK(memcmp(before, update_host_flash, sizeof(before)) == 0);
 
     // program: first and last page; then refusals
@@ -644,8 +661,8 @@ static void test_flash(void) {
     // the RAM routine's own guard: called directly with addresses outside the
     // slot, it makes no ROM call at all
     snap();
-    ops                        = erase_ops + program_ops;
-    const uint32_t bad_abs[]   = {0, SVAL_UPDATE_BASE - UPDATE_FLASH_BLOCK, slot_hi, slot_hi - 0x100, IDENTITY_SECTOR_A, WEAR_LEVELING_RP2040_FLASH_BASE, 0xFFFFFF00u};
+    ops                      = erase_ops + program_ops;
+    const uint32_t bad_abs[] = {0, SVAL_UPDATE_BASE - UPDATE_FLASH_BLOCK, slot_hi, slot_hi - 0x100, IDENTITY_SECTOR_A, WEAR_LEVELING_RP2040_FLASH_BASE, 0xFFFFFF00u};
     for (size_t i = 0; i < sizeof(bad_abs) / sizeof(bad_abs[0]); i++) {
         irq_off = true;
         slot_flash_op(bad_abs[i], NULL, UPDATE_FLASH_BLOCK);
@@ -681,7 +698,8 @@ static void test_flash(void) {
     CHECK_EQ(sector_erases, SVAL_UPDATE_SIZE / UPDATE_FLASH_SECTOR);
     snap();
     const uint32_t bad_sector[] = {0x80, 0x100, 0xFFF, SVAL_UPDATE_SIZE, SVAL_UPDATE_SIZE - 0x800, 0xFFFFF000u, (uint32_t)-SVAL_UPDATE_BASE};
-    for (size_t i = 0; i < sizeof(bad_sector) / sizeof(bad_sector[0]); i++) CHECK_EQ(update_flash_erase_sector(bad_sector[i]), UPDATE_INVALID);
+    for (size_t i = 0; i < sizeof(bad_sector) / sizeof(bad_sector[0]); i++)
+        CHECK_EQ(update_flash_erase_sector(bad_sector[i]), UPDATE_INVALID);
     CHECK(!update_flash_sector_erased(0x80));
     CHECK(memcmp(before, update_host_flash, sizeof(before)) == 0);
     memset(update_host_flash + slot_lo + 0x3000 + 77, 0x12, 1);
@@ -734,7 +752,8 @@ void host_via(uint8_t *pkt, uint32_t client) {
     port_client = 0;
 }
 void host_passes(int n) {
-    for (int i = 0; i < n; i++) pass();
+    for (int i = 0; i < n; i++)
+        pass();
 }
 void host_chord(void) {
     chord();
@@ -806,7 +825,7 @@ int host_slave_soft_resets(void) {
 }
 #else
 int main(int argc, char **argv) {
-#ifdef SVAL_UPDATE_NO_CHORD
+#    ifdef SVAL_UPDATE_NO_CHORD
     // The no-chord dev build (D43): its protocol 4 cases only; the rest of
     // these tests expect the chord.
     (void)argc;
@@ -814,15 +833,15 @@ int main(int argc, char **argv) {
     test_pair_no_chord();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
-#endif
-#ifdef SVAL_TEST_REAL_COMMIT
+#    endif
+#    ifdef SVAL_TEST_REAL_COMMIT
     (void)argc;
     (void)argv;
     test_commit();
     test_relay_real_commit();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
-#endif
+#    endif
     test_boot2_crc();
     test_manifest_layout();
     test_manifest_check();

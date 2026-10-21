@@ -30,13 +30,13 @@
 
 static int checks, failures;
 
-#define CHECK(cond)                                                                   \
-    do {                                                                              \
-        checks++;                                                                     \
-        if (!(cond)) {                                                                \
-            failures++;                                                               \
+#define CHECK(cond)                                                                  \
+    do {                                                                             \
+        checks++;                                                                    \
+        if (!(cond)) {                                                               \
+            failures++;                                                              \
             fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
-        }                                                                             \
+        }                                                                            \
     } while (0)
 
 static uint8_t *read_file(const char *path, size_t *len) {
@@ -65,12 +65,12 @@ static update_status_t release_check(const uint8_t *buf, size_t len) {
     const uint8_t  *image = buf + UPDATE_MANIFEST_BYTES;
     size_t          ilen  = len - UPDATE_MANIFEST_BYTES;
     update_device_t dev   = {
-          .hand           = m.hand,
-          .pointing_id    = m.pointing_id,
-          .security_epoch = SVAL_UPDATE_SECURITY_EPOCH,
-          .storage_format = SVAL_UPDATE_STORAGE_FORMAT,
-          .release_build  = true,
-          .max_image      = SVAL_UPDATE_MAX_IMAGE,
+        .hand           = m.hand,
+        .pointing_id    = m.pointing_id,
+        .security_epoch = SVAL_UPDATE_SECURITY_EPOCH,
+        .storage_format = SVAL_UPDATE_STORAGE_FORMAT,
+        .release_build  = true,
+        .max_image      = SVAL_UPDATE_MAX_IMAGE,
     };
     update_status_t st = update_manifest_check(&m, &dev);
     if (st != UPDATE_OK) return st;
@@ -98,16 +98,16 @@ int main(int argc, char **argv) {
     // ---- what a release build refuses --------------------------------------------------------
     sval_update_manifest_t m;
     memset(&m, 0, sizeof(m));
-    m.magic          = UPDATE_MANIFEST_MAGIC;
-    m.manifest_ver   = UPDATE_MANIFEST_VERSION;
-    m.hand           = UPDATE_HAND_RIGHT;
-    m.pointing_id    = UPDATE_POINTING_PMW3389;
-    m.keymap_id      = UPDATE_KEYMAP_SVAL;
-    m.storage_format = SVAL_UPDATE_STORAGE_FORMAT;
-    m.updater_proto  = UPDATE_PROTOCOL_VERSION;
-    m.image_len      = 0x400;
+    m.magic             = UPDATE_MANIFEST_MAGIC;
+    m.manifest_ver      = UPDATE_MANIFEST_VERSION;
+    m.hand              = UPDATE_HAND_RIGHT;
+    m.pointing_id       = UPDATE_POINTING_PMW3389;
+    m.keymap_id         = UPDATE_KEYMAP_SVAL;
+    m.storage_format    = SVAL_UPDATE_STORAGE_FORMAT;
+    m.updater_proto     = UPDATE_PROTOCOL_VERSION;
+    m.image_len         = 0x400;
     update_device_t dev = {.hand = UPDATE_HAND_RIGHT, .pointing_id = UPDATE_POINTING_PMW3389, .storage_format = SVAL_UPDATE_STORAGE_FORMAT, .release_build = true, .max_image = SVAL_UPDATE_MAX_IMAGE};
-    m.flags = UPDATE_FLAG_RELEASE;
+    m.flags             = UPDATE_FLAG_RELEASE;
     CHECK(update_manifest_check(&m, &dev) == UPDATE_OK);
     m.flags = 0;
     CHECK(update_manifest_check(&m, &dev) == UPDATE_OK); // RELEASE is a label; anyone's build is taken
@@ -150,7 +150,8 @@ int main(int argc, char **argv) {
             im[1005] = UPDATE_BUILD_INFO_VERSION;
             im[1006] = flags[k];
             update_build_scan_init(&sc);
-            for (size_t off = 0; off < sizeof(im); off += 7) update_build_scan(&sc, im + off, sizeof(im) - off < 7 ? sizeof(im) - off : 7);
+            for (size_t off = 0; off < sizeof(im); off += 7)
+                update_build_scan(&sc, im + off, sizeof(im) - off < 7 ? sizeof(im) - off : 7);
             CHECK(sc.records == 1 && sc.flags == flags[k]);
             CHECK(update_image_build_check(&sc, &dev) == (k < 2 ? UPDATE_BAD_IMAGE : UPDATE_OK));
         }

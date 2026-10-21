@@ -124,7 +124,8 @@ int main(void) {
     // the next boot of the same image resets once and records it again.
     uint8_t page[BUILD_RESET_PAGE_BYTES];
     build_reset_invalid_page(page, BUILD_RESET_TO_DEFAULTS);
-    for (size_t i = 0; i < sizeof(page); i++) CHECK(page[i] == (i < BUILD_RESET_HEAD_BYTES ? 0x00 : 0xFF)); // the blank mark's bytes too
+    for (size_t i = 0; i < sizeof(page); i++)
+        CHECK(page[i] == (i < BUILD_RESET_HEAD_BYTES ? 0x00 : 0xFF)); // the blank mark's bytes too
     for (int k = 0; k < 4; k++) {
         if (k == 0) build_reset_record_make(&sector, A, 0);
         if (k == 1) build_reset_record_make(&sector, A, BUILD_RESET_NOTICE);
@@ -147,8 +148,10 @@ int main(void) {
     {
         uint8_t blank[BUILD_RESET_PAGE_BYTES], head[BUILD_RESET_HEAD_BYTES];
         build_reset_invalid_page(blank, BUILD_RESET_TO_BLANK);
-        for (size_t i = 0; i < sizeof(build_reset_record_t); i++) CHECK(blank[i] == 0);
-        for (size_t i = BUILD_RESET_HEAD_BYTES; i < sizeof(blank); i++) CHECK(blank[i] == 0xFF);
+        for (size_t i = 0; i < sizeof(build_reset_record_t); i++)
+            CHECK(blank[i] == 0);
+        for (size_t i = BUILD_RESET_HEAD_BYTES; i < sizeof(blank); i++)
+            CHECK(blank[i] == 0xFF);
         CHECK(blank[16] == 'B' && blank[17] == 'L' && blank[18] == 'N' && blank[19] == 'K');
         // over every record a sector can hold (valid, with the notice, erased,
         // garbage), the mark area being erased as the record write leaves it

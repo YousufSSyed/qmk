@@ -92,7 +92,8 @@ static bool pair_rest(uint32_t client) {
     if (updater_state() != UPDATE_STATE_RELAYED) return false;
     slave_commit_resets = true;
     if (send_commit(client, body_crc()) != UPDATE_ACCEPTED) return false;
-    for (int i = 0; i < 10000 && updater_state() == UPDATE_STATE_SUBSIDE_COMMITTING; i++) pass();
+    for (int i = 0; i < 10000 && updater_state() == UPDATE_STATE_SUBSIDE_COMMITTING; i++)
+        pass();
     return updater_state() == UPDATE_STATE_IDLE && slave_commit_runs == 1;
 }
 
@@ -101,7 +102,7 @@ static update_status_t self_armed(uint32_t client, const uint8_t *m) {
     master_slot  = NULL; // this half stages in the die's slot again
     commit_avail = true;
     memcpy(blob, m, sizeof(blob));
-    req_hand = UPDATE_HAND_RIGHT;
+    req_hand           = UPDATE_HAND_RIGHT;
     update_status_t st = load_manifest(client);
     if (st != UPDATE_OK) return st;
     return arm(client, UPDATE_ARM_MODE_SINGLE);
@@ -120,7 +121,8 @@ static void test_p4_single(void) {
     CHECK_EQ(load_manifest(CLIENT_A), UPDATE_OK);
     CHECK_EQ(arm(CLIENT_A, UPDATE_ARM_MODE_SINGLE), UPDATE_OK);
     CHECK(hash4_is(arm_rsp + 5, blob));
-    for (int i = 9; i <= 13; i++) CHECK_EQ(arm_rsp[i], 0);
+    for (int i = 9; i <= 13; i++)
+        CHECK_EQ(arm_rsp[i], 0);
     pass();
     CHECK_EQ(led_now, UPDATE_LED_CONFIRM);
     CHECK_EQ(status_flags2(CLIENT_A), 0);
@@ -196,8 +198,8 @@ static void test_p4_pair_refusals(void) {
     // P4-05: a pair ARM refused for the pair manifest's floors: ERROR latched
     // with that status before any chord is asked for
     pair_fresh(0x3000);
-    self_dev.security_epoch                         = 2;
-    blob_manifest()->security_epoch                 = 3; // the other half's image is fine
+    self_dev.security_epoch                               = 2;
+    blob_manifest()->security_epoch                       = 3; // the other half's image is fine
     ((sval_update_manifest_t *)self_blob)->security_epoch = 0;
     CHECK(!pair_armed(CLIENT_A));
     CHECK_EQ(arm_rsp[0], UPDATE_EPOCH);
@@ -248,7 +250,8 @@ static void test_p4_pair_one_chord(void) {
     CHECK_EQ(self_armed(CLIENT_A, self_blob), UPDATE_OK);
     CHECK_EQ(arm_rsp[13], UPDATE_ARM_PRE_APPROVED | UPDATE_ARM_BY_PAIR);
     CHECK(hash4_is(arm_rsp + 5, self_blob));
-    for (int i = 9; i <= 12; i++) CHECK_EQ(arm_rsp[i], 0);
+    for (int i = 9; i <= 12; i++)
+        CHECK_EQ(arm_rsp[i], 0);
     CHECK_EQ(status_flags2(CLIENT_A), 0x02); // used up; this session pre-approved
     pass();
     CHECK_EQ(led_now, UPDATE_LED_PROGRESS);
@@ -262,10 +265,12 @@ static void test_p4_pair_one_chord(void) {
     CHECK_EQ(led_seen & ((1 << UPDATE_LED_CONFIRM) | (1 << UPDATE_LED_CHORD) | (1 << UPDATE_LED_APPROVED)), 0);
     master_commit_resets = true;
     CHECK_EQ(send_commit(CLIENT_A, body_crc()), UPDATE_ACCEPTED);
-    for (int i = 0; i < 300 && master_reboots == 0; i++) pass();
+    for (int i = 0; i < 300 && master_reboots == 0; i++)
+        pass();
     CHECK_EQ(master_reboots, 1);
     CHECK_EQ(commit_runs, 1);
-    for (int i = 0; i < 1200; i++) pass();
+    for (int i = 0; i < 1200; i++)
+        pass();
     CHECK_EQ(update_split_presence(), UPDATE_PRESENCE_MATCH); // both on 2002
 
     // The used-up approval approves nothing more: the same manifest again needs the chord.
@@ -344,8 +349,8 @@ static void test_p4_held_rules(void) {
     // a REBIND while this half's manifest loads moves that load too
     CHECK(held_ready(len));
     memcpy(blob, self_blob, sizeof(blob));
-    master_slot = NULL;
-    req_hand    = UPDATE_HAND_RIGHT;
+    master_slot                 = NULL;
+    req_hand                    = UPDATE_HAND_RIGHT;
     uint8_t first[2 + T_MPIECE] = {0, T_MPIECE};
     memcpy(first + 2, blob, T_MPIECE);
     CHECK_EQ(send(CLIENT_A, UPDATE_OP_MANIFEST, first, sizeof(first)), UPDATE_OK);
@@ -384,9 +389,11 @@ static void test_p4_held_rules(void) {
     CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_END, session_nonce), UPDATE_ACCEPTED);
     passes_until(UPDATE_STATE_VERIFIED, 5000);
     CHECK_EQ(send_commit(CLIENT_A, body_crc()), UPDATE_ACCEPTED);
-    for (int i = 0; i < 50; i++) pass();
+    for (int i = 0; i < 50; i++)
+        pass();
     link_dead = true; // the split cable pulled mid-relay
-    for (int i = 0; i < 10000 && updater_state() == UPDATE_STATE_RELAYING; i++) pass();
+    for (int i = 0; i < 10000 && updater_state() == UPDATE_STATE_RELAYING; i++)
+        pass();
     CHECK_EQ(updater_state(), UPDATE_STATE_ERROR);
     CHECK_EQ(status_flags2(CLIENT_A), 0);
     link_dead = false;
@@ -421,13 +428,15 @@ static void test_p4_held_rules(void) {
     CHECK_EQ(send_nonce(CLIENT_A, UPDATE_OP_END, session_nonce), UPDATE_ACCEPTED);
     passes_until(UPDATE_STATE_VERIFIED, 5000);
     CHECK_EQ(send_commit(CLIENT_A, body_crc()), UPDATE_ACCEPTED);
-    for (int i = 0; i < 60000 && updater_state() == UPDATE_STATE_RELAYING; i++) pass();
+    for (int i = 0; i < 60000 && updater_state() == UPDATE_STATE_RELAYING; i++)
+        pass();
     slave_commit_resets = true;
     CHECK_EQ(send_commit(CLIENT_A, body_crc()), UPDATE_ACCEPTED);
     CHECK_EQ(updater_state(), UPDATE_STATE_SUBSIDE_COMMITTING);
     CHECK_EQ(send_nonce(CLIENT_B, UPDATE_OP_REBIND, session_nonce), UPDATE_OK);
     CHECK_EQ(send(CLIENT_A, UPDATE_OP_MANIFEST, first, sizeof(first)), UPDATE_BUSY); // still nothing else
-    for (int i = 0; i < 10000 && updater_state() == UPDATE_STATE_SUBSIDE_COMMITTING; i++) pass();
+    for (int i = 0; i < 10000 && updater_state() == UPDATE_STATE_SUBSIDE_COMMITTING; i++)
+        pass();
     CHECK_EQ(updater_state(), UPDATE_STATE_IDLE);
     CHECK_EQ(self_armed(CLIENT_B, self_blob), UPDATE_OK);
     CHECK_EQ(arm_rsp[13], UPDATE_ARM_PRE_APPROVED | UPDATE_ARM_BY_PAIR);
@@ -451,7 +460,8 @@ static void test_p4_settings_reset(void) {
     CHECK_EQ(master_invalidations, 1);
     CHECK_EQ(settings_reset(CLIENT_A, 1), UPDATE_BUSY); // once
     uint64_t t0 = sim_us;
-    for (int i = 0; i < 600 && (master_reboots == 0 || slave_reboots == 0); i++) pass();
+    for (int i = 0; i < 600 && (master_reboots == 0 || slave_reboots == 0); i++)
+        pass();
     CHECK_EQ(master_reboots, 1);
     CHECK_EQ(slave_reboots, 1);
     CHECK(sim_us - t0 <= 500000);
@@ -463,7 +473,8 @@ static void test_p4_settings_reset(void) {
     CHECK_EQ(settings_reset(CLIENT_A, 0), UPDATE_OK);
     CHECK_EQ(rsp[1], 0x01);
     CHECK_EQ(slave_invalidations, 0);
-    for (int i = 0; i < 600 && master_reboots == 0; i++) pass();
+    for (int i = 0; i < 600 && master_reboots == 0; i++)
+        pass();
     CHECK_EQ(master_reboots, 1);
     CHECK_EQ(slave_reboots, 0);
     // P4-20: INVALID: a bad magic, scope 2, the other hand, unwrapped
@@ -494,7 +505,8 @@ static void test_p4_settings_reset(void) {
     CHECK(update_relay_start(blob, img_len, body_crc()));
     CHECK_EQ(settings_reset(CLIENT_A, 1), UPDATE_BUSY); // the relay here
     update_relay_abort();
-    for (int i = 0; i < 20; i++) pass();
+    for (int i = 0; i < 20; i++)
+        pass();
     // P4-19: the other half silent: UNAVAILABLE, nothing changed anywhere
     fresh(0x2000);
     req_hand = UPDATE_HAND_RIGHT;
@@ -504,7 +516,8 @@ static void test_p4_settings_reset(void) {
     CHECK_EQ(settings_reset(CLIENT_A, 1), UPDATE_UNAVAILABLE); // presence went stale, no answer
     link_dead = false;
     CHECK_EQ(master_invalidations + slave_invalidations, 0);
-    for (int i = 0; i < 600; i++) pass();
+    for (int i = 0; i < 600; i++)
+        pass();
     CHECK_EQ(master_reboots + slave_reboots, 0);
     // P4-22: the other half on protocol 3 does not know the op: UNAVAILABLE, nothing changed
     fresh(0x2000);
@@ -564,7 +577,8 @@ static void test_p4_blank_reset(void) {
     CHECK_EQ(rsp[1], 0x03);
     CHECK_EQ(slave_reset_mode, 1);
     CHECK_EQ(master_reset_mode, 1);
-    for (int i = 0; i < 600 && (master_reboots == 0 || slave_reboots == 0); i++) pass();
+    for (int i = 0; i < 600 && (master_reboots == 0 || slave_reboots == 0); i++)
+        pass();
     CHECK_EQ(master_reboots, 1);
     CHECK_EQ(slave_reboots, 1);
     // no mode byte (a protocol 4 host from before D44) and mode 0: defaults on both halves
@@ -587,7 +601,8 @@ static void test_p4_blank_reset(void) {
     // mode 2 and up: INVALID, nothing changed
     fresh(0x2000);
     presence_up();
-    for (unsigned m = 2; m < 256; m += 37) CHECK_EQ(settings_reset_mode(CLIENT_A, 1, (uint8_t)m), UPDATE_INVALID);
+    for (unsigned m = 2; m < 256; m += 37)
+        CHECK_EQ(settings_reset_mode(CLIENT_A, 1, (uint8_t)m), UPDATE_INVALID);
     CHECK_EQ(master_invalidations + slave_invalidations, 0);
     // the other half on a protocol 4 build from before D44 (no mode byte there):
     // UNAVAILABLE for mode 1, nothing changed on either half; mode 0 still works
@@ -596,7 +611,8 @@ static void test_p4_blank_reset(void) {
     slave_pre_blank = true;
     CHECK_EQ(settings_reset_mode(CLIENT_A, 1, 1), UPDATE_UNAVAILABLE);
     CHECK_EQ(master_invalidations + slave_invalidations, 0);
-    for (int i = 0; i < 600; i++) pass();
+    for (int i = 0; i < 600; i++)
+        pass();
     CHECK_EQ(master_reboots + slave_reboots, 0);
     CHECK_EQ(settings_reset_mode(CLIENT_A, 1, 0), UPDATE_OK);
     CHECK_EQ(slave_reset_mode, 0);
@@ -643,12 +659,9 @@ static void test_p4_image_build_check(void) {
         bool    release;
         bool    refused;
     } cases[] = {
-        {UPDATE_BUILD_NO_CHORD, true, true},
-        {UPDATE_BUILD_DEV_KEEP, true, true},
-        {UPDATE_BUILD_NO_CHORD | UPDATE_BUILD_TEST_HOOKS, true, true},
-        {0, true, false},                    // a chord build
-        {UPDATE_BUILD_RELEASE, true, false}, // a release build
-        {UPDATE_BUILD_NO_CHORD, false, false}, // a dev board takes a dev image
+        {UPDATE_BUILD_NO_CHORD, true, true},   {UPDATE_BUILD_DEV_KEEP, true, true}, {UPDATE_BUILD_NO_CHORD | UPDATE_BUILD_TEST_HOOKS, true, true}, {0, true, false}, // a chord build
+        {UPDATE_BUILD_RELEASE, true, false},                                                                                                                         // a release build
+        {UPDATE_BUILD_NO_CHORD, false, false},                                                                                                                       // a dev board takes a dev image
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         fresh(len);
@@ -730,7 +743,8 @@ static void test_p4_image_build_check(void) {
     update_build_scan_t a, b;
     update_build_scan_init(&a);
     update_build_scan_init(&b);
-    for (uint32_t i = 0; i < img_len; i++) update_build_scan(&a, img + i, 1);
+    for (uint32_t i = 0; i < img_len; i++)
+        update_build_scan(&a, img + i, 1);
     update_build_scan(&b, img, img_len);
     CHECK_EQ(a.records, 1);
     CHECK_EQ(b.records, 1);
