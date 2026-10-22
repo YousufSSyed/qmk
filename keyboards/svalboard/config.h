@@ -151,6 +151,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 #define DOUBLEDOWN_COL 5 // need a pullup on COL6
 
+// Thumb handedness strap: the WS2812 data pin, which reaches the thumb's
+// LED_DIN. A left thumb with R7 fitted pulls it to ground through 10k.
+#ifndef SVAL_THUMB_HAND_PIN
+    #define SVAL_THUMB_HAND_PIN GP19 // thumb LED_DIN; R7 strap on a left thumb
+#endif
+// The thumb row's FET gate (matrix row 0), on during the strap read: low is on.
+#ifndef SVAL_THUMB_ROW_PIN
+    #define SVAL_THUMB_ROW_PIN GP8
+#endif
+
 // Hardware revision strap. The pin is read with the internal pull-up enabled:
 // open = revision A, bridged to ground = revision B ("flipfet"). Override the
 // pin per build if the MCU board routes a different spare GPIO, or force a

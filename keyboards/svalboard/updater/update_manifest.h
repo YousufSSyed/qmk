@@ -35,6 +35,10 @@
 // hand
 #define UPDATE_HAND_LEFT 0
 #define UPDATE_HAND_RIGHT 1
+// Manifests and build info only: one image for both halves (SVAL_EITHER_HAND),
+// which learns its side at boot. A running half reports 0 or 1, or 0xFF while
+// it has no side (it is then addressed with hand 0xFF, this half).
+#define UPDATE_HAND_EITHER 2
 
 // pointing_id: this half's pointing device only (D18). Append-only. Reported, and
 // warned about by the host tools, but never checked by the firmware (D33).
