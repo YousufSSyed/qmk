@@ -104,7 +104,7 @@ static void test_record(void) {
     sval_side_record_t bad = r;
     bad.side ^= 1; // the CRC no longer matches
     CHECK(!sval_side_record_valid(&bad));
-    bad = r;
+    bad         = r;
     bad.version = 2;
     CHECK(!sval_side_record_valid(&bad));
     sval_side_record_make(&bad, 2, SVAL_SIDE_SRC_HOST, 1); // not a side
@@ -119,7 +119,7 @@ static void test_record(void) {
 
 static void test_copies(void) {
     erase_all();
-    side_write(SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST); // into A
+    side_write(SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST);  // into A
     side_write(SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST); // into B
     bool                      wb;
     const sval_side_record_t *n = sval_side_newest(&sector[0], &sector[1], &wb);

@@ -128,7 +128,7 @@ def test_pair(out, tmp, release_img):
         check(a // 4096 == first // 4096 and a % 4096 == (i % 16) * 256, f"pair: block {i} is page {i % 16} of its group's sector")
     check(mu.pair_writes(data) == [(0, 0x2000), (0x270000, 0x271000)], f"pair: writes {mu.pair_writes(data)}")
     check(mu.pair_layout_problems(data) == [], "pair: no protected flash")
-    rec = data[32 * 512 + 32: 32 * 512 + 32 + 128]
+    rec = data[32 * 512 + 32:32 * 512 + 32 + 128]
     check(struct.unpack_from("<I", data, 32 * 512 + 12)[0] == 0x10270000 and rec[:4] == b"SVPU", "pair: the record is the first page of the last sector")
     check(mu.parse_pair_record(rec) == manifest, "pair: the record carries the manifest")
     for build in ("plain", "release"):
@@ -150,9 +150,10 @@ def test_pair(out, tmp, release_img):
         check(done and flash == want, f"boot ROM model, order {'file' if not trial else 'shuffled'}: the pair UF2 lands exactly")
     # The model is sharp: an image area that is not whole sectors, followed
     # straight by the record, leaves the record's sector unerased.
-    naive = b"".join(mu.uf2_block(a, d, n, 7 + 16) for n, (a, d) in enumerate(
-        [(mu.XIP_BASE + i * 256, img[i * 256:(i + 1) * 256].ljust(256, b"\xff")) for i in range(7)]
-        + [(mu.XIP_BASE + 0x270000 + i * 256, (rec + b"\xff" * 4096)[i * 256:(i + 1) * 256]) for i in range(16)]))
+    naive = b"".join(
+        mu.uf2_block(a, d, n, 7 + 16)
+        for n, (a, d) in enumerate([(mu.XIP_BASE + i * 256, img[i * 256:(i + 1) * 256].ljust(256, b"\xff")) for i in range(7)] + [(mu.XIP_BASE + 0x270000 + i * 256, (rec + b"\xff" * 4096)[i * 256:(i + 1) * 256]) for i in range(16)])
+    )
     flash = bytearray(b"\x00" * 0x300000)
     bootrom_write(flash, naive)
     check(flash[0x270000:0x270000 + 128] != rec, "boot ROM model: a partial sector before the jump corrupts the record")
@@ -177,6 +178,7 @@ def test_pair(out, tmp, release_img):
         p.write_bytes(blob)
         rc, text = run("verify-pair", p, "--build", "plain")
         check(rc == 2 and needle in text, f"verify-pair refuses {what}: {text.strip()}")
+
     flip = bytearray(data)
     flip[32 * 512 + 32 + 40] ^= 0x01  # inside the record's manifest
     bad("a damaged record", bytes(flip), "CRC")
@@ -193,8 +195,7 @@ def test_pair(out, tmp, release_img):
     # A release pair (release_img with the either hand), and the C cross-check file.
     rel_src = tmp / "rel_either.uf2"
     rel_src.write_bytes(uf2(release_img(hand=2)))
-    rc, text = run("pair", rel_src, "-o", tmp / "rel_pair.uf2", "--kb", "svalboard/either", "--keymap", "sval", "--release",
-                   "--expect-version", "vM3-test", "--expect-fw-version", "3")
+    rc, text = run("pair", rel_src, "-o", tmp / "rel_pair.uf2", "--kb", "svalboard/either", "--keymap", "sval", "--release", "--expect-version", "vM3-test", "--expect-fw-version", "3")
     check(rc == 0, f"pair --release: built ({text.strip()})")
     rc, text = run("verify-pair", tmp / "rel_pair.uf2", "--build", "release")
     check(rc == 0, f"verify-pair of a release pair: {text.strip()}")

@@ -486,9 +486,7 @@ PAGES_PER_SECTOR = SECTOR // PAGE
 assert struct.calcsize(PAIR_RECORD_FMT) + 4 == PAIR_RECORD_BYTES
 # Flash the file may never write: settings, staging slot, side records,
 # build reset record, identity (update_flash.c asserts the firmware side).
-PROTECTED = {"settings": (0x160000, 0x260000), "staging slot": (0x800000, 0x960000),
-             "side records": (0xFFB000, 0xFFD000), "build reset record": (0xFFD000, 0xFFE000),
-             "identity": (0xFFE000, 0x1000000)}
+PROTECTED = {"settings": (0x160000, 0x260000), "staging slot": (0x800000, 0x960000), "side records": (0xFFB000, 0xFFD000), "build reset record": (0xFFD000, 0xFFE000), "identity": (0xFFE000, 0x1000000)}
 
 
 def pair_record(manifest):
@@ -512,8 +510,7 @@ def parse_pair_record(raw):
 
 
 def uf2_block(addr, data, block_no, num_blocks):
-    return (struct.pack("<8I", UF2_MAGIC0, UF2_MAGIC1, UF2_FLAG_FAMILY, addr, 256, block_no, num_blocks, RP2040_FAMILY)
-            + data.ljust(476, b"\0") + struct.pack("<I", UF2_MAGIC_END))
+    return (struct.pack("<8I", UF2_MAGIC0, UF2_MAGIC1, UF2_FLAG_FAMILY, addr, 256, block_no, num_blocks, RP2040_FAMILY) + data.ljust(476, b"\0") + struct.pack("<I", UF2_MAGIC_END))
 
 
 def pair_uf2_bytes(manifest, image):

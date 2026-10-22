@@ -66,7 +66,7 @@ ENTRY = 12
 TABLE = "split_transaction_table"
 SHMEM = "shared_memory"  # quantum/split_common/transport.c: static split_shared_memory_t shared_memory
 KB_IDS = "sval_split_kb_ids"  # updater/update_split.c, updater builds only
-MAX_TRANSACTIONS = 32    # transaction_id_define.h: 5 bits
+MAX_TRANSACTIONS = 32  # transaction_id_define.h: 5 bits
 
 
 class ElfError(Exception):
@@ -142,8 +142,7 @@ def read_table(path):
         if pad0 or pad1 or not callback_ok(cb):
             raise ElfError(f"{path}: entry {i} does not look like split_transaction_desc_t "
                            f"(padding {pad0:#x}/{pad1:#x}, callback {cb:#x}): has the struct changed?")
-        entries.append(dict(id=i, i2t_size=i2t_size, i2t_offset=i2t_off, t2i_size=t2i_size, t2i_offset=t2i_off,
-                            callback=cb != 0))
+        entries.append(dict(id=i, i2t_size=i2t_size, i2t_offset=i2t_off, t2i_size=t2i_size, t2i_offset=t2i_off, callback=cb != 0))
     shmem = symbols.get(SHMEM, [])
     kb_ids = None
     if KB_IDS in symbols:
@@ -151,14 +150,12 @@ def read_table(path):
         raw_ids = read(kaddr, ksize)
         if ksize < 5 or raw_ids[:4] != b"SVKB" or ksize != 5 + 3 * raw_ids[4]:
             raise ElfError(f"{path}: {KB_IDS} is not b'SVKB', n, then n (id, tag) triples ({raw_ids.hex()})")
-        kb_ids = [dict(id=raw_ids[5 + 3 * i], tag=raw_ids[6 + 3 * i:8 + 3 * i].decode("latin-1"))
-                  for i in range(raw_ids[4])]
+        kb_ids = [dict(id=raw_ids[5 + 3 * i], tag=raw_ids[6 + 3 * i:8 + 3 * i].decode("latin-1")) for i in range(raw_ids[4])]
         for e in kb_ids:
             if e["id"] >= count or any(entries[e["id"]][f] for f in ("i2t_size", "t2i_size", "callback")):
                 raise ElfError(f"{path}: keyboard RPC {e['tag']} has ID {e['id']}, which is not an empty "
                                "(boot-filled) entry of the table")
-    return dict(elf=path, count=count, entries=entries, shmem_size=shmem[0][1] if len(shmem) == 1 else None,
-                kb_ids=kb_ids)
+    return dict(elf=path, count=count, entries=entries, shmem_size=shmem[0][1] if len(shmem) == 1 else None, kb_ids=kb_ids)
 
 
 FIELDS = ("i2t_size", "i2t_offset", "t2i_size", "t2i_offset", "callback")
@@ -179,8 +176,10 @@ def compare(a, b):
             if ea[f] != eb[f]:
                 diffs.append(f"ID {ea['id']}: {f} {ea[f]} vs {eb[f]}")
     if a.get("kb_ids") != b.get("kb_ids"):
+
         def ids(t):
             return "none" if t.get("kb_ids") is None else ", ".join(f"{e['tag']}={e['id']}" for e in t["kb_ids"])
+
         diffs.append(f"keyboard RPC IDs ({KB_IDS}) {ids(a)} vs {ids(b)}")
     return diffs
 

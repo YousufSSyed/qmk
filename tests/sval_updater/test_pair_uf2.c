@@ -134,7 +134,8 @@ static void test_pair_uf2_host_paths(void) {
     commit_avail          = true;
     CHECK(to_verified(CLIENT_A));
     CHECK_EQ(send_commit(CLIENT_A, body_crc()), UPDATE_ACCEPTED);
-    for (int i = 0; i < 300; i++) pass();
+    for (int i = 0; i < 300; i++)
+        pass();
     CHECK_EQ(commit_runs, 1);
     CHECK(session_to_relayed(0x2000) || true); // the other half's session, as far as it goes here
     for (int i = 0; i < 20000 && updater_state() != UPDATE_STATE_IDLE; i++) {
@@ -170,9 +171,9 @@ static void test_pair_uf2_host_paths(void) {
 static void test_pair_uf2_stale_image(void) {
     for (int k = 0; k < 3; k++) {
         pb_fresh(0x3000);
-        if (k == 0) master_self[0x1234] ^= 0x01;                 // one byte
-        if (k == 1) memset(master_self + 0x2000, 0xA5, 0x1000);  // the copy stopped before the last sector
-        if (k == 2) master_self[0x3000 - 1] ^= 0x80;             // the last byte
+        if (k == 0) master_self[0x1234] ^= 0x01;                // one byte
+        if (k == 1) memset(master_self + 0x2000, 0xA5, 0x1000); // the copy stopped before the last sector
+        if (k == 2) master_self[0x3000 - 1] ^= 0x80;            // the last byte
         pb_run(20000);
         CHECK_EQ(update_pair_outcome(), PAIR_OUT_STALE);
         CHECK_EQ(update_pair_error(), UPDATE_BAD_HASH);
@@ -188,18 +189,37 @@ static void test_pair_uf2_stale_image(void) {
 static void test_pair_uf2_bad_record(void) {
     for (int k = 0; k < 7; k++) {
         pb_fresh(0x2000);
-        update_pair_record_t *r = (update_pair_record_t *)PAIR_SECTOR;
+        update_pair_record_t  *r = (update_pair_record_t *)PAIR_SECTOR;
         sval_update_manifest_t m;
         memcpy(&m, blob, sizeof(m));
         update_status_t want = UPDATE_INVALID;
         switch (k) {
-            case 0: PAIR_SECTOR[40] ^= 0x04; break; // a bit of the manifest: the CRC
-            case 1: m.hand = UPDATE_HAND_RIGHT; break; // one side's image: both halves would be right
-            case 2: m.hand = UPDATE_HAND_LEFT; break;
-            case 3: m.security_epoch = 0; self_dev.security_epoch = 2; want = UPDATE_EPOCH; break; // below this build's floor
-            case 4: m.magic ^= 1; break; // not a manifest
-            case 5: r->version = 2; r->crc = update_crc32_mpeg2((const uint8_t *)r, 124); want = UPDATE_UNSUPPORTED; break;
-            case 6: r->reserved[1] = 1; r->crc = update_crc32_mpeg2((const uint8_t *)r, 124); break;
+            case 0:
+                PAIR_SECTOR[40] ^= 0x04;
+                break; // a bit of the manifest: the CRC
+            case 1:
+                m.hand = UPDATE_HAND_RIGHT;
+                break; // one side's image: both halves would be right
+            case 2:
+                m.hand = UPDATE_HAND_LEFT;
+                break;
+            case 3:
+                m.security_epoch        = 0;
+                self_dev.security_epoch = 2;
+                want                    = UPDATE_EPOCH;
+                break; // below this build's floor
+            case 4:
+                m.magic ^= 1;
+                break; // not a manifest
+            case 5:
+                r->version = 2;
+                r->crc     = update_crc32_mpeg2((const uint8_t *)r, 124);
+                want       = UPDATE_UNSUPPORTED;
+                break;
+            case 6:
+                r->reserved[1] = 1;
+                r->crc         = update_crc32_mpeg2((const uint8_t *)r, 124);
+                break;
         }
         if (k >= 1 && k <= 4) pair_write_record((const uint8_t *)&m);
         pb_run(5000);
@@ -211,7 +231,8 @@ static void test_pair_uf2_bad_record(void) {
         CHECK_EQ(pause_calls, 0);
         CHECK_EQ(slave_commit_runs, 0);
         // The light goes after SVAL_UPDATE_PAIR_ERROR_MS (presence still MATCH).
-        for (int i = 0; i < 31000; i++) pass();
+        for (int i = 0; i < 31000; i++)
+            pass();
         CHECK_EQ(update_pair_phase(), PAIR_BOOT_IDLE);
         CHECK(led_now != UPDATE_LED_ERROR);
     }
@@ -359,7 +380,8 @@ static void test_pair_uf2_cut(void) {
     }
     CHECK_EQ(update_pair_phase(), PAIR_BOOT_RELAY);
     pb_boot(); // power cut and back
-    for (int i = 0; i < 6000; i++) pass(); // the other half drops its session (5 s)
+    for (int i = 0; i < 6000; i++)
+        pass(); // the other half drops its session (5 s)
     pb_run(200000);
     CHECK_EQ(update_pair_outcome(), PAIR_OUT_DONE);
     CHECK_EQ(slave_commit_runs, 1);
@@ -380,9 +402,9 @@ static void test_pair_uf2_cross(const char *dir) {
     memset(master_self, 0xFF, sizeof(master_self));
     uint32_t num = 0, img_end = 0;
     for (size_t b = 0; b < len / 512; b++) {
-        const uint8_t *blk = uf2 + 512 * b;
+        const uint8_t *blk  = uf2 + 512 * b;
         uint32_t       addr = get32le(blk + 12) - 0x10000000u, no = get32le(blk + 20);
-        num                 = get32le(blk + 24);
+        num = get32le(blk + 24);
         CHECK_EQ(get32le(blk + 8), 0x2000u);
         CHECK_EQ(get32le(blk + 28), 0xE48BFF56u);
         CHECK_EQ(no, (uint32_t)b);
@@ -393,7 +415,7 @@ static void test_pair_uf2_cross(const char *dir) {
         CHECK(addr < SVAL_UPDATE_MAX_IMAGE || (addr >= UPDATE_PAIR_RECORD_OFFSET && addr < UPDATE_PAIR_RECORD_OFFSET + UPDATE_PAIR_SECTOR_BYTES));
     }
     CHECK_EQ(num, (uint32_t)(len / 512));
-    const update_pair_record_t *r = (const update_pair_record_t *)PAIR_SECTOR;
+    const update_pair_record_t *r   = (const update_pair_record_t *)PAIR_SECTOR;
     update_device_t             dev = self_dev;
     CHECK_EQ(update_pair_record_check(r, &dev), UPDATE_OK);
     memcpy(blob, r->manifest, UPDATE_MANIFEST_BYTES);
