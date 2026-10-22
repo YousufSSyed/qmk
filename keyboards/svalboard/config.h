@@ -115,6 +115,22 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // After the other half accepts COMMIT, the link stays paused for its commit
 // (M1 #13: about 1-2 s from COMMIT to the reset) plus 2.5 s for its reboot
 // (R18: the 500 ms double-tap window and the 2 s USB detect).
+// The boot relay of a pair UF2 (updater/update_pair.c, docs/pair-uf2.md): how
+// long the half with USB waits for the other half's presence after boot, how
+// many relays it tries in one boot and the pause between them, and how long
+// it shows the red error light after a record it did not install.
+#ifndef SVAL_UPDATE_PAIR_PEER_WAIT_MS
+#    define SVAL_UPDATE_PAIR_PEER_WAIT_MS 15000
+#endif
+#ifndef SVAL_UPDATE_PAIR_RELAY_TRIES
+#    define SVAL_UPDATE_PAIR_RELAY_TRIES 3
+#endif
+#ifndef SVAL_UPDATE_PAIR_RETRY_MS
+#    define SVAL_UPDATE_PAIR_RETRY_MS 2000
+#endif
+#ifndef SVAL_UPDATE_PAIR_ERROR_MS
+#    define SVAL_UPDATE_PAIR_ERROR_MS 30000
+#endif
 #define SVAL_UPDATE_SPLIT_COMMIT_MS 2000
 #define SVAL_UPDATE_SPLIT_REBOOT_MS 2500
 // A probe after the hold that finds the other half still COMMITTING probes

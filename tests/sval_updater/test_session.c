@@ -196,6 +196,18 @@ bool update_split_port_pause(bool on) {
     }
     return true;
 }
+// This half's own image (the boot relay's source): its own copy, apart from
+// the die, which the simulation shares with the other half.
+static uint8_t master_self[SVAL_UPDATE_MAX_IMAGE];
+static bool    port_master = true; // this half has USB
+bool           updater_port_is_master(void) {
+    return !sim_slave && port_master;
+}
+bool update_split_port_self_read(uint32_t off, uint8_t *dst, uint32_t n) {
+    if (off % 4 || n % 4 || off > SVAL_UPDATE_MAX_IMAGE || n > SVAL_UPDATE_MAX_IMAGE - off) return false;
+    memcpy(dst, master_self + off, n);
+    return true;
+}
 bool update_split_port_slot_read(uint32_t off, uint8_t *dst, uint32_t n) {
     if (off % 4 || n % 4 || off > SVAL_UPDATE_SIZE || n > SVAL_UPDATE_SIZE - off) return false;
     memcpy(dst, master_slot ? master_slot + off : update_host_flash + SVAL_UPDATE_BASE + off, n);

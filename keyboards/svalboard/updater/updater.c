@@ -174,6 +174,7 @@
 #include "update_led.h"
 #include "update_commit.h"
 #include "update_split.h"
+#include "update_pair.h"   // the boot relay of a pair UF2 (docs/pair-uf2.md)
 #include "build_reset.h" // BUILD_RESET_TO_* (SETTINGS_RESET modes, D44)
 #include "sha512.h" // vendor/: SHA-512 from Monocypher
 
@@ -878,6 +879,11 @@ void updater_via_command(uint8_t *data, uint8_t length) {
         st = UPDATE_UNSUPPORTED;
     } else if (to_other && (op == UPDATE_OP_TEST_HALT || op == UPDATE_OP_DIAG)) {
         st = UPDATE_UNSUPPORTED; // this half's only
+    } else if (update_pair_busy() && op != UPDATE_OP_INFO && op != UPDATE_OP_STATUS && op != UPDATE_OP_RELAY && op != UPDATE_OP_DIAG) {
+        // The boot relay of a pair UF2 runs (docs/pair-uf2.md): every op that
+        // could start or touch a session waits for it. INFO, STATUS, RELAY
+        // (its progress) and DIAG are answered.
+        st = UPDATE_BUSY;
     } else if ((s.state == UPDATE_STATE_COMMITTING || s.state == UPDATE_STATE_SUBSIDE_COMMITTING) && op != UPDATE_OP_INFO && op != UPDATE_OP_STATUS && op != UPDATE_OP_RELAY &&
                !(op == UPDATE_OP_REBIND && s.state == UPDATE_STATE_SUBSIDE_COMMITTING)) {
         // Protocol 4: REBIND is answered while the other half commits, so a
@@ -1021,10 +1027,35 @@ static void verify_image_step(void) {
     s.state = UPDATE_STATE_VERIFIED;
 }
 
+// The boot relay of a pair UF2, in the same colors (D24): rainbow while it
+// checks and sends, magenta while the other half writes, red after a record
+// that was not installed.
+static bool pair_led(update_led_mode_t *mode) {
+    update_relay_info_t ri;
+    switch (update_pair_phase()) {
+        case PAIR_BOOT_HASH:
+        case PAIR_BOOT_WAIT:
+        case PAIR_BOOT_RETRY:
+            *mode = UPDATE_LED_PROGRESS;
+            return true;
+        case PAIR_BOOT_RELAY:
+            update_relay_info(&ri);
+            *mode = ri.phase == RELAY_COMMIT || ri.phase == RELAY_HOLD || ri.phase == RELAY_PROBE ? UPDATE_LED_WRITING : UPDATE_LED_PROGRESS;
+            return true;
+        case PAIR_BOOT_ERROR:
+            *mode = UPDATE_LED_ERROR;
+            return true;
+        default:
+            return false;
+    }
+}
+
 static update_led_mode_t led_mode(void) {
-    uint32_t done_ms;
+    uint32_t          done_ms;
+    update_led_mode_t pair_mode;
     switch (s.state) {
         case UPDATE_STATE_IDLE:
+            if (pair_led(&pair_mode)) return pair_mode;
             // The half without USB, in a session from the other half: the same
             // colors (D24); back to normal when it ends or times out.
             switch (update_split_slave_state()) {
@@ -1071,6 +1102,8 @@ void updater_task(void) {
     // The relay (M2) runs before the session looks at it; once its COMMIT is
     // out it runs to the end of its hold even if the session went away.
     update_relay_task();
+    // The boot relay of a pair UF2 (docs/pair-uf2.md), after the relay it drives.
+    update_pair_task();
     now_ms         = updater_port_now_ms();
     bool hostbound = (s.state >= UPDATE_STATE_MANIFEST_LOADING && s.state <= UPDATE_STATE_VERIFIED) || s.state == UPDATE_STATE_RELAYING || s.state == UPDATE_STATE_RELAYED;
     if (hostbound && now_ms - s.op_ms >= SVAL_UPDATE_SESSION_TIMEOUT_MS) {
@@ -1156,7 +1189,7 @@ void updater_task(void) {
 }
 
 bool updater_active(void) {
-    return s.state != UPDATE_STATE_IDLE || update_split_slave_active() || update_relay_busy();
+    return s.state != UPDATE_STATE_IDLE || update_split_slave_active() || update_relay_busy() || update_pair_busy();
 }
 
 update_state_t updater_state(void) {
@@ -1165,6 +1198,7 @@ update_state_t updater_state(void) {
 
 #ifdef SVAL_UPDATER_HOST_TEST
 void updater_host_reset(void) {
+    update_pair_host_reset();
     reset_session();
     held_clear();
     reset_due = false;
@@ -1227,6 +1261,10 @@ bool updater_port_settings_invalidate(uint8_t mode) {
 
 void updater_port_reboot(void) {
     soft_reset_keyboard();
+}
+
+bool updater_port_is_master(void) {
+    return is_keyboard_master();
 }
 
 // crt0 (ChibiOS crt0_v6m.S, CRT0_INIT_STACKS on by default) fills the process

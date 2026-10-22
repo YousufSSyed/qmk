@@ -97,6 +97,12 @@ typedef enum {
 // false (and nothing started) if it cannot be (the link is down).
 bool update_relay_start(const uint8_t *manifest, uint32_t image_len, uint32_t crc_body);
 
+// The boot relay of a pair UF2 (update_pair.c, and nothing else): the same
+// relay, of this half's own running image (flash offset 0), which the caller
+// has hashed against manifest. No host session and no chord are involved:
+// only a record that a UF2 copy in BOOTSEL wrote leads here.
+bool update_relay_start_self(const uint8_t *manifest, uint32_t image_len, uint32_t crc_body);
+
 // One pass: at most SVAL_UPDATE_RELAY_PASS_MS of relay work, or one poll.
 void update_relay_task(void);
 
@@ -189,3 +195,6 @@ bool update_split_port_rpc(const uint8_t *req, uint8_t req_len, uint8_t *rsp, ui
 bool update_split_port_pause(bool on);
 // Master: n bytes of this half's slot at off (whole words), read uncached.
 bool update_split_port_slot_read(uint32_t off, uint8_t *dst, uint32_t n);
+// Master: n bytes of this half's own image (flash offset off, whole words, inside
+// [0, SVAL_UPDATE_MAX_IMAGE)), read uncached. The boot relay's source.
+bool update_split_port_self_read(uint32_t off, uint8_t *dst, uint32_t n);

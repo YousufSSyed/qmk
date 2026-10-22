@@ -41,7 +41,8 @@ mismatch. Default builds have none (they are not paired with updater builds:
 their transaction counts differ anyway).
 
 With --left/--right every left ELF is checked against every right ELF; with
---dir, *left*.elf and *right*.elf in each directory are paired the same way.
+--dir, *left*.elf and *right*.elf in each directory are paired the same way,
+and an *either*.elf (one image for both halves) counts as both.
 Exit 1 on any mismatch or unreadable table. The size of the shared-memory
 block is printed and compared too, but a difference there is only a warning:
 it does not travel on the wire.
@@ -225,6 +226,12 @@ def main():
                     left.append(p)
                 elif "right" in base:
                     right.append(p)
+                elif "either" in base:
+                    # One image for both halves: it pairs with itself and
+                    # with every other one (and, through the golden table,
+                    # with the per-side releases in the field).
+                    left.append(p)
+                    right.append(p)
         if not left or not right:
             ap.error("need at least one left and one right ELF")
         tables = {p: read_table(p) for p in left + right}
@@ -256,14 +263,15 @@ def main():
             return 1
         golden["elf"] = os.path.basename(args.golden)
         bad = 0
-        for p in left + right:
+        builds = list(dict.fromkeys(left + right))
+        for p in builds:
             diffs = compare(tables[p], golden)
             if diffs:
                 bad += 1
                 print(f"FAIL {os.path.basename(p)} differs from the golden table")
                 for d in diffs:
                     print(f"    {d}")
-        print(f"{len(left) + len(right) - bad} of {len(left) + len(right)} builds match the golden table")
+        print(f"{len(builds) - bad} of {len(builds)} builds match the golden table")
         failed += bad
     return 1 if failed else 0
 

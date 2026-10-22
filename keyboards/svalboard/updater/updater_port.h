@@ -41,3 +41,7 @@ uint16_t updater_port_stack_free(uint16_t *size);
 // or BUILD_RESET_TO_BLANK, which then sets every key to KC_NO (D44).
 bool updater_port_settings_invalidate(uint8_t mode);
 void updater_port_reboot(void);
+
+// This half has USB (the split master). The boot relay of a pair UF2 runs
+// there only (update_pair.c).
+bool updater_port_is_master(void);

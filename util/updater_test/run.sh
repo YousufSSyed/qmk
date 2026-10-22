@@ -39,7 +39,7 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     "$tests/test_updater.c" \
     "$kb/updater/updater.c" "$kb/updater/update_gesture.c" \
     "$kb/updater/update_image.c" "$kb/updater/update_build_info.c" \
-    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" \
+    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" "$kb/updater/update_pair.c" \
     "$kb/updater/vendor/sha512.c" \
     -o "$out/test_updater"
 "$out/test_updater" "$out/cross"
@@ -52,7 +52,7 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -shared -fPIC 
     "$tests/test_updater.c" \
     "$kb/updater/updater.c" "$kb/updater/update_gesture.c" \
     "$kb/updater/update_image.c" "$kb/updater/update_build_info.c" \
-    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" \
+    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" "$kb/updater/update_pair.c" \
     "$kb/updater/vendor/sha512.c" \
     -o "$out/libupdater_host.so"
 python3 -I "$tests/test_sval_update_tool.py" "$out/libupdater_host.so" "$out/tool"
@@ -67,7 +67,7 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     "$tests/test_updater.c" \
     "$kb/updater/updater.c" "$kb/updater/update_gesture.c" \
     "$kb/updater/update_image.c" "$kb/updater/update_build_info.c" \
-    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" \
+    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" "$kb/updater/update_pair.c" \
     "$kb/updater/vendor/sha512.c" \
     -o "$out/test_nochord"
 "$out/test_nochord"
@@ -77,7 +77,7 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -shared -fPIC 
     "$tests/test_updater.c" \
     "$kb/updater/updater.c" "$kb/updater/update_gesture.c" \
     "$kb/updater/update_image.c" "$kb/updater/update_build_info.c" \
-    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" \
+    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" "$kb/updater/update_pair.c" \
     "$kb/updater/vendor/sha512.c" \
     -o "$out/libupdater_nochord.so"
 python3 -I "$tests/test_no_chord_tool.py" "$out/libupdater_nochord.so" "$out/nochord"
@@ -91,7 +91,7 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     "$tests/test_updater.c" \
     "$kb/updater/updater.c" "$kb/updater/update_gesture.c" \
     "$kb/updater/update_image.c" "$kb/updater/update_build_info.c" \
-    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" \
+    "$kb/updater/update_split.c" "$kb/updater/update_split_wire.c" "$kb/updater/update_pair.c" \
     "$kb/updater/vendor/sha512.c" \
     -o "$out/test_commit"
 "$out/test_commit"
@@ -137,3 +137,15 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -o "$out/test_release"
 # shellcheck disable=SC2086 # SVAL_RELEASE_SVUPS is a list of FILE:expect words
 "$out/test_release" ${SVAL_RELEASE_SVUPS:-}
+
+# Pair UF2 (docs/pair-uf2.md): the relay with no chord, update_relay_start_self,
+# is called from the boot relay (update_pair.c) and nowhere else, and only
+# update_flash.c's fixed-address routine writes the pair record sector.
+callers="$(grep -rl 'update_relay_start_self' "$kb" --include='*.c' | sort | tr '\n' ' ')"
+if [ "$callers" != "$kb/updater/update_pair.c $kb/updater/update_split.c " ]; then
+    echo "FAIL: update_relay_start_self is used outside update_pair.c: $callers"; exit 1
+fi
+if grep -rn 'UPDATE_PAIR_RECORD_OFFSET' "$kb" --include='*.c' | grep -v "$kb/updater/update_flash.c" | grep -v "$kb/updater/update_pair.c" | grep -q .; then
+    echo "FAIL: UPDATE_PAIR_RECORD_OFFSET is used outside update_flash.c and update_pair.c"; exit 1
+fi
+echo "pair UF2: the no-chord relay and the record sector have one caller each"
