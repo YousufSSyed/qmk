@@ -287,8 +287,8 @@ installed, the other half left alone).
 
 The record sector shares no erase sector with the settings, the staging slot,
 the side records, the build reset record or identity (asserted). It lies in
-the first 4 MiB. The flash map assumes the 16 MiB part the boards are built
-with (the test boards read JEDEC `ef4018`); the updater checks the capacity
+the first 4 MiB. The flash map assumes the 16 MiB part every shipped board
+has (confirmed; the test boards read JEDEC `ef4018`); the updater checks the capacity
 byte (`0x18`) and reports UNAVAILABLE on any other die (D26). On another die:
 
 - The boot relay does nothing (it needs the updater's flash check), so the
@@ -376,10 +376,6 @@ was at the boards to unplug it), and the error light's colors (not observable
 remotely).
 
 ## Open questions
-
-- **Flash parts in the field:** confirm that every board shipped has the
-  16 MiB flash part. The layout above copes with 4 and 8 MiB parts (the
-  record stays inert); 2 MiB parts cannot run this firmware at all.
 
 - **How long the error light shows** (30 s) and whether a kept record should
   show red at all on a boot where the other half is simply unplugged.
