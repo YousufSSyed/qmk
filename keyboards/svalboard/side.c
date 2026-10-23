@@ -59,6 +59,61 @@ uint8_t sval_side_from_eeconfig(uint16_t magic, uint8_t handedness) {
     return SVAL_SIDE_UNKNOWN;
 }
 
+uint8_t sval_side_from_vial_store(sval_side_word_fn word, void *ctx) {
+    const uint32_t logical = SVAL_SIDE_VIAL_STORE_LOGICAL, backing = SVAL_SIDE_VIAL_STORE_BACKING;
+    uint8_t        head[16];
+    uint64_t       hash = 0xcbf29ce484222325ull; // FNV-1a 64 over the consolidated image
+    for (uint32_t a = 0; a < logical; a += 2) {
+        const uint16_t w  = word(a, ctx);
+        const uint8_t  lo = w & 0xFF, hi = w >> 8;
+        if (a < sizeof(head)) head[a] = lo, head[a + 1] = hi;
+        hash = (hash ^ lo) * 0x100000001b3ull;
+        hash = (hash ^ hi) * 0x100000001b3ull;
+    }
+    uint64_t sum = 0;
+    for (uint32_t k = 0; k < 4; k++) sum |= (uint64_t)word(logical + 2 * k, ctx) << (16 * k);
+    if (sum != hash) memset(head, 0, sizeof(head)); // QMK starts from zeros, then replays the log
+    for (uint32_t a = logical + 8; a + 2 <= backing;) {
+        uint8_t        e[8] = {0};
+        const uint16_t w0   = word(a, ctx);
+        if (w0 == 0) break; // the first empty slot ends the log
+        a += 2;
+        e[0] = w0 & 0xFF, e[1] = w0 >> 8;
+        const uint8_t type = e[0] >> 6;
+        if (type == 0) { // multi-byte: a 19-bit address, 1-5 bytes
+            const uint16_t w1 = word(a, ctx);
+            a += 2;
+            e[2] = w1 & 0xFF, e[3] = w1 >> 8;
+            const uint32_t addr = ((uint32_t)(e[0] & 7) << 16) | ((uint32_t)e[1] << 8) | e[2];
+            const uint8_t  len  = (e[0] >> 3) & 7;
+            if (len > 1) {
+                const uint16_t w2 = word(a, ctx);
+                a += 2;
+                e[4] = w2 & 0xFF, e[5] = w2 >> 8;
+            }
+            if (len > 3) {
+                const uint16_t w3 = word(a, ctx);
+                a += 2;
+                e[6] = w3 & 0xFF, e[7] = w3 >> 8;
+            }
+            if (len == 0 || len > 5 || addr + len > logical) break; // corrupt: stop where QMK would
+            for (uint8_t i = 0; i < len; i++)
+                if (addr + i < sizeof(head)) head[addr + i] = e[3 + i];
+        } else if (type == 1) { // one byte below address 64
+            const uint32_t addr = e[0] & 0x3F;
+            if (addr < sizeof(head)) head[addr] = e[1];
+        } else if (type == 2) { // a 0 or 1 written as a word
+            const uint32_t addr = ((uint32_t)(e[0] & 0x1F) << 9) | ((uint32_t)e[1] << 1);
+            if (addr + 1 >= logical) break;
+            if (addr < sizeof(head)) head[addr] = (e[0] >> 5) & 1;
+            if (addr + 1 < sizeof(head)) head[addr + 1] = 0;
+        } else {
+            break;
+        }
+    }
+    return sval_side_from_eeconfig((uint16_t)(head[0] | (head[1] << 8)), head[SVAL_SIDE_EECONFIG_HANDEDNESS]);
+}
+
 uint8_t sval_side_from_strap(uint8_t strap_class) {
     return strap_class == STRAP_LEFT ? SVAL_SIDE_LEFT : strap_class == STRAP_RIGHT ? SVAL_SIDE_RIGHT : SVAL_SIDE_UNKNOWN;
 }
@@ -161,13 +216,37 @@ static uint8_t save(uint8_t s, uint8_t src) {
     return identity_side_record_write(write_b ? SVAL_SIDE_SECTOR_B : SVAL_SIDE_SECTOR_A, &r, sizeof(r)) ? SVAL_SIDE_OK : SVAL_SIDE_WRITE_FAILED;
 }
 
+static uint16_t vial_store_word(uint32_t off, void *ctx) {
+    (void)ctx;
+    return (uint16_t)~*(const volatile uint16_t *)(XIP_NOCACHE_NOALLOC_BASE + SVAL_SIDE_VIAL_STORE_BASE + off);
+}
+
+// The side a Vial board's old store recorded, read before anything can write
+// flash: this firmware's settings store has its second copy at 0x1E0000, so on
+// a Vial board eeprom_driver_init() rewrites the old store before
+// keyboard_pre_init_kb() runs. board_init() runs from halInit(), before that.
+static uint8_t vial_side = SVAL_SIDE_UNKNOWN;
+
+// Plain XIP reads only (about 64 KB): no flash commands this early.
+void board_init(void) {
+    vial_side = sval_side_from_vial_store(vial_store_word, NULL);
+}
+
 void sval_side_init(void) {
     const uint8_t             strap    = sval_side_from_strap(sval_thumb_hand());
     const sval_side_record_t *rec      = stored(NULL);
     uint8_t                   migrated = SVAL_SIDE_UNKNOWN;
     // The handedness byte is read before build_reset_pre_init() can format the
     // settings, and only when there is a record area to keep the result in.
-    if (!rec && identity_available()) migrated = sval_side_from_eeconfig(eeprom_read_word((const uint16_t *)0), eeprom_read_byte((const uint8_t *)SVAL_SIDE_EECONFIG_HANDEDNESS));
+    // svalboard/qmk boards (x3 and older per-hand builds) left it in this
+    // firmware's store; a Vial board left no valid store here, so its side comes
+    // from the old Vial store, read at board_init(). A valid store here never
+    // falls back to the Vial area, which now holds this firmware's second copy.
+    if (!rec && identity_available()) {
+        const uint16_t magic = eeprom_read_word((const uint16_t *)0);
+        migrated             = sval_side_from_eeconfig(magic, eeprom_read_byte((const uint8_t *)SVAL_SIDE_EECONFIG_HANDEDNESS));
+        if (migrated == SVAL_SIDE_UNKNOWN && sval_side_from_eeconfig(magic, 0) == SVAL_SIDE_UNKNOWN) migrated = vial_side;
+    }
     sval_side_decision_t d;
     sval_side_decide(strap, rec, migrated, &d);
     side   = d.side;

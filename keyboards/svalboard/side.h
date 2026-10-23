@@ -68,6 +68,19 @@ typedef struct __attribute__((packed)) {
 // (QMK's own, used before 0xFEE2, same wear-leveling region).
 #define SVAL_SIDE_EECONFIG_HANDEDNESS 14
 
+// The Vial firmware (svalboard/vial-qmk, per-hand builds) kept its settings in
+// QMK wear leveling built for a 2 MB chip: 128 KB of backing at 0x1E0000, 64 KB
+// logical, 2-byte backing writes, every backing word inverted in flash. Its
+// handedness byte is at offset 14, as above, with QMK's magic 0xFEE3.
+#define SVAL_SIDE_VIAL_STORE_BASE 0x1E0000u
+#define SVAL_SIDE_VIAL_STORE_BACKING (128u * 1024u)
+#define SVAL_SIDE_VIAL_STORE_LOGICAL (64u * 1024u)
+// The backing word at byte offset off of that store, already un-inverted.
+typedef uint16_t (*sval_side_word_fn)(uint32_t off, void *ctx);
+// The side a Vial store recorded: QMK's boot replay (the consolidated image if
+// its FNV-1a 64 checksum matches, then the write log) for the first 16 bytes only.
+uint8_t sval_side_from_vial_store(sval_side_word_fn word, void *ctx);
+
 uint32_t sval_side_crc32(const uint8_t *p, size_t n);
 bool     sval_side_record_valid(const sval_side_record_t *r);
 void     sval_side_record_make(sval_side_record_t *r, uint8_t side, uint8_t source, uint32_t seq);
