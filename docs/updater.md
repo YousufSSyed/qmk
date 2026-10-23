@@ -230,14 +230,44 @@ Scan Lab's safe timing (500 µs before and after, `SVAL_UPDATE_CHORD_PREWAIT_US`
 / `POSTWAIT_US`), ARM is refused while a sweep runs, and Scan Lab refuses to
 start a sweep or a probe while the updater is active.
 
-**LEDs.** Blue blink: make the chord. White double flash: chord recognized. Solid
-blue: approved, waiting for BEGIN. Rainbow: verifying, erasing, receiving.
-Magenta: writing. Red at 1 Hz: error, until ABORT. A pre-approved ARM
-(protocol 4: this half's install approved by the pair's chord, or any ARM on a
-no-chord dev build) shows no blue and no white flash: the light goes straight
-to the rainbow. Between the halves of a pair update, the half with USB blinks
-red slowly while the halves differ; that is expected, and it ends when this
-half's install is done.
+**LEDs (D24).** One meaning per color. Red means only that something failed;
+nothing you should simply wait through is ever red.
+
+| Light | Meaning | When |
+|---|---|---|
+| Blue blink | Your turn | Make the chord |
+| White double flash | Got it | The chord was recognized |
+| Rainbow | Updating, keep plugged in | On both halves, from the start of an update until the halves match, including while one half waits for the other to restart after a relay |
+| Magenta | Writing | Only on the half that is committing, where the light must hold one color while flash is written from RAM |
+| Green double flash | Done | On both halves, once presence matches after an update or a relay |
+| Red blink (1 Hz) | It failed: open Keybard | A refused or failed install, or halves that still differ 60 s after an update or relay finished. It stops after 30 s; INFO flags bit5 and Keybard keep reporting the problem |
+| No light | Nothing for you to do | Also for a pair record kept waiting for an unplugged or absent other half |
+
+After the chord the light goes straight to the rainbow (there is no separate
+"approved" color). A pre-approved ARM (protocol 4: this half's install
+approved by the pair's chord, or any ARM on a no-chord dev build) shows no
+blue and no white flash. A failed session stays in ERROR until ABORT, but its
+red stops after 30 s (`SVAL_UPDATE_RED_MS`).
+
+How each half knows. The half with USB opens an "after update" window when a
+relay ends done and on the first boot after its own commit (a marker in
+watchdog scratch 0, set just before the commit runs; it survives the commit's
+reset, not a power cut). It shows the rainbow until presence reads MATCH, then
+the green flash. If it has been idle for `SVAL_UPDATE_AFTER_WAIT_MS` (60 s)
+with the halves still different, it shows red for 30 s and then nothing. A
+half on its own (presence never answered after its own install) just goes
+dark. The half without USB cannot see presence, so the half with USB sends its
+light on the 500 ms presence ping (one byte appended to `presence_rpc_t`;
+`updater_split_light`), and the half without USB shows the same rainbow, the
+green flash once, and red. After its own commit it shows the rainbow from boot
+until the first ping. A half with USB from before this byte sends the shorter
+ping, and the other half then shows nothing after an update. No host protocol
+change, and the split message table is unchanged (the ping is a keyboard RPC
+of variable length).
+
+In a pair update from Keybard this means: blue, white, then the rainbow on
+both halves through the relay, the other half's restart and this half's own
+install (magenta on each half only while it writes), then green on both.
 
 **Manifest checks** (at ARM, again at BEGIN, and at commit step 0). Magic
 `SVUP`, version 2, reserved fields 0, known flags; a release build refuses
@@ -425,8 +455,9 @@ with its own build and reports the result in STATUS byte 22
 | 3 | built for the same hand |
 | 4 | the answer fails magic, version or CRC |
 
-For 2-4, INFO flags bit5 is set and, while the updater is idle, the half with
-USB blinks the red error LED (1 Hz) until the halves match (V). The pointing
+For 2-4, INFO flags bit5 is set until the halves match (V). The lights show it
+only after an update: the rainbow while the after-update window is open, and
+after 60 s idle red for 30 s, then nothing (see LEDs); bit5 stays set. The pointing
 device may differ between halves (D18). Code 3 is what an image for the wrong
 hand leads to (the firmware takes it, D33): the half with USB cannot reach the
 other half through the updater until one of them is flashed for its hand.
@@ -505,10 +536,11 @@ INVALID. No valid answer for 2 s fails the relay with UNAVAILABLE, then this
 half sends one ABORT and resumes the link (in the commit phase it holds
 instead, above).
 
-After a relay ends done, this half shows the red error LED (and INFO flags
-bit5) until presence first reads MATCH, also while presence reads NONE: a
-release that changes the split table cannot talk to the old half at all, and
-would otherwise look like an unplugged cable (V).
+After a relay ends done, INFO flags bit5 stays set until presence first reads
+MATCH, also while presence reads NONE: a release that changes the split table
+cannot talk to the old half at all, and would otherwise look like an unplugged
+cable (V). Meanwhile the lights show the rainbow on both halves, then green at
+MATCH, or red for 30 s once the halves still differ after 60 s idle (see LEDs).
 
 **The other half** (`update_split_slave_rpc` in the SlaveThread,
 `update_split_slave_task` from housekeeping):
@@ -535,7 +567,8 @@ would otherwise look like an unplugged cable (V).
 - While its session runs it keeps full clock (no deep idle) and holds off the
   identity task, as `updater_active()` does on the half with USB.
 - LEDs (D24): rainbow while it checks, erases, receives and verifies, magenta
-  while it commits, red on an error.
+  while it commits, red on an error (for 30 s). After that it follows the light
+  the half with USB sends on the presence ping (see LEDs).
 - An image is applied only after COMMIT, and only with the CRC of the image it
   verified.
 
@@ -971,15 +1004,16 @@ pointing device and keymap, and accepted by `make_update.py verify-pair
   on the other half after every flash operation of a relay (its old image
   boots, a new relay succeeds), the other half's commit with the real
   `update_commit.c` cut after every flash operation, `updater.c`'s session for
-  the other half, and the version mismatch a half-done pair leaves (red LED,
-  then MATCH once this half is updated too). `test_relay_review.c` adds the
+  the other half, and the version mismatch a half-done pair leaves (the rainbow,
+  then green once this half is updated too; left alone, red after 60 s, then
+  nothing). `test_relay_review.c` adds the
   review fixes: the slave's timeout race (a request between its clock read and
   its lock), RPC lengths past the buffers, a busy DMA channel at a page
   program, the other half with its interrupts off while it erases and commits
   (every RPC then fails; a 125,184 B and a 256 KiB relay still verify, and an
   ABORT while it erases lands between sectors with the link still paused),
-  the probe finding it still COMMITTING, every COMMIT answer lost, and the red
-  LED until MATCH. `test_sval_update_tool.py` runs
+  the probe finding it still COMMITTING, every COMMIT answer lost, and INFO
+  flags bit5 until MATCH. `test_sval_update_tool.py` runs
   `sval_update.py update` with the other half's image and `pair` against the
   same simulation.
   `test_pair.c` runs the protocol 4 cases (`tests/sval_updater/PROTOCOL4_CASES.md`,

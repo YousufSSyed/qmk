@@ -37,8 +37,8 @@ other half, which checks the manifest and hash itself (D7); a second COMMIT
 makes it write the image and reset. The link to it pauses while it erases,
 verifies and commits (both halves type while the image streams). The tool
 then waits up to 10 s for the other half to answer with the new version. With
-only one half updated the halves differ, which is not supported (V): the half
-with USB blinks red until both match. pair does both: the other half first,
+only one half updated the halves differ, which is not supported (V): both
+halves show the rainbow, and red after 60 s if they still differ. pair does both: the other half first,
 then the half with USB over USB (the chord twice, once per image), then waits
 for the board to come back and for presence to show the same release on both
 halves within 10 s. pair picks each image by the hand each half reports (an
@@ -827,8 +827,8 @@ class Session:
                 if seen != m["fw_version"]:
                     print(f"warning: the image's manifest says fw {m['fw_version']} {FW_NOTE}")
                 if s["other_half_id"] != PRESENCE_MATCH:
-                    print("note: the halves now run different releases, which is not supported (V): the half "
-                          "with USB blinks red until it is updated too (use pair)")
+                    print("note: the halves now run different releases, which is not supported (V): the "
+                          "lights show the rainbow, then red after 60 s, until it is updated too (use pair)")
                 return 0
             time.sleep(0.5)
         print("warning: the other half did not answer within 10 s. A new release may only talk to a matching half: "
@@ -1177,7 +1177,7 @@ class Rejects:
         # all but the last byte, then 2 bytes from there: one more than is left
         self.send_image(a, len(self.image) - 1)
         self.expect("CHUNK past the end (overrun)", self.chunk(a, len(self.image) - 1, 2, self.image[-1:] + b"\0"), OVERRUN, ST_ERROR)
-        print("  -> the LEDs should now blink red (error latched)")
+        print("  -> the LEDs should now blink red for 30 s (error latched)")
         self.expect("ABORT from anyone while ERROR is latched", self.nonce_op(ABORT, 0, b), OK, ST_IDLE)
         print(f"reject: {self.passed} passed, {self.failed} failed")
         return 0 if self.failed == 0 else 1

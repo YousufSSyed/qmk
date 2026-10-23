@@ -50,7 +50,7 @@ void update_split_presence_result(bool answered, const void *rsp, uint8_t len);
 uint8_t update_split_presence(void);
 
 // The other half answers and is not a match (VERSION, SAME_HAND or INVALID):
-// the red error LED while the updater is idle, INFO flags bit5 (V).
+// INFO flags bit5 (V). The lights show it only after an update (updater.c).
 bool update_split_mismatch(void);
 
 // The other half's last presence answer (*p) and its status. Only MATCH and
@@ -119,8 +119,8 @@ bool update_relay_commit(void);
 // the hold. A finished relay (DONE, FAILED) keeps its record.
 void update_relay_abort(void);
 
-// A relay ended DONE and presence has not read MATCH since: the red error LED
-// and INFO flags bit5, as for a version mismatch (V).
+// A relay ended DONE and presence has not read MATCH since: INFO flags bit5,
+// as for a version mismatch (V), and the rainbow until MATCH (updater.c).
 bool update_split_awaiting_match(void);
 
 typedef struct {

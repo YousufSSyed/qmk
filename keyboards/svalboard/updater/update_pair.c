@@ -43,7 +43,7 @@
 #ifndef SVAL_UPDATE_PAIR_RETRY_MS
 #    define SVAL_UPDATE_PAIR_RETRY_MS 2000
 #endif
-// The red error light after a record that was not installed.
+// The red light after a record that was refused, damaged or tried too often.
 #ifndef SVAL_UPDATE_PAIR_ERROR_MS
 #    define SVAL_UPDATE_PAIR_ERROR_MS 30000
 #endif
@@ -197,14 +197,20 @@ static bool due(uint32_t at) {
     return (int32_t)(updater_port_now_ms() - at) >= 0;
 }
 
+bool update_pair_peer_takes(void) {
+    update_presence_t p;
+    uint8_t           pr = update_split_other(&p);
+    return (pr == UPDATE_PRESENCE_MATCH || pr == UPDATE_PRESENCE_VERSION || pr == UPDATE_PRESENCE_SAME_HAND) && p.updater_proto >= PAIR_MIN_PEER_PROTO;
+}
+
 static void wait_step(void) {
     update_presence_t p;
     uint8_t           pr = update_split_other(&p);
     bool              answers = pr == UPDATE_PRESENCE_MATCH || pr == UPDATE_PRESENCE_VERSION || pr == UPDATE_PRESENCE_SAME_HAND;
-    if (!answers || p.updater_proto < PAIR_MIN_PEER_PROTO) {
+    if (!update_pair_peer_takes()) {
         // Nothing yet, or a half without the updater (or on protocol 2):
         // kept for the next boot, which may find it (or a half that takes it).
-        if (due(pb.until_ms)) finish(PAIR_OUT_KEPT, answers || pr == UPDATE_PRESENCE_INVALID ? UPDATE_UNSUPPORTED : UPDATE_UNAVAILABLE, false, true);
+        if (due(pb.until_ms)) finish(PAIR_OUT_KEPT, answers || pr == UPDATE_PRESENCE_INVALID ? UPDATE_UNSUPPORTED : UPDATE_UNAVAILABLE, false, false);
         return;
     }
     if (update_relay_busy() || update_split_slave_active()) return; // cannot happen: host sessions get BUSY meanwhile
@@ -257,7 +263,7 @@ static void relay_step(void) {
                     pb.phase    = PAIR_BOOT_RETRY;
                     pb.until_ms = updater_port_now_ms() + SVAL_UPDATE_PAIR_RETRY_MS;
                 } else {
-                    finish(PAIR_OUT_KEPT, ri.error, false, true);
+                    finish(PAIR_OUT_KEPT, ri.error, false, false);
                 }
                 return;
             }

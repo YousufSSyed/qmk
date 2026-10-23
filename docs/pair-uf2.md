@@ -141,15 +141,15 @@ On every boot of a half with the updater (`update_pair_task`, from
 2. The half without USB erases the record (the cable moved).
 3. The half with USB checks the record and its manifest against its own
    floors (security epoch, storage format, D19); a refusal erases it and shows
-   the error light. It counts the boot in the state page; a record already
-   tried on three boots is erased, with the error light.
+   the red light. It counts the boot in the state page; a record already
+   tried on three boots is erased, with the red light.
 4. It hashes its own image (SHA-512 over flash `[0, image_len)`, a 2 KiB slice
    per pass) and compares it with the manifest's. Another image (an
    interrupted copy, or a record left from an earlier file) erases the record,
    with no light: nothing the customer asked for went wrong.
 5. It waits up to 15 s for the other half's presence on updater protocol 3
    or 4. With none, or a half without the updater, the record is kept for the
-   next boot and the error light shows.
+   next boot, with no light: nothing has failed yet.
 6. At the other half's first answer it stores that half's fingerprint (fw
    version, git hash, updater protocol). A later boot that finds a different
    fingerprint erases the record (the other half was flashed meanwhile); a
@@ -161,18 +161,22 @@ On every boot of a half with the updater (`update_pair_task`, from
    holds the image verified, COMMIT goes at once: no host and no chord. After
    DONE the record is erased. A link failure is tried again after 2 s, three
    relays per boot; then the record is kept for the next boot. A refusal by
-   the other half erases the record, with the error light.
+   the other half erases the record, with the red light.
 
 While the boot relay works (steps 3-7), the updater answers INFO, STATUS,
 RELAY and DIAG, and every other op with BUSY: a host cannot start a session
 meanwhile. RELAY shows the relay's progress as for a host's relay. The
 protocol is unchanged.
 
-**Lights** (the existing ones, D24): rainbow while it hashes, waits and
-sends; magenta while the other half writes; red at 1 Hz for 30 s after a
-record that was not installed (refused, damaged, kept, or tried too often).
-After a relay the half with USB shows red until presence matches, as after
-any relay. The other half shows its own session's colors, as for any relay.
+**Lights** (D24, the table in `docs/updater.md`): the half with USB shows the
+rainbow once the other half answers and can take the image, while it hashes,
+waits and sends, and through the other half's write and restart (magenta is
+only on the half that writes). Green on both halves once presence matches.
+Red at 1 Hz for 30 s only for a record that was refused, damaged or tried too
+often, or when the halves still differ 60 s after the relay. A record kept
+for an unplugged or absent other half shows nothing. The other half shows its
+own session's colors (rainbow, magenta), then follows the light the half with
+USB sends on the presence ping.
 
 **Timing on the test boards:** about 20 s from the first boot to DONE for a
 152 KiB image (relay 15 s, the other half's commit and restart about 5 s),
@@ -314,7 +318,7 @@ byte (`0x18`) and reports UNAVAILABLE on any other die (D26). On another die:
   BOOTSEL does not answer, so the record is kept and then used up; the
   customer recovers that half by copying the file onto it.
 - **The other half without the updater, on protocol 2, or not answering:** no
-  relay, the red light, the record kept for the next boot (bounded). A half on
+  relay, no light, the record kept for the next boot (bounded). A half on
   firmware without the updater cannot even link to an updater build (V).
 - **Floors:** the other half checks the manifest against its own security
   epoch and storage format floors (D7, D19), as for any relay; nothing skips
@@ -377,8 +381,8 @@ remotely).
 
 ## Open questions
 
-- **How long the error light shows** (30 s) and whether a kept record should
-  show red at all on a boot where the other half is simply unplugged.
+- **The error light** is settled: red only for a refused, damaged or
+  tried-too-often record, 30 s, and none for a kept record (see Lights).
 - **Keybard's reporting** of a kept record: the protocol is unchanged, so
   Keybard cannot read the record from the board; it sees the halves'
   versions differ (presence) and can offer the install.

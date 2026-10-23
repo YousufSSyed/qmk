@@ -66,6 +66,13 @@ typedef struct __attribute__((__packed__)) _presence_rpc_t {
     uint16_t scan_deep_period_ms;
     uint8_t  idle_flags;
     uint8_t  scan_deep_clock_idx;
+#ifdef SVAL_UPDATER
+    // The updater's light (update_light_t, updater/updater.h), appended (D24):
+    // the half without USB shows the same one. The slave reads it only when
+    // the ping is long enough: a master from before it sends 18 bytes, and an
+    // older slave never reads past its own fields.
+    uint8_t update_light;
+#endif
 } presence_rpc_t;
 
 // Which pointing module a half's firmware drives and which one answered, so a host

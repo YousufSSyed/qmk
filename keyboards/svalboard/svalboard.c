@@ -37,6 +37,7 @@
 #    include "split_common/transport.h"
 _Static_assert(sizeof(((presence_rsp_t *)0)->update) == UPDATE_PRESENCE_BYTES, "presence reply: update_presence_t");
 _Static_assert(sizeof(presence_rsp_t) <= RPC_S2M_BUFFER_SIZE, "presence reply fits the split RPC buffer");
+_Static_assert(sizeof(presence_rpc_t) <= RPC_M2S_BUFFER_SIZE, "presence ping fits the split RPC buffer");
 #endif
 
 // USB remote wakeup status bit (from USB spec, not exported by QMK headers)
@@ -563,6 +564,11 @@ void kb_sync_listener(uint8_t in_buflen, const void *in_data, uint8_t out_buflen
         sval_pointer_rest_apply();
     }
     global_saved_values.scan_deep_clock_idx = in->scan_deep_clock_idx;
+#ifdef SVAL_UPDATER
+    // The master's updater light (D24), when its ping carries it.
+    bool has_light = in_buflen >= sizeof(presence_rpc_t);
+    updater_split_light_seen(has_light, has_light ? in->update_light : 0);
+#endif
     // Tell the master this half's side and sensor (Sval 0x2C). Older masters ignore it.
     if (out_data && out_buflen >= sizeof(presence_rsp_t)) {
         presence_rsp_t *out = (presence_rsp_t *)out_data;
@@ -855,6 +861,9 @@ void housekeeping_task_kb(void) {
         if (timer_elapsed(last_ping) > 500) {
 #endif
             presence_rpc_t rpcout = {global_saved_values.turbo_scan, global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us, global_saved_values.scan_period_us, global_saved_values.scan_idle_period_ms, global_saved_values.scan_idle_after_ms, global_saved_values.scan_deep_after_s, global_saved_values.scan_deep_period_ms, global_saved_values.idle_flags, global_saved_values.scan_deep_clock_idx};
+#ifdef SVAL_UPDATER
+            rpcout.update_light = updater_split_light();
+#endif
             presence_rsp_t rpcin  = {0};
             if (transaction_rpc_exec(KEYBOARD_SYNC_A, sizeof(presence_rpc_t), &rpcout, sizeof(presence_rsp_t), &rpcin)) {
                 if (rpcin.magic[0] == SVAL_PRESENCE_RSP_MAGIC0 && rpcin.magic[1] == SVAL_PRESENCE_RSP_MAGIC1 && (rpcin.pointer.flags & SVAL_POINTER_REPORTED)) {

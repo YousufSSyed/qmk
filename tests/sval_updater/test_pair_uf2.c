@@ -88,7 +88,7 @@ static void test_pair_uf2_happy(void) {
         }
         CHECK(updater_state() == UPDATE_STATE_IDLE); // no host session, ever, so no ARM and no chord asked for
         if (led_now == UPDATE_LED_WRITING) writing_seen++;
-        CHECK(led_now != UPDATE_LED_CONFIRM && led_now != UPDATE_LED_APPROVED);
+        CHECK(led_now != UPDATE_LED_CONFIRM && led_now != UPDATE_LED_CHORD);
     }
     CHECK_EQ(update_pair_outcome(), PAIR_OUT_DONE);
     CHECK_EQ(update_pair_phase(), PAIR_BOOT_IDLE);
@@ -98,8 +98,22 @@ static void test_pair_uf2_happy(void) {
     CHECK(memcmp(update_host_flash + SVAL_UPDATE_BASE, img, 0x3000) == 0); // the other half staged exactly the image
     CHECK(pair_sector_erased());                                           // used up
     CHECK(busy_seen > 0 && info_ok > 0);
-    CHECK(writing_seen > 0);
+    CHECK_EQ(writing_seen, 0); // magenta is the other half's, while it writes; this half shows the rainbow
     CHECK(led_seen & LED_BIT(UPDATE_LED_PROGRESS));
+    CHECK_EQ(led_seen & LED_BIT(UPDATE_LED_ERROR), 0);
+    // The other half restarts into the image: rainbow until presence matches,
+    // then the green flash (carried on the ping), then nothing.
+    CHECK_EQ(led_now, UPDATE_LED_PROGRESS);
+    CHECK_EQ(updater_split_light(), UPDATE_LIGHT_UPDATING);
+    for (int i = 0; i < 5000 && update_split_presence() != UPDATE_PRESENCE_MATCH; i++)
+        pass();
+    CHECK_EQ(update_split_presence(), UPDATE_PRESENCE_MATCH);
+    pass(); // the lights see the ping's answer on the next pass
+    CHECK_EQ(led_now, UPDATE_LED_DONE);
+    CHECK_EQ(updater_split_light(), UPDATE_LIGHT_DONE);
+    wait_ms(1000);
+    CHECK_EQ(led_now, UPDATE_LED_NONE);
+    CHECK_EQ(led_seen & LED_BIT(UPDATE_LED_ERROR), 0);
     CHECK_EQ(outside_ops, 0);
     CHECK_EQ(sequence_errors, 0);
     // Only the other half's slot and the record sector changed.
@@ -181,7 +195,7 @@ static void test_pair_uf2_stale_image(void) {
         CHECK_EQ(pause_calls, 0); // no relay began
         CHECK_EQ(slave_commit_runs, 0);
         CHECK_EQ(update_split_slave_state(), UPDATE_STATE_IDLE);
-        CHECK(!(led_seen & LED_BIT(UPDATE_LED_ERROR)) || update_split_mismatch());
+        CHECK_EQ(led_seen & LED_BIT(UPDATE_LED_ERROR), 0); // stale is not a failure: no light
     }
 }
 
@@ -268,7 +282,8 @@ static void test_pair_uf2_no_peer(void) {
         CHECK_EQ(update_pair_outcome(), PAIR_OUT_KEPT);
         CHECK_EQ(update_pair_error(), UPDATE_UNAVAILABLE);
         CHECK((sim_us - t0) / 1000 < SVAL_UPDATE_PAIR_PEER_WAIT_MS + 5000); // it gives up
-        CHECK_EQ(led_now, UPDATE_LED_ERROR);
+        CHECK_EQ(led_now, UPDATE_LED_NONE);                                 // kept for an absent half: nothing for you to do
+        CHECK_EQ(led_seen & (LED_BIT(UPDATE_LED_ERROR) | LED_BIT(UPDATE_LED_PROGRESS)), 0);
         CHECK(!pair_sector_erased());
         CHECK_EQ(pair_state()->tries[boot], 0x00);
         CHECK(!update_pair_busy()); // a host can work again
@@ -276,6 +291,7 @@ static void test_pair_uf2_no_peer(void) {
     pb_boot();
     pb_run(5000);
     CHECK_EQ(update_pair_outcome(), PAIR_OUT_EXHAUSTED);
+    CHECK_EQ(led_now, UPDATE_LED_ERROR); // tried too often: red
     CHECK(pair_sector_erased());
     CHECK_EQ(slave_commit_runs, 0);
 
@@ -286,6 +302,7 @@ static void test_pair_uf2_no_peer(void) {
     CHECK_EQ(update_pair_outcome(), PAIR_OUT_KEPT);
     CHECK_EQ(update_pair_error(), UPDATE_UNSUPPORTED);
     CHECK_EQ(pause_calls, 0);
+    CHECK_EQ(led_seen & (LED_BIT(UPDATE_LED_ERROR) | LED_BIT(UPDATE_LED_PROGRESS)), 0); // kept: no light
 
     // The other half shows up at the second boot: installed then.
     pb_fresh(0x2000);

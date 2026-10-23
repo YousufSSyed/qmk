@@ -449,7 +449,9 @@ static void slave_commit(uint32_t mseq) {
     // The M1 commit, unchanged: step 0 checks the manifest against this build
     // and the slot's SHA-512 and CRC again. It returns only when it refused
     // before touching the firmware.
+    updater_port_commit_mark(true); // the next boot shows the rainbow until the halves match (D24)
     update_status_t st = update_commit_run(SL_MANIFEST, hk.crc);
+    updater_port_commit_mark(false);
     if (!post_begin(mseq, UPDATE_STATE_COMMITTING)) return;
     slave_fail(st != UPDATE_OK ? st : UPDATE_FLASH_ERR);
     update_split_port_unlock();

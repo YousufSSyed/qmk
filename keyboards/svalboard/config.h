@@ -96,6 +96,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define SVAL_UPDATE_CONFIRM_WINDOW_MS 30000 // from ARM; NOT_CONFIRMED after it
 #define SVAL_UPDATE_SESSION_TIMEOUT_MS 30000 // no op from the session for this long: TIMEOUT
 #define SVAL_UPDATE_LED_VAL 96               // LED brightness while the updater shows its states (D24)
+#ifndef SVAL_UPDATE_AFTER_WAIT_MS
+#    define SVAL_UPDATE_AFTER_WAIT_MS 60000 // after an update: idle this long with the halves still differing, then red (D24)
+#endif
+#ifndef SVAL_UPDATE_RED_MS
+#    define SVAL_UPDATE_RED_MS 30000 // every red updater light stops after this long (D24)
+#endif
 // M2, the relay to the other half (updater/update_split.c). The half without
 // USB drops a session after this long with no KEYBOARD_UPDATE traffic.
 #define SVAL_UPDATE_SPLIT_SLAVE_TIMEOUT_MS 5000
@@ -118,7 +124,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // The boot relay of a pair UF2 (updater/update_pair.c, docs/pair-uf2.md): how
 // long the half with USB waits for the other half's presence after boot, how
 // many relays it tries in one boot and the pause between them, and how long
-// it shows the red error light after a record it did not install.
+// it shows the red light after a record that was refused, damaged or tried
+// too often (a record kept for the next boot shows no light).
 #ifndef SVAL_UPDATE_PAIR_PEER_WAIT_MS
 #    define SVAL_UPDATE_PAIR_PEER_WAIT_MS 15000
 #endif

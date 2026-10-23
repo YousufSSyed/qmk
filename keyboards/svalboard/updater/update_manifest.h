@@ -165,8 +165,8 @@ typedef enum {
 
 // ---- the other half, as split presence shows it (M2, D17, V) -------------------------
 // Reported by STATUS (byte 22) on the half with USB; INFO flags bit5 is set for
-// VERSION, SAME_HAND and INVALID, which also show the red error LED there
-// while the updater is idle. The half without USB always reports NONE.
+// VERSION, SAME_HAND and INVALID (the lights show it only after an update:
+// updater.c). The half without USB always reports NONE.
 
 typedef enum {
     UPDATE_PRESENCE_NONE      = 0, // no answer from the other half (or this half is not the master)
