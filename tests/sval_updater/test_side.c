@@ -279,7 +279,7 @@ static void test_pair(void) {
 
 // ---- a Vial board's old store (QMK wear leveling, 2 MB layout) ---------------------
 
-static uint8_t vial_store[SVAL_SIDE_VIAL_STORE_BACKING]; // backing bytes, un-inverted
+static uint8_t  vial_store[SVAL_SIDE_VIAL_STORE_BACKING]; // backing bytes, un-inverted
 static uint16_t vial_word(uint32_t off, void *ctx) {
     (void)ctx;
     return (uint16_t)(vial_store[off] | (vial_store[off + 1] << 8));
@@ -288,12 +288,13 @@ static void vial_consolidated(const uint8_t *logical16, bool valid_sum) {
     memset(vial_store, 0, sizeof(vial_store)); // erased flash, un-inverted: zeros, an empty log
     memcpy(vial_store, logical16, 16);
     uint64_t h = 0xcbf29ce484222325ull;
-    for (uint32_t i = 0; i < SVAL_SIDE_VIAL_STORE_LOGICAL; i++) h = (h ^ vial_store[i]) * 0x100000001b3ull;
+    for (uint32_t i = 0; i < SVAL_SIDE_VIAL_STORE_LOGICAL; i++)
+        h = (h ^ vial_store[i]) * 0x100000001b3ull;
     if (!valid_sum) h ^= 1;
     memcpy(&vial_store[SVAL_SIDE_VIAL_STORE_LOGICAL], &h, 8);
 }
 static uint32_t vial_log_at;
-static void vial_log(const uint8_t *e, uint32_t n) { // n bytes of one entry (2, 4, 6 or 8)
+static void     vial_log(const uint8_t *e, uint32_t n) { // n bytes of one entry (2, 4, 6 or 8)
     memcpy(&vial_store[vial_log_at], e, n);
     vial_log_at += n;
 }
@@ -312,7 +313,7 @@ static void test_vial_store(void) {
     // Never consolidated: the magic as a multi-byte entry, the side as a byte below 64.
     const uint8_t none[16] = {0};
     vial_consolidated(none, false);
-    vial_log_at = SVAL_SIDE_VIAL_STORE_LOGICAL + 8;
+    vial_log_at            = SVAL_SIDE_VIAL_STORE_LOGICAL + 8;
     const uint8_t magic[4] = {(0 << 6) | (2 << 3) | 0, 0x00, 0x00, 0xE3}, magic_hi[2] = {0xFE, 0x00};
     vial_log(magic, 4);
     vial_log(magic_hi, 2);
@@ -331,7 +332,7 @@ static void test_vial_store(void) {
     CHECK(sval_side_from_vial_store(vial_word, NULL) == SVAL_SIDE_UNKNOWN);
     // A corrupt entry ends the replay where QMK's would, keeping what came before.
     vial_consolidated(left, true);
-    vial_log_at = SVAL_SIDE_VIAL_STORE_LOGICAL + 8;
+    vial_log_at          = SVAL_SIDE_VIAL_STORE_LOGICAL + 8;
     const uint8_t bad[2] = {0xC0, 0x00}; // type 3 does not exist
     vial_log(bad, 2);
     vial_log(hand_word0, 2);
