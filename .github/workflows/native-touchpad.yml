@@ -163,7 +163,7 @@ jobs:
         git submodule update --init --recursive -q
         build /tmp/base
         cd /tmp/head && for f in *.uf2; do cmp "$f" "/tmp/base/$f" || { echo "::error::$f differs from the base"; exit 1; }; echo "identical: $f"; done
-        # The auto images with the touchpad turned off are the base auto images.
+        # The auto images with the touchpad turned off match the base built the same way.
         cd "$GITHUB_WORKSPACE" && git checkout -q "$GITHUB_SHA" && git submodule update --init --recursive -q && rm -rf .build
         for t in svalboard/left:sval svalboard/right:blank; do
           n=$(echo ${t%%:*} | tr / _)_${t##*:}
@@ -173,7 +173,7 @@ jobs:
         git checkout -q "$BASE" && git submodule update --init --recursive -q && rm -rf .build
         for t in svalboard/left:sval svalboard/right:blank; do
           n=$(echo ${t%%:*} | tr / _)_${t##*:}
-          make -j$(nproc) $t SKIP_VERSION=yes SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes SVAL_FW_VERSION_STRING=cmp > /dev/null
+          make -j$(nproc) $t SKIP_VERSION=yes SVAL_NATIVE_PTP=no SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes SVAL_FW_VERSION_STRING=cmp > /dev/null
           cmp $n.uf2 /tmp/head-off-$n.uf2 || { echo "::error::$n with SVAL_NATIVE_PTP=no differs from the base"; exit 1; }
           echo "identical with SVAL_NATIVE_PTP=no: $n"
         done
