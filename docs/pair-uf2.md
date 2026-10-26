@@ -12,7 +12,16 @@ There are no `.svup` files any more. Each file can be used in two ways:
 - **By hand.** Put either half in BOOTSEL (hold BOOTSEL while plugging it in,
   or tap reset twice) and copy the file onto `RPI-RP2`. That half installs
   it, restarts, and then installs the same image on the other half over the
-  split cable, with no chord.
+  split cable, with no chord, **only if the other half runs an updater
+  build** (vNext1, x3.x, x4 on: updater protocol 3 or 4). A half on Vial or
+  on a release before the updater (vLaunch2 and older) cannot link to an
+  updater build at all ("One release on both halves (V)" in
+  [updater.md](updater.md)), so the relay never reaches it and the file must
+  be copied onto that half too. Customer instructions therefore always say to
+  copy the file onto both halves, one at a time. Copying it onto the second
+  half after the first is harmless: the first half, booting without USB,
+  erases its record, and the second half relays the same image back to it,
+  which keeps its settings (the same build, D39).
 - **In Keybard.** Keybard reads the manifest and the image out of the same
   file and installs both halves through the updater, protocol 4, unchanged
   (one chord for both halves, as for any install a host starts).
