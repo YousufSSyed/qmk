@@ -110,3 +110,21 @@ extern uint16_t sval_leader_timeout;
 #ifndef EECONFIG_KB_DATA_SIZE
 #    define EECONFIG_KB_DATA_SIZE SVAL_EEPROM_SIZE_CALC
 #endif
+
+// Combo names (label type 3) live at the very end of the logical EEPROM, after
+// the macro buffer, not in the Sval data block above. Growing that block would
+// move the keymap, the macros and VIA's own data, and change the Sval storage
+// stamp, so every board would lose its settings. Here only the macro buffer's
+// unused tail gets shorter; everything already stored stays where it is. The
+// region has its own header (sval.c), so a board that never had it reads as
+// having no combo names.
+#if SVAL_COMBO_ENTRIES > 0 && defined(WEAR_LEVELING_LOGICAL_SIZE) && !defined(SVAL_NO_COMBO_LABELS)
+#    define SVAL_COMBO_LABELS
+#    define SVAL_COMBO_LABEL_HEADER_SIZE 8
+#    define SVAL_COMBO_LABEL_REGION_SIZE (SVAL_COMBO_LABEL_HEADER_SIZE + (SVAL_COMBO_ENTRIES * 16))
+#    define SVAL_COMBO_LABEL_REGION_ADDR ((WEAR_LEVELING_LOGICAL_SIZE) - (SVAL_COMBO_LABEL_REGION_SIZE))
+#    ifdef DYNAMIC_KEYMAP_EEPROM_MAX_ADDR
+#        error "Combo names take the end of the EEPROM; leave DYNAMIC_KEYMAP_EEPROM_MAX_ADDR to the Sval module or define SVAL_NO_COMBO_LABELS"
+#    endif
+#    define DYNAMIC_KEYMAP_EEPROM_MAX_ADDR (SVAL_COMBO_LABEL_REGION_ADDR - 1)
+#endif

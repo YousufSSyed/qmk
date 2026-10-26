@@ -29,6 +29,11 @@ uint16_t g_sval_magic_keycode_override;
 char sval_td_labels[SVAL_TAP_DANCE_ENTRIES][SVAL_LABEL_SIZE];
 char sval_macro_labels[DYNAMIC_KEYMAP_MACRO_COUNT][SVAL_LABEL_SIZE];
 char sval_layer_labels[DYNAMIC_KEYMAP_LAYER_COUNT][SVAL_LABEL_SIZE];
+#ifdef SVAL_COMBO_LABELS
+char        sval_combo_labels[SVAL_COMBO_ENTRIES][SVAL_LABEL_SIZE];
+static void sval_combo_labels_init(void);
+static void sval_combo_labels_reset(void);
+#endif
 
 // Internal EEPROM access functions - uses eeconfig_kb_datablock
 static void sval_read_eeprom(uint16_t offset, void *buf, uint16_t size) {
@@ -132,6 +137,10 @@ void sval_init(void) {
         // Mark as valid
         sval_eeprom_set_valid();
     }
+#ifdef SVAL_COMBO_LABELS
+    // First boot with combo names: start the region empty (keeps everything else).
+    sval_combo_labels_init();
+#endif
 
 #ifdef EEPROM_WEAR_LEVELING
     // Remember an unreadable store until the host has told the user to reload their layout.
@@ -188,6 +197,9 @@ uint8_t sval_get_feature_flags2(void) {
 #endif
 #ifdef SVAL_EITHER_HAND
     flags |= sval_flag2_side;
+#endif
+#ifdef SVAL_COMBO_LABELS
+    flags |= sval_flag2_combo_labels;
 #endif
     return flags;
 }
@@ -274,11 +286,66 @@ static char *sval_get_label_array(uint8_t label_type, uint16_t *count, uint16_t 
             *count         = DYNAMIC_KEYMAP_MACRO_COUNT;
             *eeprom_offset = SVAL_MACRO_LABEL_OFFSET;
             return (char *)sval_macro_labels;
+#ifdef SVAL_COMBO_LABELS
+        case sval_label_type_combo:
+            // Stored outside the Sval data block: see sval_store_label().
+            *count         = SVAL_COMBO_ENTRIES;
+            *eeprom_offset = 0;
+            return (char *)sval_combo_labels;
+#endif
         default:
             *count         = 0;
             *eeprom_offset = 0;
             return NULL;
     }
+}
+
+#ifdef SVAL_COMBO_LABELS
+// Combo names region (post_config.h): an 8-byte header, then one label per combo.
+// The header names the region and its combo count; any other header (a board
+// that never had the region, whose bytes were the unused end of the macro
+// buffer) means "no names yet", and the region is cleared once.
+#    define SVAL_COMBO_LABEL_MAGIC "SVCL"
+#    define SVAL_COMBO_LABEL_VERSION 1
+#    define SVAL_COMBO_LABEL_DATA_ADDR (SVAL_COMBO_LABEL_REGION_ADDR + SVAL_COMBO_LABEL_HEADER_SIZE)
+_Static_assert(SVAL_COMBO_LABEL_REGION_ADDR > SVAL_EEPROM_SIZE, "combo names must not overlap the Sval data block");
+
+static void sval_combo_label_header(uint8_t header[SVAL_COMBO_LABEL_HEADER_SIZE]) {
+    memcpy(header, SVAL_COMBO_LABEL_MAGIC, 4);
+    header[4] = SVAL_COMBO_LABEL_VERSION;
+    header[5] = SVAL_COMBO_ENTRIES & 0xFF;
+    header[6] = (SVAL_COMBO_ENTRIES >> 8) & 0xFF;
+    header[7] = 0;
+}
+
+// Clear every combo name and write the header.
+static void sval_combo_labels_reset(void) {
+    uint8_t zero[16] = {0};
+    for (uint32_t i = 0; i < SVAL_COMBO_ENTRIES * SVAL_LABEL_SIZE; i += sizeof(zero)) {
+        eeprom_update_block(zero, (void *)(uintptr_t)(SVAL_COMBO_LABEL_DATA_ADDR + i), sizeof(zero));
+    }
+    uint8_t header[SVAL_COMBO_LABEL_HEADER_SIZE];
+    sval_combo_label_header(header);
+    eeprom_update_block(header, (void *)(uintptr_t)SVAL_COMBO_LABEL_REGION_ADDR, sizeof(header));
+}
+
+static void sval_combo_labels_init(void) {
+    uint8_t stored[SVAL_COMBO_LABEL_HEADER_SIZE], expected[SVAL_COMBO_LABEL_HEADER_SIZE];
+    eeprom_read_block(stored, (const void *)(uintptr_t)SVAL_COMBO_LABEL_REGION_ADDR, sizeof(stored));
+    sval_combo_label_header(expected);
+    if (memcmp(stored, expected, sizeof(stored)) != 0) sval_combo_labels_reset();
+}
+#endif
+
+// Write one label slot (already in its RAM array) to storage.
+static void sval_store_label(uint8_t label_type, uint16_t eeprom_offset, uint16_t index, const char *label) {
+#ifdef SVAL_COMBO_LABELS
+    if (label_type == sval_label_type_combo) {
+        eeprom_update_block(label, (void *)(uintptr_t)(SVAL_COMBO_LABEL_DATA_ADDR + (uint32_t)index * SVAL_LABEL_SIZE), SVAL_LABEL_SIZE);
+        return;
+    }
+#endif
+    sval_write_eeprom(eeprom_offset + (index * SVAL_LABEL_SIZE), label, SVAL_LABEL_SIZE);
 }
 
 // Helper: Check if label is empty (all bytes are 0x00)
@@ -346,7 +413,7 @@ int sval_set_label(uint8_t label_type, uint16_t index, const char *string, uint8
     }
 
     // Write to EEPROM
-    sval_write_eeprom(eeprom_offset + (index * SVAL_LABEL_SIZE), label, SVAL_LABEL_SIZE);
+    sval_store_label(label_type, eeprom_offset, index, label);
 
     return 0;
 }
@@ -363,7 +430,7 @@ int sval_clear_label(uint8_t label_type, uint16_t index) {
     memset(label, 0x00, SVAL_LABEL_SIZE);
 
     // Write to EEPROM
-    sval_write_eeprom(eeprom_offset + (index * SVAL_LABEL_SIZE), label, SVAL_LABEL_SIZE);
+    sval_store_label(label_type, eeprom_offset, index, label);
 
     return 0;
 }
@@ -378,6 +445,11 @@ void sval_reload_labels(void) {
 
     // Load macro labels
     sval_read_eeprom(SVAL_MACRO_LABEL_OFFSET, sval_macro_labels, DYNAMIC_KEYMAP_MACRO_COUNT * SVAL_LABEL_SIZE);
+
+#ifdef SVAL_COMBO_LABELS
+    // Load combo names
+    eeprom_read_block(sval_combo_labels, (const void *)(uintptr_t)SVAL_COMBO_LABEL_DATA_ADDR, sizeof(sval_combo_labels));
+#endif
 }
 
 void sval_save(void) {
@@ -399,6 +471,10 @@ void sval_reset(void) {
         sval_tap_dance_entry_t td = {.custom_tapping_term = SVAL_TAP_DANCE_DEFAULT_TERM};
         sval_set_tap_dance(i, &td);
     }
+#ifdef SVAL_COMBO_LABELS
+    // Combo names are stored outside the block above; a reset clears them too.
+    sval_combo_labels_reset();
+#endif
     // Reset VIA dynamic keymap and macros
     dynamic_keymap_reset();
     dynamic_keymap_macro_reset();

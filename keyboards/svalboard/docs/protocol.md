@@ -179,3 +179,11 @@ Each contact:
 **CLEAR:** `DF 33 02 <target> <flags>` → `DF 33 02 <status>`. Stores "unknown", so the half starts with no side (unless a strap says otherwise: then `4`). For testing and factory rework.
 
 Packet formats: [client-ID protocol](../../../modules/svalboard/core/docs/CLIENT_ID_PROTOCOL.md), [layer state](../../../modules/svalboard/core/docs/LAYER_STATE_PROTOCOL.md), [command definitions](../../../modules/svalboard/core/sval.h).
+
+## Combo names
+
+Combos can have names on the board, like layers, tap dances and macros: one name of up to 16 UTF-8 bytes per combo slot, read and written with the label commands (`LABEL_GET` `0x1B`, `LABEL_SET` `0x1C`, `LABEL_CLEAR` `0x1D`) with label type `3`.
+
+- Discovery: GET_INFO byte 19, bit 7 (`sval_flag2_combo_labels`, `0x80`). Older firmware leaves it zero and answers label type `3` as an invalid type (`LABEL_SET` status `1`).
+- Requests and replies are those of the other label types: `DF 1C 03 <index lo> <index hi> <16 bytes, null-padded>` → `DF 1C <status>` (`0` saved, `1` invalid type or UTF-8, `2` index out of range); `DF 1D 03 <index lo> <index hi>` clears one; `DF 1B 03 <start lo> <start hi>` returns the next named combo at or after `start`.
+- The names are stored after the macro buffer, at the very end of the stored settings, with their own header. A board that updates to this firmware keeps everything it had and starts with no combo names; the macro buffer is 4104 bytes shorter (256 combos × 16 bytes, plus 8). A settings reset clears the names with everything else.
