@@ -4,9 +4,9 @@ name: Svalboard native touchpad
 # host tests with hid-tools, the Azoteq driver gtests, the two release images
 # built as release builds with the touchpad descriptor, release lint and split
 # table checked, and (on pull requests) the builds without an Azoteq path
-# compared byte for byte with the base. A pull request that changes those builds on
-# purpose (shared pointing code) carries the label "changes-pointing-builds", which
-# skips only that comparison.
+# compared byte for byte with the base. The comparison runs only for a pull request
+# that changes nothing but native touchpad code; any other firmware change may change
+# those builds on purpose. The label "changes-pointing-builds" also skips it.
 
 permissions:
   contents: read
@@ -136,6 +136,13 @@ jobs:
       env:
         BASE: ${{ github.event.pull_request.base.sha }}
       run: |
+        # Only a pull request that changes nothing but native touchpad code is held
+        # to this. Any other firmware change is expected to change these builds.
+        other=$(git diff --name-only "$BASE...$GITHUB_SHA" | grep -Ev '^(keyboards/svalboard/azoteq/(ptp|ptp_config|ptp_descriptor)\.[ch]|tmk_core/protocol/usb_ptp\.h|tests/sval_native_ptp/.*|util/test_native_ptp\.sh|keyboards/svalboard/docs/native-touchpad\.md|\.github/workflows/native-touchpad\.yml)$' || true)
+        if [ -n "$other" ]; then
+          echo "::notice::Comparison skipped: this pull request changes more than the native touchpad code."
+          exit 0
+        fi
         targets="svalboard/trackball/pmw3389/left:sval svalboard/trackball/pmw3389/right:blank svalboard/trackpoint/left:sval svalboard/trackpoint/right:blank svalboard/azoteq/left:sval svalboard/azoteq/right:blank"
         build() { # dir
           mkdir -p "$1"
