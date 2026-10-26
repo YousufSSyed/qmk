@@ -25,9 +25,12 @@ name: Release QMK Firmware
 # sval keymap and with the blank keymap (no key bindings: a test image for
 # checking every key after a build, D40). Each is a release updater build
 # (SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes; docs/updater.md, "Releases"),
-# published as a pair UF2 (docs/pair-uf2.md): copied onto either half in
-# BOOTSEL it installs that half and then the other one over the split cable,
-# and Keybard installs from the same file. Per-side and per-module builds
+# published as a pair UF2 (docs/pair-uf2.md): copied onto a half in BOOTSEL
+# it installs that half, and then the other one over the split cable when the
+# other half already runs an updater build (protocol 3 or 4). A half on Vial
+# or on a release before the updater cannot link to it, so the release notes
+# tell customers to copy the file onto both halves. Keybard installs from the
+# same file. Per-side and per-module builds
 # still build but are not released, and SVAL_TEST_WIPE never is:
 #
 #   version  the tag and keyboards/svalboard/updater/fw_version.txt (D32):
@@ -188,8 +191,8 @@ jobs:
         test "$(find release -name "*.uf2" | wc -l)" -eq 2
         test "$(find release -name "*.svup" | wc -l)" -eq 0
         # The release body: two plain lines on what to do with the files.
-        L1="To install by hand, copy svalboard_sval_$TAG.uf2 onto the RPI-RP2 drive of either half: that half installs it, then updates the other half over the split cable."
-        L2="Or open the same file in Keybard and install it from there."
+        L1="To install by hand, copy svalboard_sval_$TAG.uf2 onto both halves, one half at a time: plug the USB cable into that half's U port, press RESET twice about a quarter of a second apart, and drag the file onto the RPI-RP2 drive. Keep the split cable connected. Steps for each older firmware: https://docs.svalboard.com/firmware/update/"
+        L2="A keyboard that already runs x4 or later can also update from Keybard, with the same file."
         NOTES="$(printf '%s\n\n%s' "$L1" "$L2")"
         args=(--verify-tag --title "$TAG" --notes "$NOTES")
         if [ "$PRE" = true ]; then args+=(--prerelease); fi
