@@ -36,6 +36,15 @@ on:
         required: false
         type: string
         default: ''
+      # A one-side build of svalboard/either (left or right, SVAL_BUILD_SIDE,
+      # keyboards/svalboard/side.h): the image with its side fixed, so copying
+      # it onto a half sets that half's side. With updater true the job uploads
+      # it as a plain UF2 for that half (svalboard_KEYMAP_SIDE_TAG.uf2), never
+      # as a pair UF2: it must not be relayed to the other half.
+      build_side:
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -89,42 +98,55 @@ jobs:
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
       shell: bash
 
+    - name: Calculate keyboard name
+      id: keyboard_vars
+      env:
+        BUILD_SIDE: ${{ inputs.build_side }}
+      run: |
+        case "$BUILD_SIDE" in
+          ""|left|right) ;;
+          *) echo "::error::build_side '$BUILD_SIDE' must be left, right or empty"; exit 1 ;;
+        esac
+        KEYBOARD_NAME="${{ inputs.keyboard }}"
+        KEYBOARD_NAME="${KEYBOARD_NAME//\//_}"
+        # The build's file name: a one-side build adds its side after the target.
+        BUILD_NAME="${KEYBOARD_NAME}_${{ inputs.side }}_${BUILD_SIDE:+${BUILD_SIDE}_}${{ inputs.keymap }}"
+        echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_ENV
+        echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_OUTPUT
+        echo "build_name=$BUILD_NAME" >> $GITHUB_ENV
+      shell: bash
+
     - name: Build firmware
       id: build_firmware
       env:
         UPDATER: ${{ inputs.updater }}
         VERSION_STRING: ${{ inputs.version_string }}
+        BUILD_SIDE: ${{ inputs.build_side }}
       run: |
         git config --global --add safe.directory '*'
         pip3 install --break-system-packages -r requirements.txt
         qmk setup -y
+        SIDE_ARGS=()
+        if [ -n "$BUILD_SIDE" ]; then SIDE_ARGS=("SVAL_BUILD_SIDE=$BUILD_SIDE" "TARGET=$build_name"); fi
         if [ "$UPDATER" = "true" ]; then
           command -v arm-none-eabi-gcc
           test "$(arm-none-eabi-gcc -dumpversion)" = 13.2.1
-          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }} \
+          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }} "${SIDE_ARGS[@]}" \
             SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes "SVAL_FW_VERSION_STRING=$VERSION_STRING"
         else
-          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }}
+          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }} "${SIDE_ARGS[@]}"
         fi
-      shell: bash
-
-    - name: Calculate keyboard name
-      id: keyboard_vars
-      run: |
-        KEYBOARD_NAME="${{ inputs.keyboard }}"
-        KEYBOARD_NAME="${KEYBOARD_NAME//\//_}"
-        echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_ENV
-        echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_OUTPUT
+        test -f "$build_name.uf2"
       shell: bash
 
     - name: Updater pair UF2
-      if: ${{ inputs.updater }}
+      if: ${{ inputs.updater && inputs.build_side == '' }}
       env:
         VERSION: ${{ steps.get_version.outputs.VERSION }}
         VERSION_STRING: ${{ inputs.version_string }}
         FW_VERSION: ${{ inputs.fw_version }}
       run: |
-        NAME="${{ env.keyboard_name }}_${{ inputs.side }}_${{ inputs.keymap }}"
+        NAME="$build_name"
         OUT="svalboard_${{ inputs.keymap }}_${VERSION}.uf2"
         mkdir -p updater-out
         # The commit's RAM code must not reach flash (plan R2).
@@ -134,6 +156,24 @@ jobs:
           --kb "${{ inputs.keyboard }}/${{ inputs.side }}" --keymap "${{ inputs.keymap }}" --release \
           --expect-version "$VERSION_STRING" --expect-fw-version "$FW_VERSION"
         python3 -I keyboards/svalboard/tools/make_update.py verify-pair "updater-out/$OUT" --build release
+        cp ".build/$NAME.elf" "updater-out/$NAME.elf"
+        echo "release_name=$NAME" >> "$GITHUB_ENV"
+      shell: bash
+
+    # A one-side build is published as the build's own UF2, for one half: no
+    # pair record, so nothing relays it to the other half (docs/pair-uf2.md,
+    # "Left and right files"). release.yml's lint checks it against the ELF.
+    - name: Updater one-side UF2
+      if: ${{ inputs.updater && inputs.build_side != '' }}
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
+        BUILD_SIDE: ${{ inputs.build_side }}
+      run: |
+        NAME="$build_name"
+        OUT="svalboard_${{ inputs.keymap }}_${BUILD_SIDE}_${VERSION}.uf2"
+        mkdir -p updater-out
+        python3 -I keyboards/svalboard/tools/check_ram_funcs.py ".build/$NAME.elf"
+        cp "$NAME.uf2" "updater-out/$OUT"
         cp ".build/$NAME.elf" "updater-out/$NAME.elf"
         echo "release_name=$NAME" >> "$GITHUB_ENV"
       shell: bash
@@ -150,15 +190,15 @@ jobs:
       uses: actions/upload-artifact@v4
       if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       with:
-        name: ${{ env.keyboard_name }}_${{ inputs.side }}_${{ inputs.keymap }}.uf2
-        path: ${{ env.keyboard_name }}_${{ inputs.side }}_${{ inputs.keymap }}.uf2
+        name: ${{ env.build_name }}.uf2
+        path: ${{ env.build_name }}.uf2
 
     - name: Move file into position (for tags only)
       id: move_file
       if: ${{ startsWith(github.ref, 'refs/tags/') }}
       run: |
-        FILE_NAME="${{ env.keyboard_name }}_${{ inputs.side }}_${{ inputs.keymap }}_${{ steps.get_version.outputs.VERSION }}.uf2"
-        mv ${{ env.keyboard_name }}_${{ inputs.side }}_${{ inputs.keymap }}.uf2 "$FILE_NAME"
+        FILE_NAME="${{ env.build_name }}_${{ steps.get_version.outputs.VERSION }}.uf2"
+        mv "${{ env.build_name }}.uf2" "$FILE_NAME"
         echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
       shell: bash
 

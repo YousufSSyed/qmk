@@ -1,11 +1,14 @@
 # Pair UF2: one file for both halves
 
-From x4 on, a release is two files, one per keymap:
+From x4 on, a release is two pair UF2 files, one per keymap, and from x4.2
+also two one-side files (D46):
 
 | File | What it is |
 |---|---|
 | `svalboard_sval_<tag>.uf2` | The `svalboard/either` image with the `sval` keymap, as a pair UF2 |
 | `svalboard_blank_<tag>.uf2` | The same with the `blank` keymap (no key bindings: the test image) |
+| `svalboard_sval_left_<tag>.uf2` | The `sval` image built for the left half (`SVAL_BUILD_SIDE=left`), a plain UF2 for that half only ([Left and right files](#left-and-right-files)) |
+| `svalboard_sval_right_<tag>.uf2` | The same for the right half |
 
 There are no `.svup` files any more. Each file can be used in two ways:
 
@@ -118,7 +121,54 @@ its own side (above). The boot relay refuses a record whose manifest is for
 one side (hand 0 or 1): sending a one-side image to the other half would
 leave both halves on the same side. The per-side builds (`svalboard/left`,
 `svalboard/right`) still build for development, but are not released and
-cannot be made into a pair UF2.
+cannot be made into a pair UF2; nor can the one-side release files below.
+
+## Left and right files
+
+`svalboard_sval_left_<tag>.uf2` and `svalboard_sval_right_<tag>.uf2` (x4.2 on)
+are for a half that has no side, or the wrong one, when Keybard is not at
+hand: copied onto a half in BOOTSEL, the file installs on that half only and
+sets its side. No host software is needed.
+
+- **The build.** `make svalboard/either:sval SVAL_BUILD_SIDE=left` (or
+  `right`; release CI also passes `TARGET=svalboard_either_left_sval`). The
+  same code as the one-image build, with `SVAL_BUILD_SIDE` defined
+  (`keyboards/svalboard/either.mk`, `side.h`). The split link pins are still
+  chosen at run time, so it links with a one-image half, a one-side half of
+  the other side, or a per-side half, as the one-image build does.
+- **The side.** Every boot runs as the build's side. When the stored side
+  record says anything else (another side, unknown, or no record) the half
+  rewrites it with source 5 (BUILD). A later one-image update, by hand or
+  from Keybard, finds the record and keeps the side. A thumb strap still
+  wins: a half whose strap says the other side runs as the strap's side and
+  keeps the strap's record, and Sval `0x33` GET reports it (flags bit 4).
+  While the file runs, a host cannot set or clear the other side (Sval `0x33`
+  status 8, BUILD): the file owns the side until another image is installed.
+- **One half only.** The file is a plain UF2 of the image, one contiguous run
+  of blocks from `0x10000000` inside the firmware area: no pair record, so
+  there is nothing to relay. Its build-info record says hand 0 (left) or 1
+  (right), so `make_update.py pair` refuses it even with `--yes`, and so does
+  `verify-pair` under a forged either manifest. A one-side build's boot relay
+  erases any pair record it finds (one left from an earlier pair UF2 for an
+  absent other half) without relaying it and with no light. A left image is
+  never sent to the right half.
+- **Settings.** As for any other image (D39): the first boot of the file
+  resets that half's settings to the defaults, and a later update to the
+  one-image build resets them again.
+- **The wrong file** (left copied onto the half used as the right): both
+  halves claim the left side, so neither types (the existing pairing rule);
+  copying the right file onto that half fixes it, with no host software.
+- **Older firmware.** Firmware before x4.2 reads a BUILD record as damaged
+  and uses the other copy of the record (the side before the file, or none),
+  so going back to x4.1 or older after a one-side file can lose the side.
+- **Keybard.** Keybard installs from the pair UF2 only; a one-side file is
+  not a pair UF2 and is refused as one (step 1-3 below).
+- **Lint.** `check_release_artifacts.py` checks each one-side UF2 against
+  its ELF, its build-info record (hand, auto pointing, sval keymap, version,
+  the pair builds' fw_version) and the release image rules;
+  `check_release_elf.py` expects hand 0 or 1 from the ELF's name
+  (`svalboard_either_left_*`, `svalboard_either_right_*`); the split table
+  check pairs them with every other release build.
 
 ### Reading it (Keybard)
 
@@ -366,7 +416,10 @@ Host (`util/updater_test/run.sh`):
   ROM's UF2 path in file order and in shuffled orders, that a layout without
   whole sectors breaks it, an interrupted copy, refusals.
 - `tests/sval_updater/test_release_artifacts.py`: the release lint of the two
-  pair UF2 files.
+  pair UF2 files and the two one-side files.
+- `tests/sval_updater/test_side.c`: the one-side builds' side (over a record,
+  an unknown record, migration; under a strap; host writes; the board flows
+  from a half with no side to a later one-image release).
 
 On the test boards (right half with USB, left half behind the split cable),
 no-chord dev builds with `SVAL_HOST_BOOTLOADER` so the half could be put in

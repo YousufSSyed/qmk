@@ -12,8 +12,9 @@
 //   1. The thumb strap (svalboard.c): a left thumb with R7 to GND, or a right
 //      thumb with R7 to the thumb row. A strap always wins, and the stored
 //      record is rewritten to match it (source STRAP).
-//   2. The stored side record, below.
-//   3. Unknown. The board enumerates and answers raw HID, but types nothing
+//   2. The build's side, in a one-side build (SVAL_BUILD_SIDE, below).
+//   3. The stored side record, below.
+//   4. Unknown. The board enumerates and answers raw HID, but types nothing
 //      (side.c); a host sets the side with Sval 0x33 (docs/protocol.md).
 //
 // The record lives in its own two 4 KB flash sectors, below the build reset
@@ -29,6 +30,17 @@
 // MIGRATED), before the build reset formats the settings. With nothing to
 // adopt it writes an UNKNOWN record, so a later boot never mistakes the
 // formatted settings for a side.
+//
+// One-side builds (make ... SVAL_BUILD_SIDE=left or right, either.mk) are the
+// either build with a side of its own: copying the file onto a half sets that
+// half's side with no host software. Every boot runs as the build's side and,
+// when the record says anything else, rewrites it (source BUILD), so a later
+// one-image update keeps the side. A thumb strap still wins over the build:
+// the half runs as the strap's side, keeps the strap's record, and Sval 0x33
+// GET reports the conflict. While a one-side build runs, a host may not set or
+// clear the other side (status BUILD): the file owns the side. The release
+// publishes these as plain UF2 files for one half, never as pair UF2s, and the
+// boot relay never sends a one-side image to the other half (update_pair.c).
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -51,6 +63,7 @@ enum sval_side_source {
     SVAL_SIDE_SRC_HOST     = 2, // a host write from Keybard
     SVAL_SIDE_SRC_MIGRATED = 3, // adopted from the EEPROM handedness byte a per-hand build left
     SVAL_SIDE_SRC_STRAP    = 4, // the thumb strap
+    SVAL_SIDE_SRC_BUILD    = 5, // a one-side build (SVAL_BUILD_SIDE). Firmware before x4.2 reads such a record as damaged
 };
 
 typedef struct __attribute__((packed)) {
@@ -97,9 +110,10 @@ typedef struct {
     bool    write;  // a record must be written: write_side, write_source
     uint8_t write_side, write_source;
 } sval_side_decision_t;
-// Boot-time priority: strap, record (NULL: no valid copy), then migration
-// (migrated: sval_side_from_eeconfig, only looked at when there is no record).
-void sval_side_decide(uint8_t strap_side, const sval_side_record_t *rec, uint8_t migrated, sval_side_decision_t *d);
+// Boot-time priority: strap, the build's side (build_side: SVAL_SIDE_UNKNOWN in
+// the either builds), record (NULL: no valid copy), then migration (migrated:
+// sval_side_from_eeconfig, only looked at when there is no record and no build side).
+void sval_side_decide(uint8_t strap_side, uint8_t build_side, const sval_side_record_t *rec, uint8_t migrated, sval_side_decision_t *d);
 
 // Host write status (Sval 0x33).
 enum sval_side_status {
@@ -110,9 +124,21 @@ enum sval_side_status {
     SVAL_SIDE_STRAP         = 4, // the thumb strap says the other side; the strap wins
     SVAL_SIDE_NOT_CONNECTED = 5, // the other half is not connected
     SVAL_SIDE_NO_ANSWER     = 6, // the other half did not answer (older firmware, or the link failed)
+    // 7: the other half took the write (side.c, SIDE_ACCEPTED)
+    SVAL_SIDE_BUILD         = 8, // this half runs a one-side build for the other side; the build wins
 };
 // Whether a host may write side (SVAL_SIDE_LEFT/RIGHT, or UNKNOWN to clear) with source.
-uint8_t sval_side_host_check(uint8_t strap_side, uint8_t side, uint8_t source);
+uint8_t sval_side_host_check(uint8_t strap_side, uint8_t build_side, uint8_t side, uint8_t source);
+
+// This build's own side: SVAL_SIDE_LEFT/RIGHT in a one-side build, else UNKNOWN.
+#if defined(SVAL_BUILD_SIDE)
+#    if SVAL_BUILD_SIDE != SVAL_SIDE_LEFT && SVAL_BUILD_SIDE != SVAL_SIDE_RIGHT
+#        error "SVAL_BUILD_SIDE must be SVAL_SIDE_LEFT (0) or SVAL_SIDE_RIGHT (1)"
+#    endif
+#    define SVAL_SIDE_OF_BUILD SVAL_BUILD_SIDE
+#else
+#    define SVAL_SIDE_OF_BUILD SVAL_SIDE_UNKNOWN
+#endif
 
 // Pairing: this half's side and the other half's as it reports it.
 enum sval_side_pair {

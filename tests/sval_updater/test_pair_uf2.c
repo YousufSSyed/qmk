@@ -384,6 +384,23 @@ static void test_pair_uf2_sides(void) {
     CHECK_EQ(slave_commit_runs, 1);
 }
 
+// A one-side build (the left or right release file) copied over a half whose
+// record is still waiting (kept for an absent other half): never relayed,
+// erased with no light, and the other half is left alone.
+static void test_pair_uf2_one_side(void) {
+    pb_fresh(0x2000);
+    update_pair_host_one_side = true;
+    pb_run(120000);
+    CHECK_EQ(update_pair_outcome(), PAIR_OUT_ABANDONED);
+    CHECK_EQ(update_pair_phase(), PAIR_BOOT_IDLE);
+    CHECK(pair_sector_erased());
+    CHECK_EQ(slave_commit_runs, 0);
+    CHECK_EQ(pause_calls, 0);
+    CHECK_EQ(led_seen & (LED_BIT(UPDATE_LED_ERROR) | LED_BIT(UPDATE_LED_PROGRESS)), 0);
+    CHECK(!update_pair_busy());
+    update_pair_host_one_side = false;
+}
+
 // Power cut on this half in the middle of the relay: the next boot finds the
 // record, the same other half (its session dropped, its firmware untouched),
 // and installs it.
@@ -455,6 +472,7 @@ static void test_pair_uf2(const char *cross_dir) {
     test_pair_uf2_no_peer();
     test_pair_uf2_staleness();
     test_pair_uf2_sides();
+    test_pair_uf2_one_side();
     test_pair_uf2_cut();
     if (cross_dir) test_pair_uf2_cross(cross_dir);
     allow_pair_sector = false;

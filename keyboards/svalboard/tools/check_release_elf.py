@@ -14,8 +14,10 @@ exits 1 on any failure:
     HOST_BOOTLOADER, NO_CHORD or DEV_KEEP (D43); its reserved bits and bytes
     are 0; its updater protocol
     is the tools'; it is a release build (D34): one image for both halves (hand
-    2, svalboard/either), the auto
-    pointing build (every driver) and a release keymap (sval or blank, D40);
+    2, svalboard/either), or a one-side build of it when the file name says so
+    (svalboard_either_left_*.elf hand 0, svalboard_either_right_*.elf hand 1,
+    SVAL_BUILD_SIDE), the auto pointing build (every driver) and a release
+    keymap (sval or blank, D40);
   - no test hooks (update_commit_test_halt, op_test_halt, halt_point,
     halt_fed), no SVAL_KEYTEST (keytest_task, keytest_command), no
     SVAL_HOST_BOOTLOADER (scanlab.c's reboot_pending, reboot_due_ms), and none
@@ -56,6 +58,15 @@ FORBIDDEN = {
 }
 
 
+def expected_hand(path):
+    """The hand a release ELF must record: a one-side build's side from its name, else either."""
+    name = Path(path).name
+    for side in ("left", "right"):
+        if name.startswith(f"svalboard_either_{side}_"):
+            return mu.HAND[side]
+    return mu.HAND["either"]
+
+
 def check(path):
     errors = []
     symbols, read = cst.read_elf(path, kinds=(STT_OBJECT, STT_FUNC))
@@ -77,9 +88,9 @@ def check(path):
         elif pointing_id != mu.POINTING["auto"]:
             errors.append(f"the build-info record has pointing_id {pointing_id}: a release is the auto build "
                           f"({mu.POINTING['auto']}, svalboard/either)")
-        elif hand != mu.HAND["either"]:
-            errors.append(f"the build-info record has hand {hand}: a release is one image for both halves "
-                          f"(hand {mu.HAND['either']}, svalboard/either; docs/pair-uf2.md)")
+        elif hand != expected_hand(path):
+            errors.append(f"the build-info record has hand {hand}: this release build is hand {expected_hand(path)} "
+                          f"(2: one image for both halves, svalboard/either; 0 or 1: a one-side build; docs/pair-uf2.md)")
         if keymap_id not in mu.KEYMAP.values():
             errors.append(f"the build-info record has keymap_id {keymap_id}: a release is the sval or blank keymap")
         if not flags & mu.BI_RELEASE:

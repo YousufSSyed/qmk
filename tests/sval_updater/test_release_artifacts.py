@@ -3,10 +3,11 @@
 
     test_release_artifacts.py OUT_DIR
 
-Builds a synthetic release directory (for each of the 2 release builds: a
+Builds a synthetic release directory (for each of the 2 pair builds: a
 minimal ELF with one loadable segment at 0x10000000 and the pair UF2 from
-make_update.py pair --release), checks that it passes, and that each kind of
-substitution is refused.
+make_update.py pair --release; for each of the 2 one-side builds, left and
+right: the ELF and its plain UF2), checks that it passes, and that each kind
+of substitution is refused.
 """
 import contextlib
 import importlib.util
@@ -56,10 +57,11 @@ def elf(flash, extra_ram=b""):
     return bytes(hdr) + ph + body
 
 
-def image_for(kb, km, data_tail=b""):
-    hand, pointing_id = mu.kb_fields(kb)
+def image_for(kb, km, data_tail=b"", hand=None, fw=3, version=VER):
+    kb_hand, pointing_id = mu.kb_fields(kb)
+    hand = kb_hand if hand is None else hand
     body = bytearray(tmu.image(0x1800))
-    rec = struct.pack(mu.BUILD_INFO_FMT, b"SVBI", 3, mu.BI_RELEASE, 0, mu.UPDATER_PROTO, 3, VER.encode().ljust(16, b"\0"), hand, pointing_id, mu.KEYMAP[km], 0)
+    rec = struct.pack(mu.BUILD_INFO_FMT, b"SVBI", 3, mu.BI_RELEASE, 0, mu.UPDATER_PROTO, fw, version.encode().ljust(16, b"\0"), hand, pointing_id, mu.KEYMAP[km], 0)
     body[0x800:0x800 + len(rec)] = rec
     return bytes(body)
 
@@ -82,6 +84,16 @@ def make_dir(d):
         p = make_pair(d / "src.uf2", d / cra.published_name(km, VER), kb, km)
         (d / "src.uf2").unlink()
         check(p.returncode == 0, f"make_update.py pair --release {n}: {p.stdout}{p.stderr}")
+    for kb, km, side in cra.ONE_SIDE_BUILDS:
+        write_one_side(d, kb, km, side)
+
+
+def write_one_side(d, kb, km, side, **kw):
+    """A one-side build's ELF and the plain UF2 the build job copies (the build's own .uf2)."""
+    flash = image_for(kb, km, hand=kw.pop("hand", mu.HAND[side]), **kw)
+    flash += b"\xff" * (-len(flash) % 256)
+    (d / f"{cra.build_name(kb, km, side)}.elf").write_bytes(elf(flash))
+    (d / cra.published_name(km, VER, side)).write_bytes(tmu.uf2(flash))
 
 
 def quiet_main(args):
@@ -98,8 +110,11 @@ def main():
     hashes, problems = cra.check_dir(good, VER)
     check(cra.RELEASE_BUILDS == [("svalboard/either", "sval"), ("svalboard/either", "blank")], f"the release is one image for both halves, sval and blank (D34, D40): {cra.RELEASE_BUILDS}")
     check(all(mu.kb_fields(kb) == (mu.HAND["either"], mu.POINTING["auto"]) for kb, _ in cra.RELEASE_BUILDS), "release builds are either-hand and auto")
-    check(sorted(p.name for p in good.iterdir()) == sorted(["svalboard_either_sval.elf", "svalboard_either_blank.elf", f"svalboard_sval_{VER}.uf2", f"svalboard_blank_{VER}.uf2"]), "two ELFs and two pair UF2s, no .svup")
-    check(not problems and len(hashes) == 2, f"a clean directory passes: {problems}")
+    check(cra.ONE_SIDE_BUILDS == [("svalboard/either", "sval", "left"), ("svalboard/either", "sval", "right")], f"one-side builds: sval, left and right: {cra.ONE_SIDE_BUILDS}")
+    check(sorted(p.name for p in good.iterdir()) == sorted(["svalboard_either_sval.elf", "svalboard_either_blank.elf", f"svalboard_sval_{VER}.uf2", f"svalboard_blank_{VER}.uf2",
+                                                            "svalboard_either_left_sval.elf", "svalboard_either_right_sval.elf", f"svalboard_sval_left_{VER}.uf2", f"svalboard_sval_right_{VER}.uf2"]),
+          "four ELFs, two pair UF2s and two one-side UF2s, no .svup")
+    check(not problems and len(hashes) == 4, f"a clean directory passes: {problems}")
     check(quiet_main([str(good), "--version", VER]) == 0, "main passes a clean directory")
     check(quiet_main([str(good), "--version", "vOther"]) == 1, "another version refused")
 
@@ -134,15 +149,26 @@ def main():
     def flip_img(img):
         img[0x1000] ^= 1
 
+    def one_side_flags(d, flags):
+        """The left file and ELF rebuilt with other build-info flags."""
+        flash = bytearray(image_for("svalboard/either", "sval", hand=mu.HAND["left"]))
+        struct.pack_into("<B", flash, 0x800 + 5, flags)
+        flash += b"\xff" * (-len(flash) % 256)
+        (d / "svalboard_either_left_sval.elf").write_bytes(elf(bytes(flash)))
+        (d / cra.published_name("sval", VER, "left")).write_bytes(tmu.uf2(bytes(flash)))
+
     def replace_with(d, kb, km, as_km="sval"):
         """The sval release build's files swapped for another build's (a one-side, per-module or blank image)."""
         flash = image_for(kb, km)
         flash += b"\xff" * (-len(flash) % 256)
         (d / f"{s}.elf").write_bytes(elf(flash))
         (d / "x.uf2").write_bytes(tmu.uf2(flash))
-        p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "pair", str(d / "x.uf2"), "-o", str(d / su), "--kb", "svalboard/either", "--keymap", km, "--release", "--expect-version", VER, "--yes"], capture_output=True, text=True)
+        p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "pair", str(d / "x.uf2"), "-o", str(d / "x_pair.uf2"), "--kb", "svalboard/either", "--keymap", km, "--release", "--expect-version", VER, "--yes"], capture_output=True, text=True)
         (d / "x.uf2").unlink()
-        return p
+        check(p.returncode == 2 and "one-side build" in p.stdout + p.stderr, f"make_update.py pair refuses {kb}'s image even with --yes: {p.stdout}{p.stderr}")
+        # Made by hand instead (an either manifest over the one-side image): the lint still refuses it.
+        man = mu.build_manifest(flash, hand=mu.HAND["either"], pointing_id=mu.POINTING["auto"], keymap_id=mu.KEYMAP[km], flags=mu.FLAG_RELEASE, epoch=0, storage_format=mu.STORAGE_FORMAT, fw_version=3, version=VER)
+        (d / su).write_bytes(mu.pair_uf2_bytes(man, flash))
 
     case("a flipped image byte with a re-made manifest", "not the ELF's flash contents", lambda d: repair(d, "svalboard/either", "sval", flip_img))
     case("a flipped image byte", "BAD_HASH" if False else "SHA-512", lambda d: flip(d / su, 32 + 0x10))
@@ -158,6 +184,22 @@ def main():
     case("a plain UF2 as the pair UF2", "sectors", lambda d: (d / su).write_bytes(tmu.uf2(mu.parse_pair_uf2((d / su).read_bytes())[1][:0x1700])))
     case("an extra artifact", "unexpected file", lambda d: shutil.copy(d / f"{s}.elf", d / "extra.elf"))
     case("a truncated pair UF2", "multiple of 512", lambda d: (d / su).write_bytes((d / su).read_bytes()[:-100]))
+
+    # The one-side files (left and right, plain UF2s for one half).
+    lu, ru = cra.published_name("sval", VER, "left"), cra.published_name("sval", VER, "right")
+    ln, rn = "svalboard_either_left_sval", "svalboard_either_right_sval"
+    case("a missing right file", "missing", lambda d: (d / ru).unlink())
+    case("a missing left ELF", "missing", lambda d: (d / f"{ln}.elf").unlink())
+    case("the left file as the right one", "hand 0", lambda d: [shutil.copy(d / lu, d / ru), shutil.copy(d / f"{ln}.elf", d / f"{rn}.elf")])
+    case("the one-image build as the left file", "hand 2", lambda d: write_one_side(d, "svalboard/either", "sval", "left", hand=mu.HAND["either"]))
+    case("the left UF2 with the right ELF", "not the ELF's flash contents", lambda d: shutil.copy(d / f"{rn}.elf", d / f"{ln}.elf"))
+    case("a one-side file as a pair UF2", "gap or overlap", lambda d: shutil.copy(d / su, d / lu))
+    case("a flipped byte in a one-side file", "not the ELF's flash contents", lambda d: flip(d / lu, 32 + 0x10))
+    case("a one-side file of another release", "fw_version", lambda d: write_one_side(d, "svalboard/either", "sval", "right", fw=4))
+    case("a one-side file with another version string", "version", lambda d: write_one_side(d, "svalboard/either", "sval", "left", version="x9"))
+    case("a blank one-side file", "keymap_id", lambda d: [write_one_side(d, "svalboard/either", "blank", "left", hand=mu.HAND["left"]), shutil.move(d / cra.published_name("blank", VER, "left"), d / lu), shutil.move(d / "svalboard_either_left_blank.elf", d / f"{ln}.elf")])
+    case("a non-release one-side file", "SVAL_UPDATE_RELEASE", lambda d: one_side_flags(d, 0))
+    case("a one-side file with test hooks", "test hooks", lambda d: one_side_flags(d, mu.BI_RELEASE | mu.BI_TEST_HOOKS))
 
     # the ELF reader against a non-ELF and an ELF that does not start at XIP_BASE
     bad = out / "bad.elf"

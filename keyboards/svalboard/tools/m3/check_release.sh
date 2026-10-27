@@ -7,7 +7,8 @@
 # Downloads into ~/m3dry/TAG (kept: the hardware check uses these files).
 # An x tag must be a published prerelease; a v tag must be a full release
 # (a draft until someone publishes it, D41). Any other tag is refused. Every
-# release must hold exactly 2 pair UF2 files, sval and blank (D34, D40).
+# release must hold exactly 2 pair UF2 files, sval and blank (D34, D40), and
+# from x4.2 on the 2 one-side files, left and right (check_release_assets.py).
 set -euo pipefail
 tag="${1:?usage: check_release.sh TAG [OWNER/REPO]}"
 R="${2:-morganvenable/sval-qmk}"

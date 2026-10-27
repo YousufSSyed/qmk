@@ -19,37 +19,45 @@ name: Release QMK Firmware
 #
 #   gh workflow run release.yml -R svalboard/qmk --ref x3 -f tag=x3
 #
-# A release is two files, one per keymap: svalboard/either, one image for both
-# halves (the side comes from the thumb strap or the stored side record), the
-# auto build that drives whichever pointing module is attached (D34), with the
-# sval keymap and with the blank keymap (no key bindings: a test image for
-# checking every key after a build, D40). Each is a release updater build
-# (SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes; docs/updater.md, "Releases"),
-# published as a pair UF2 (docs/pair-uf2.md): copied onto a half in BOOTSEL
-# it installs that half, and then the other one over the split cable when the
-# other half already runs an updater build (protocol 3 or 4). A half on Vial
-# or on a release before the updater cannot link to it, so the release notes
-# tell customers to copy the file onto both halves. Keybard installs from the
-# same file. Per-side and per-module builds
-# still build but are not released, and SVAL_TEST_WIPE never is:
+# A release is four files. Two are pair UF2s, one per keymap: svalboard/either,
+# one image for both halves (the side comes from the thumb strap or the stored
+# side record), the auto build that drives whichever pointing module is
+# attached (D34), with the sval keymap and with the blank keymap (no key
+# bindings: a test image for checking every key after a build, D40). Each is a
+# release updater build (SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes;
+# docs/updater.md, "Releases"), published as a pair UF2 (docs/pair-uf2.md):
+# copied onto a half in BOOTSEL it installs that half, and then the other one
+# over the split cable when the other half already runs an updater build
+# (protocol 3 or 4). A half on Vial or on a release before the updater cannot
+# link to it, so the release notes tell customers to copy the file onto both
+# halves. Keybard installs from the same file. The other two (from x4.2) are
+# one-side builds of the sval image, left and right (SVAL_BUILD_SIDE,
+# keyboards/svalboard/side.h), published as plain UF2 files for one half each,
+# never as pair UF2s: copied onto a half, the file sets that half's side with
+# no host software, and nothing relays it to the other half. Per-side
+# (svalboard/left, svalboard/right) and per-module builds still build but are
+# not released, and SVAL_TEST_WIPE never is:
 #
 #   version  the tag and keyboards/svalboard/updater/fw_version.txt (D32):
 #            the tag must be a release tag (above), and the number must go
 #            up past every published release, x tags included
-#   build    2 release updater builds (pinned image and toolchain); each
-#            checks its RAM commit code and uploads its pair UF2
-#            (make_update.py pair --release, then verify-pair) and its ELF.
-#            No build job can write to the repository
+#   build    4 release updater builds (pinned image and toolchain); each
+#            checks its RAM commit code and uploads its ELF and its pair UF2
+#            (make_update.py pair --release, then verify-pair) or, for a
+#            one-side build, its plain UF2. No build job can write to the
+#            repository
 #   lint     the tag still names this run's commit; each pair UF2 has the
 #            pair layout and holds its ELF's flash contents, with a manifest
-#            and build-info record that match the build; the release ELFs
+#            and build-info record that match the build; each one-side UF2 is
+#            a plain image of its ELF with a build-info record for its side;
+#            the release ELFs
 #            have no test hooks, keytest or host bootloader; the builds agree
 #            on the split message table with each other and with the
 #            committed golden table, so they also talk to the per-side
 #            releases already on boards (P1)
-#   publish  the release named after the tag, with the 2 pair UF2 files and
-#            two lines on what to do with them: a draft for a v tag, a
-#            prerelease for an x tag
+#   publish  the release named after the tag, with the 2 pair UF2 files, the
+#            2 one-side UF2 files and a few plain lines on what to do with
+#            them: a draft for a v tag, a prerelease for an x tag
 #
 # Every job checks out the run's commit (github.sha), never the tag by name.
 on:
@@ -122,15 +130,18 @@ jobs:
       keyboard: ${{ matrix.keyboard }}
       keymap: ${{ matrix.keymap }}
       side: ${{ matrix.side }}
+      build_side: ${{ matrix.build_side }}
       updater: true
       version_string: ${{ needs.version.outputs.version }}
       fw_version: ${{ needs.version.outputs.fw_version }}
 
     strategy:
       matrix:
-        keyboard: [ svalboard ]
-        keymap: [ sval, blank ]
-        side: [ either ]
+        include:
+          - { keyboard: svalboard, keymap: sval, side: either, build_side: '' }
+          - { keyboard: svalboard, keymap: blank, side: either, build_side: '' }
+          - { keyboard: svalboard, keymap: sval, side: either, build_side: left }
+          - { keyboard: svalboard, keymap: sval, side: either, build_side: right }
 
   lint:
     needs: [ version, build ]
@@ -151,7 +162,7 @@ jobs:
         path: release
         merge-multiple: true
 
-    - name: Each pair UF2 holds its ELF's image; manifests match the builds
+    - name: Each UF2 holds its ELF's image; manifests match the builds
       env:
         VERSION: ${{ needs.version.outputs.version }}
       run: |
@@ -160,7 +171,7 @@ jobs:
 
     - name: Lint the release updater ELFs
       run: |
-        test "$(find release -name "*.elf" | wc -l)" -eq 2
+        test "$(find release -name "*.elf" | wc -l)" -eq 4
         python3 -I keyboards/svalboard/tools/check_release_elf.py release/*.elf
 
     - name: Split message table of the builds, and the golden table (P1)
@@ -180,7 +191,7 @@ jobs:
         path: release
         merge-multiple: true
 
-    - name: Release with the pair UF2 files
+    - name: Release with the UF2 files
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ github.ref_name }}
@@ -188,12 +199,17 @@ jobs:
         DRAFT: ${{ needs.version.outputs.draft }}
       run: |
         R="$GITHUB_REPOSITORY"
-        test "$(find release -name "*.uf2" | wc -l)" -eq 2
+        test "$(find release -name "*.uf2" | wc -l)" -eq 4
         test "$(find release -name "*.svup" | wc -l)" -eq 0
-        # The release body: two plain lines on what to do with the files.
+        for f in "svalboard_sval_$TAG.uf2" "svalboard_blank_$TAG.uf2" \
+                 "svalboard_sval_left_$TAG.uf2" "svalboard_sval_right_$TAG.uf2"; do
+          test -f "release/$f" || { echo "::error::missing $f"; exit 1; }
+        done
+        # The release body: a few plain lines on what to do with the files.
         L1="To install by hand, copy svalboard_sval_$TAG.uf2 onto both halves, one half at a time: plug the USB cable into that half's U port, press RESET twice about a quarter of a second apart, and drag the file onto the RPI-RP2 drive. Keep the split cable connected. Steps for each older firmware: https://docs.svalboard.com/firmware/update/"
         L2="A keyboard that already runs x4 or later can also update from Keybard, with the same file."
-        NOTES="$(printf '%s\n\n%s' "$L1" "$L2")"
+        L3="If a half does not type after an update, copy svalboard_sval_left_$TAG.uf2 onto the left half or svalboard_sval_right_$TAG.uf2 onto the right half, the same way. The file tells that half which side it is, with no other software. Use each file only on its own half. If you need help, open a ticket in #customer-service on the Svalboard Discord (https://www.svalboard.com/discord)."
+        NOTES="$(printf '%s\n\n%s\n\n%s' "$L1" "$L2" "$L3")"
         args=(--verify-tag --title "$TAG" --notes "$NOTES")
         if [ "$PRE" = true ]; then args+=(--prerelease); fi
         if [ "$DRAFT" = true ]; then args+=(--draft); fi

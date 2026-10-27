@@ -592,6 +592,21 @@ def pair_layout_problems(data):
     return problems
 
 
+def one_side_build_problem(image):
+    """Why an image may never be in a pair UF2 because its build is for one side, or None.
+    A one-side build (SVAL_BUILD_SIDE, or a per-side build) sent to the other half would
+    leave both halves on the same side; --yes does not override this."""
+    try:
+        info = build_info(image)
+    except Refused:
+        return None  # reported by the other checks
+    if info is not None and info["hand"] in (HAND["left"], HAND["right"]):
+        side = "left" if info["hand"] == HAND["left"] else "right"
+        return (f"the image's build-info record says hand {info['hand']} ({side}): a one-side build is never "
+                "made into a pair UF2, which sends the same image to the other half")
+    return None
+
+
 def make_pair(args):
     """make_update.py pair IN.uf2 -o OUT.uf2 --kb svalboard/either [make's options]"""
     image = read_image(args)
@@ -599,6 +614,9 @@ def make_pair(args):
     if args.release and args.unsafe_allow_bad_image:
         raise Refused("--unsafe-allow-bad-image is for test images, never --release")
     check_structure(image, args.unsafe_allow_bad_image)
+    problem = one_side_build_problem(image)
+    if problem:
+        raise Refused(problem)
     if args.release:
         m = parse_manifest(manifest)
         problems = release_image_problems(manifest, image)
@@ -631,6 +649,9 @@ def verify_pair(args):
     problems = pair_layout_problems(data)
     if m["hand"] != HAND["either"]:
         problems.append(f"INVALID: hand {m['hand']}: the boot relay sends this image to the other half, so it must be for either hand")
+    problem = one_side_build_problem(image)
+    if problem:
+        problems.append(problem)
     tmp = argparse.Namespace(svup=args.uf2, build=args.build)
     try:
         _verify_parts(manifest, image, tmp)

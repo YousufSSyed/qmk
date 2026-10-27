@@ -5,7 +5,8 @@
 // the boot-time priority (strap, record, migration, unknown), the record
 // surviving a build-change settings reset, migration from a board a per-hand
 // build (EE_HANDS + INIT_EE_HANDS_*) left, power cuts during a write, host
-// writes, and the pairing report (both halves claiming the same side).
+// writes, the pairing report (both halves claiming the same side), and the
+// one-side builds (SVAL_BUILD_SIDE: the left and right release files).
 //
 // The board is modeled as two side sectors, the settings (the EECONFIG magic
 // and handedness byte at offset 14) and the build reset record, booted the
@@ -68,13 +69,14 @@ static void eeconfig_init(int per_hand_left) {
     ee_hand  = per_hand_left < 0 ? 0 : (uint8_t)per_hand_left;
 }
 
-// One boot of an either-hand build with image hash `image`.
-static void boot_either(uint8_t strap, uint32_t image) {
+// One boot of an either-hand build with image hash `image`: a one-image
+// build (build_side SVAL_SIDE_UNKNOWN) or a one-side build (SVAL_BUILD_SIDE).
+static void boot_build(uint8_t strap, uint8_t build_side, uint32_t image) {
     bool                      write_b;
     const sval_side_record_t *rec      = sval_side_newest(&sector[0], &sector[1], &write_b);
-    uint8_t                   migrated = rec ? SVAL_SIDE_UNKNOWN : sval_side_from_eeconfig(ee_magic, ee_hand);
+    uint8_t                   migrated = rec || build_side != SVAL_SIDE_UNKNOWN ? SVAL_SIDE_UNKNOWN : sval_side_from_eeconfig(ee_magic, ee_hand);
     sval_side_decision_t      d;
-    sval_side_decide(sval_side_from_strap(strap), rec, migrated, &d);
+    sval_side_decide(sval_side_from_strap(strap), build_side, rec, migrated, &d);
     side_now   = d.side;
     source_now = d.source;
     if (d.write) side_write(d.write_side, d.write_source);
@@ -83,6 +85,15 @@ static void boot_either(uint8_t strap, uint32_t image) {
         eeconfig_init(-1);
         build_reset_record_make(&br, image, BUILD_RESET_NOTICE);
     }
+}
+
+static void boot_either(uint8_t strap, uint32_t image) {
+    boot_build(strap, SVAL_SIDE_UNKNOWN, image);
+}
+
+static const sval_side_record_t *newest(void) {
+    bool wb;
+    return sval_side_newest(&sector[0], &sector[1], &wb);
 }
 
 // One boot of a per-hand build: INIT_EE_HANDS_* writes the handedness byte.
@@ -139,25 +150,25 @@ static void test_priority(void) {
     sval_side_decision_t d;
     // Strap first, and it rewrites a record that disagrees.
     sval_side_record_make(&rec, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST, 1);
-    sval_side_decide(SVAL_SIDE_LEFT, &rec, SVAL_SIDE_UNKNOWN, &d);
+    sval_side_decide(SVAL_SIDE_LEFT, SVAL_SIDE_UNKNOWN, &rec, SVAL_SIDE_UNKNOWN, &d);
     CHECK(d.side == SVAL_SIDE_LEFT && d.source == SVAL_SIDE_SRC_STRAP && d.write && d.write_side == SVAL_SIDE_LEFT && d.write_source == SVAL_SIDE_SRC_STRAP);
     // A record that agrees with the strap is left alone.
     sval_side_record_make(&rec, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST, 1);
-    sval_side_decide(SVAL_SIDE_LEFT, &rec, SVAL_SIDE_UNKNOWN, &d);
+    sval_side_decide(SVAL_SIDE_LEFT, SVAL_SIDE_UNKNOWN, &rec, SVAL_SIDE_UNKNOWN, &d);
     CHECK(d.side == SVAL_SIDE_LEFT && d.source == SVAL_SIDE_SRC_STRAP && !d.write);
     // No strap: the record, and migration is not looked at.
     sval_side_record_make(&rec, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_FACTORY, 1);
-    sval_side_decide(SVAL_SIDE_UNKNOWN, &rec, SVAL_SIDE_LEFT, &d);
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, &rec, SVAL_SIDE_LEFT, &d);
     CHECK(d.side == SVAL_SIDE_RIGHT && d.source == SVAL_SIDE_SRC_FACTORY && !d.write);
     // A cleared record: unknown, and no migration.
     sval_side_record_make(&rec, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE, 2);
-    sval_side_decide(SVAL_SIDE_UNKNOWN, &rec, SVAL_SIDE_LEFT, &d);
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, &rec, SVAL_SIDE_LEFT, &d);
     CHECK(d.side == SVAL_SIDE_UNKNOWN && !d.write);
     // No record: migration, written down.
-    sval_side_decide(SVAL_SIDE_UNKNOWN, NULL, SVAL_SIDE_RIGHT, &d);
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, NULL, SVAL_SIDE_RIGHT, &d);
     CHECK(d.side == SVAL_SIDE_RIGHT && d.source == SVAL_SIDE_SRC_MIGRATED && d.write && d.write_side == SVAL_SIDE_RIGHT);
     // Nothing at all: unknown, and an UNKNOWN record so the next boot does not look again.
-    sval_side_decide(SVAL_SIDE_UNKNOWN, NULL, SVAL_SIDE_UNKNOWN, &d);
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, NULL, SVAL_SIDE_UNKNOWN, &d);
     CHECK(d.side == SVAL_SIDE_UNKNOWN && d.source == SVAL_SIDE_SRC_NONE && d.write && d.write_side == SVAL_SIDE_UNKNOWN);
     // The strap's classes: only LEFT and RIGHT are sides.
     CHECK(sval_side_from_strap(STRAP_LEFT) == SVAL_SIDE_LEFT);
@@ -217,12 +228,12 @@ static void test_unknown(void) {
     boot_either(STRAP_DEFAULT, 0xE2);
     CHECK(side_now == SVAL_SIDE_UNKNOWN);
     // The host sets it.
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_FACTORY) == SVAL_SIDE_OK);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_FACTORY) == SVAL_SIDE_OK);
     side_write(SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_FACTORY);
     boot_either(STRAP_DEFAULT, 0xE2);
     CHECK(side_now == SVAL_SIDE_RIGHT && source_now == SVAL_SIDE_SRC_FACTORY);
     // Cleared: unknown again, through a build reset too.
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE) == SVAL_SIDE_OK);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE) == SVAL_SIDE_OK);
     side_write(SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE);
     boot_either(STRAP_DEFAULT, 0xE3);
     CHECK(side_now == SVAL_SIDE_UNKNOWN && source_now == SVAL_SIDE_SRC_NONE);
@@ -252,16 +263,111 @@ static void test_strap(void) {
 }
 
 static void test_host_check(void) {
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_OK);
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_FACTORY) == SVAL_SIDE_OK);
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, 2, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_INVALID);
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_MIGRATED) == SVAL_SIDE_INVALID); // only firmware migrates
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_STRAP) == SVAL_SIDE_INVALID);
-    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_INVALID); // a clear has no source
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_OK);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_FACTORY) == SVAL_SIDE_OK);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, 2, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_INVALID);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_MIGRATED) == SVAL_SIDE_INVALID); // only firmware migrates
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_STRAP) == SVAL_SIDE_INVALID);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_INVALID); // a clear has no source
     // The strap wins: a host write that disagrees, or a clear, is refused.
-    CHECK(sval_side_host_check(SVAL_SIDE_LEFT, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_STRAP);
-    CHECK(sval_side_host_check(SVAL_SIDE_LEFT, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE) == SVAL_SIDE_STRAP);
-    CHECK(sval_side_host_check(SVAL_SIDE_LEFT, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_OK);
+    CHECK(sval_side_host_check(SVAL_SIDE_LEFT, SVAL_SIDE_UNKNOWN, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_STRAP);
+    CHECK(sval_side_host_check(SVAL_SIDE_LEFT, SVAL_SIDE_UNKNOWN, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE) == SVAL_SIDE_STRAP);
+    CHECK(sval_side_host_check(SVAL_SIDE_LEFT, SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_OK);
+}
+
+// One-side builds (SVAL_BUILD_SIDE): the left and right release files.
+static void test_build_side(void) {
+    sval_side_record_t   rec;
+    sval_side_decision_t d;
+    // The decision: the build's side over any record or migration, written when the record differs.
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, NULL, SVAL_SIDE_UNKNOWN, &d);
+    CHECK(d.side == SVAL_SIDE_LEFT && d.source == SVAL_SIDE_SRC_BUILD && d.write && d.write_side == SVAL_SIDE_LEFT && d.write_source == SVAL_SIDE_SRC_BUILD);
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, NULL, SVAL_SIDE_RIGHT, &d); // a per-hand right build's byte is not looked at
+    CHECK(d.side == SVAL_SIDE_LEFT && d.source == SVAL_SIDE_SRC_BUILD && d.write && d.write_side == SVAL_SIDE_LEFT);
+    sval_side_record_make(&rec, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST, 4);
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, &rec, SVAL_SIDE_UNKNOWN, &d);
+    CHECK(d.side == SVAL_SIDE_LEFT && d.source == SVAL_SIDE_SRC_BUILD && d.write && d.write_side == SVAL_SIDE_LEFT && d.write_source == SVAL_SIDE_SRC_BUILD);
+    sval_side_record_make(&rec, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE, 4); // a half with no side: the case these files are for
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_RIGHT, &rec, SVAL_SIDE_UNKNOWN, &d);
+    CHECK(d.side == SVAL_SIDE_RIGHT && d.source == SVAL_SIDE_SRC_BUILD && d.write && d.write_side == SVAL_SIDE_RIGHT);
+    sval_side_record_make(&rec, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_MIGRATED, 4); // already that side: left alone
+    sval_side_decide(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, &rec, SVAL_SIDE_UNKNOWN, &d);
+    CHECK(d.side == SVAL_SIDE_LEFT && d.source == SVAL_SIDE_SRC_BUILD && !d.write);
+    // A strap that agrees: the strap's, as on any build.
+    sval_side_decide(SVAL_SIDE_LEFT, SVAL_SIDE_LEFT, NULL, SVAL_SIDE_UNKNOWN, &d);
+    CHECK(d.side == SVAL_SIDE_LEFT && d.source == SVAL_SIDE_SRC_STRAP && d.write && d.write_source == SVAL_SIDE_SRC_STRAP);
+    // A strap that disagrees: the strap wins over the build, and the record follows the strap.
+    sval_side_record_make(&rec, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_BUILD, 4);
+    sval_side_decide(SVAL_SIDE_RIGHT, SVAL_SIDE_LEFT, &rec, SVAL_SIDE_UNKNOWN, &d);
+    CHECK(d.side == SVAL_SIDE_RIGHT && d.source == SVAL_SIDE_SRC_STRAP && d.write && d.write_side == SVAL_SIDE_RIGHT && d.write_source == SVAL_SIDE_SRC_STRAP);
+
+    // A BUILD record is a valid record (x4.2 on); a source past BUILD is not.
+    sval_side_record_make(&rec, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_BUILD, 1);
+    CHECK(sval_side_record_valid(&rec));
+    sval_side_record_make(&rec, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_BUILD + 1, 1);
+    CHECK(!sval_side_record_valid(&rec));
+
+    // Host writes on a one-side build: its own side only; the other side and a clear are refused.
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_OK);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_BUILD);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_RIGHT, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_FACTORY) == SVAL_SIDE_BUILD);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE) == SVAL_SIDE_BUILD);
+    CHECK(sval_side_host_check(SVAL_SIDE_UNKNOWN, SVAL_SIDE_LEFT, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_BUILD) == SVAL_SIDE_INVALID); // only firmware writes BUILD
+    // With a strap the strap's rule comes first: the strap's side is the only one taken.
+    CHECK(sval_side_host_check(SVAL_SIDE_RIGHT, SVAL_SIDE_LEFT, SVAL_SIDE_LEFT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_STRAP);
+    CHECK(sval_side_host_check(SVAL_SIDE_RIGHT, SVAL_SIDE_LEFT, SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST) == SVAL_SIDE_OK);
+
+    // The board flows. A half with no side (a new board, or a cleared record)
+    // gets the left file copied onto it: left from its first boot on, through
+    // the build reset, and a later one-image release keeps it.
+    for (uint8_t want = SVAL_SIDE_LEFT; want <= SVAL_SIDE_RIGHT; want++) {
+        erase_all();
+        boot_either(STRAP_DEFAULT, 0xE1);
+        CHECK(side_now == SVAL_SIDE_UNKNOWN);
+        boot_build(STRAP_DEFAULT, want, 0xB1);
+        CHECK(side_now == want && source_now == SVAL_SIDE_SRC_BUILD);
+        CHECK(newest() && newest()->side == want && newest()->source == SVAL_SIDE_SRC_BUILD);
+        boot_build(STRAP_DEFAULT, want, 0xB1);
+        CHECK(side_now == want && source_now == SVAL_SIDE_SRC_BUILD);
+        boot_either(STRAP_DEFAULT, 0xE2); // the next one-image release, a new build: settings reset, side kept
+        CHECK(side_now == want && source_now == SVAL_SIDE_SRC_BUILD);
+        boot_either(STRAP_DEFAULT, 0xE2);
+        CHECK(side_now == want);
+        // A host may change it again on the one-image build.
+        side_write(!want, SVAL_SIDE_SRC_HOST);
+        boot_either(STRAP_DEFAULT, 0xE2);
+        CHECK(side_now == !want && source_now == SVAL_SIDE_SRC_HOST);
+    }
+    // The wrong file (left onto the half the owner uses as right): left until
+    // the right file (or Keybard after a one-image install) puts it back.
+    erase_all();
+    side_write(SVAL_SIDE_RIGHT, SVAL_SIDE_SRC_HOST);
+    boot_build(STRAP_DEFAULT, SVAL_SIDE_LEFT, 0xB1);
+    CHECK(side_now == SVAL_SIDE_LEFT && newest()->side == SVAL_SIDE_LEFT);
+    CHECK(sval_side_pair(side_now, true, true, SVAL_SIDE_LEFT) == SVAL_SIDE_PAIR_SAME); // neither half types
+    boot_build(STRAP_DEFAULT, SVAL_SIDE_RIGHT, 0xB2);
+    CHECK(side_now == SVAL_SIDE_RIGHT && newest()->side == SVAL_SIDE_RIGHT && newest()->source == SVAL_SIDE_SRC_BUILD);
+    // A per-hand board migrating through a one-side build: the build's side, never the old byte.
+    erase_all();
+    boot_per_hand(false, 0x1111);
+    boot_build(STRAP_DEFAULT, SVAL_SIDE_LEFT, 0xB1);
+    CHECK(side_now == SVAL_SIDE_LEFT && source_now == SVAL_SIDE_SRC_BUILD);
+    // A power cut while the build writes its record: the next boot writes it again.
+    erase_all();
+    side_write(SVAL_SIDE_UNKNOWN, SVAL_SIDE_SRC_NONE);
+    cut_next_write = true;
+    boot_build(STRAP_DEFAULT, SVAL_SIDE_RIGHT, 0xB1);
+    CHECK(side_now == SVAL_SIDE_RIGHT && newest()->side == SVAL_SIDE_UNKNOWN);
+    boot_build(STRAP_DEFAULT, SVAL_SIDE_RIGHT, 0xB1);
+    CHECK(side_now == SVAL_SIDE_RIGHT && newest()->side == SVAL_SIDE_RIGHT);
+    // A strap that disagrees with the file: the strap's side, its record, and
+    // the next one-image build keeps the strap's side too.
+    erase_all();
+    boot_build(STRAP_RIGHT, SVAL_SIDE_LEFT, 0xB1);
+    CHECK(side_now == SVAL_SIDE_RIGHT && source_now == SVAL_SIDE_SRC_STRAP);
+    CHECK(newest()->side == SVAL_SIDE_RIGHT && newest()->source == SVAL_SIDE_SRC_STRAP);
+    boot_either(STRAP_RIGHT, 0xE2);
+    CHECK(side_now == SVAL_SIDE_RIGHT);
 }
 
 static void test_pair(void) {
@@ -349,6 +455,7 @@ int main(void) {
     test_unknown();
     test_strap();
     test_host_check();
+    test_build_side();
     test_pair();
     printf("test_side: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
