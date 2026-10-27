@@ -151,32 +151,35 @@ Each contact:
 
 ## Side
 
-`SIDE` (`0x33`) tells a host which half is which on the one-image builds (`svalboard/either`, `svalboard/trackball/pmw3389/either`), and lets it set that. Those builds run the same image on both halves. Each half takes its side at startup from, in order: a thumb strap (a left thumb with R7 from LED_DIN to ground, or a right thumb with R7 from LED_DIN to the thumb row), the side stored on the half, or nothing ("unknown"). The per-hand builds fix the side when they are built and don't have this command.
+`SIDE` (`0x33`) tells a host which half is which on the one-image builds (`svalboard/either`, `svalboard/trackball/pmw3389/either`), and lets it set that. Those builds run the same image on both halves. Each half takes its side at startup from, in order: a thumb strap (a left thumb with R7 from LED_DIN to ground, or a right thumb with R7 from LED_DIN to the thumb row), the build's own side on a one-side build (below), the side stored on the half, or nothing ("unknown"). The per-hand builds fix the side when they are built and don't have this command.
+
+One-side builds (the release files `svalboard_sval_left_<tag>.uf2` and `svalboard_sval_right_<tag>.uf2`, x4.2 on; `SVAL_BUILD_SIDE`) are the one-image build with a side of its own, and have this command. They run as their side on every start and store it (source `5`), so a later one-image build keeps it; a strap still wins over them. While one runs, SET of the other side and CLEAR answer `8`.
 
 - Discovery: GET_INFO byte 19, bit 6 (`sval_flag2_side`).
-- The stored side lives in its own flash record, apart from the settings. Settings resets, `EE_CLR`, storage format changes, UF2 copies and updates keep it; only a whole-chip erase clears it. Only this command or a thumb strap changes it.
+- The stored side lives in its own flash record, apart from the settings. Settings resets, `EE_CLR`, storage format changes, UF2 copies and updates keep it; only a whole-chip erase clears it. Only this command, a thumb strap or a one-side build changes it.
 - The first start of a one-image build on a half that ran a per-hand build adopts that build's side (source `3`, migrated). A half that has never had a per-hand build (a new board) starts unknown.
 - A half with no side still enumerates and answers this protocol, but sends no keys and no pointing. Every half enumerates as the per-hand builds do (product ID `0x4044`, or the name the user gave the board).
 - The split link comes up whatever the other half's side, so the half with USB learns it (POINTING_HARDWARE flags bit 5 means "no side"). While the other half has no side, or both halves claim the same side, neither half's keys or pointing count: which one is wrong isn't known, so nothing is guessed. The reply below reports it.
 - A new side takes effect at the next start. Set bit 0 of `flags` to restart the half 0.1 s after the write.
 
-**GET:** `DF 33 00` → `DF 33 00 <status> <format> <side> <source> <strap> <strap raw> <record side> <record source> <other flags> <other side> <pair> <link tx> <link how> <flags>`
+**GET:** `DF 33 00` → `DF 33 00 <status> <format> <side> <source> <strap> <strap raw> <record side> <record source> <other flags> <other side> <pair> <link tx> <link how> <flags> <build side>`
 - `status` `0`. `format` `1`.
 - `side`: `0` left, `1` right, `FF` unknown. This is the side the half runs as now.
-- `source`: `0` none, `1` factory (a host write), `2` Keybard (a host write), `3` migrated from a per-hand build, `4` thumb strap.
+- `source`: `0` none, `1` factory (a host write), `2` Keybard (a host write), `3` migrated from a per-hand build, `4` thumb strap, `5` a one-side build (the left or right file; x4.2 on. Older firmware reads such a record as damaged).
 - `strap`: the thumb strap read at startup: `0` no strap, `1` left, `2` anomaly, `3` not read on this build, `4` right. `strap raw`: bit 0 the pull-down read and bit 1 the pull-up read (thumb row on), bit 2 the pull-down read with the row off, bits 4-7 how many of 8 pull-up reads were high.
 - `record side` and `record source`: the stored record as it is now (`FE`: no record, or no room for one). It differs from `side` after a write until the restart, and on a board whose strap overrode it.
 - `other flags`: bit 0 the other half is connected, bit 1 it has reported its side. `other side` as `side`.
 - `pair`: `0` fine (or no other half), `1` both halves claim the same side, `2` a connected half has no side, `3` the other half hasn't reported yet (up to 0.5 s after it connects).
 - `link tx`: the GPIO this half transmits on over the split link (`0` or `1`; `FF` before the link starts). `link how`: `0` chosen by side, `1` found by listening for the other half, `2` the default for a half with no side, `3` swapped by the half with USB while the link was down (it tries the other pin pair every 2 s, so a half that transmits on its line still links).
-- `flags`: bit 0 keys and pointing are dropped now, bit 1 the record differs from the running side (a restart is pending), bit 2 this half has room for the record (16 MB flash), bit 3 this half has USB.
+- `flags`: bit 0 keys and pointing are dropped now, bit 1 the record differs from the running side (a restart is pending), bit 2 this half has room for the record (16 MB flash), bit 3 this half has USB, bit 4 this half runs a one-side build for the other side and its thumb strap won.
+- `build side`: a one-side build's side (`0` left, `1` right), `FF` on the one-image builds. Firmware before x4.2 sends `0` here (the reply was zero-filled).
 
 **SET:** `DF 33 01 <target> <side> <source> <flags>` → `DF 33 01 <status>`
 - `target`: `0` this half (the one with USB), `1` the other half, over the split link.
 - `side`: `0` left or `1` right. `source`: `1` factory or `2` Keybard.
-- `status`: `0` OK, `1` invalid request, `2` no room for the record, `3` the write did not read back, `4` refused because the thumb strap says the other side, `5` the other half is not connected, `6` the other half did not answer (older firmware), `7` the other half took the request and saves it from its main loop: read its side again after it restarts.
+- `status`: `0` OK, `1` invalid request, `2` no room for the record, `3` the write did not read back, `4` refused because the thumb strap says the other side, `5` the other half is not connected, `6` the other half did not answer (older firmware), `7` the other half took the request and saves it from its main loop: read its side again after it restarts, `8` refused because that half runs a one-side build for the other side (install the one-image firmware on it first).
 
-**CLEAR:** `DF 33 02 <target> <flags>` → `DF 33 02 <status>`. Stores "unknown", so the half starts with no side (unless a strap says otherwise: then `4`). For testing and factory rework.
+**CLEAR:** `DF 33 02 <target> <flags>` → `DF 33 02 <status>`. Stores "unknown", so the half starts with no side (unless a strap says otherwise: then `4`; or the half runs a one-side build: then `8`). For testing and factory rework.
 
 Packet formats: [client-ID protocol](../../../modules/svalboard/core/docs/CLIENT_ID_PROTOCOL.md), [layer state](../../../modules/svalboard/core/docs/LAYER_STATE_PROTOCOL.md), [command definitions](../../../modules/svalboard/core/sval.h).
 

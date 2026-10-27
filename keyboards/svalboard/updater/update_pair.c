@@ -97,6 +97,16 @@ static struct {
     crypto_sha512_ctx      sha;
 } pb;
 
+// A one-side build (SVAL_BUILD_SIDE, side.h: the left and right release files).
+#if defined(SVAL_UPDATER_HOST_TEST)
+bool update_pair_host_one_side;
+#    define PAIR_ONE_SIDE_BUILD update_pair_host_one_side
+#elif defined(SVAL_BUILD_SIDE)
+#    define PAIR_ONE_SIDE_BUILD true
+#else
+#    define PAIR_ONE_SIDE_BUILD false
+#endif
+
 static void read_bytes(uint32_t off, void *dst, uint32_t n) {
     const volatile uint8_t *p = update_pair_sector_read() + off;
     for (uint32_t i = 0; i < n; i++) ((uint8_t *)dst)[i] = p[i];
@@ -128,6 +138,13 @@ static void start(void) {
     update_pair_record_t r;
     read_bytes(0, &r, sizeof(r));
     if (!update_pair_record_present(&r)) return; // the usual boot: one page read, nothing written
+    if (PAIR_ONE_SIDE_BUILD) {
+        // A one-side build never sends its image to the other half: a record
+        // here is left from an earlier pair UF2 (nothing the customer asked of
+        // this file), so it is erased with no light.
+        finish(PAIR_OUT_ABANDONED, UPDATE_OK, true, false);
+        return;
+    }
     if (!updater_port_is_master()) {
         finish(PAIR_OUT_ABANDONED, UPDATE_OK, true, false); // booted without USB: the cable moved
         return;

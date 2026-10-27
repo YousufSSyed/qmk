@@ -15,9 +15,17 @@
 #        if defined(INIT_EE_HANDS_LEFT) || defined(INIT_EE_HANDS_RIGHT)
 #            error "updater: an either-hand build sets neither INIT_EE_HANDS_LEFT nor INIT_EE_HANDS_RIGHT"
 #        endif
-// The image is for both halves; the half it runs on is the side it learned at boot.
+// The image is for both halves; the half it runs on is the side it learned at
+// boot. A one-side build (SVAL_BUILD_SIDE, side.h) is for its own side: its
+// build-info record says so, and make_update.py and the boot relay refuse to
+// make it a pair UF2 or send it to the other half.
 #        include "side.h"
-#        define UPDATE_SELF_HAND UPDATE_HAND_EITHER
+#        if defined(SVAL_BUILD_SIDE)
+_Static_assert(SVAL_SIDE_LEFT == UPDATE_HAND_LEFT && SVAL_SIDE_RIGHT == UPDATE_HAND_RIGHT, "sides are numbered as hands");
+#            define UPDATE_SELF_HAND SVAL_BUILD_SIDE
+#        else
+#            define UPDATE_SELF_HAND UPDATE_HAND_EITHER
+#        endif
 #        define UPDATE_RUNNING_HAND sval_side()
 #    elif defined(INIT_EE_HANDS_LEFT) && !defined(INIT_EE_HANDS_RIGHT)
 #        define UPDATE_SELF_HAND UPDATE_HAND_LEFT

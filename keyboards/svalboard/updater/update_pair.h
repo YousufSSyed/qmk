@@ -107,4 +107,5 @@ uint8_t         update_pair_outcome(void); // pair_boot_outcome_t
 update_status_t update_pair_error(void);   // the status behind REFUSED or KEPT
 #ifdef SVAL_UPDATER_HOST_TEST
 void update_pair_host_reset(void); // this half's RAM after a reset
+extern bool update_pair_host_one_side; // the test stands for a one-side build (SVAL_BUILD_SIDE)
 #endif

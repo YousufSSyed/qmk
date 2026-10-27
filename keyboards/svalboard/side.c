@@ -26,7 +26,7 @@ static bool side_value_ok(uint8_t side) {
 }
 
 bool sval_side_record_valid(const sval_side_record_t *r) {
-    return r && r->magic == SVAL_SIDE_MAGIC && r->version == SVAL_SIDE_VERSION && r->length == sizeof(*r) && side_value_ok(r->side) && r->source <= SVAL_SIDE_SRC_STRAP && r->crc == sval_side_crc32((const uint8_t *)r, offsetof(sval_side_record_t, crc));
+    return r && r->magic == SVAL_SIDE_MAGIC && r->version == SVAL_SIDE_VERSION && r->length == sizeof(*r) && side_value_ok(r->side) && r->source <= SVAL_SIDE_SRC_BUILD && r->crc == sval_side_crc32((const uint8_t *)r, offsetof(sval_side_record_t, crc));
 }
 
 void sval_side_record_make(sval_side_record_t *r, uint8_t side, uint8_t source, uint32_t seq) {
@@ -118,8 +118,9 @@ uint8_t sval_side_from_strap(uint8_t strap_class) {
     return strap_class == STRAP_LEFT ? SVAL_SIDE_LEFT : strap_class == STRAP_RIGHT ? SVAL_SIDE_RIGHT : SVAL_SIDE_UNKNOWN;
 }
 
-void sval_side_decide(uint8_t strap_side, const sval_side_record_t *rec, uint8_t migrated, sval_side_decision_t *d) {
+void sval_side_decide(uint8_t strap_side, uint8_t build_side, const sval_side_record_t *rec, uint8_t migrated, sval_side_decision_t *d) {
     memset(d, 0, sizeof(*d));
+    // The strap is the hardware itself: it wins over a one-side build too.
     if (strap_side != SVAL_SIDE_UNKNOWN) {
         d->side   = strap_side;
         d->source = SVAL_SIDE_SRC_STRAP;
@@ -127,6 +128,18 @@ void sval_side_decide(uint8_t strap_side, const sval_side_record_t *rec, uint8_t
             d->write        = true;
             d->write_side   = strap_side;
             d->write_source = SVAL_SIDE_SRC_STRAP;
+        }
+        return;
+    }
+    // A one-side build: its side on every boot, and the record kept to it, so
+    // the next one-image build finds the side.
+    if (build_side != SVAL_SIDE_UNKNOWN) {
+        d->side   = build_side;
+        d->source = SVAL_SIDE_SRC_BUILD;
+        if (!rec || rec->side != build_side) {
+            d->write        = true;
+            d->write_side   = build_side;
+            d->write_source = SVAL_SIDE_SRC_BUILD;
         }
         return;
     }
@@ -145,10 +158,12 @@ void sval_side_decide(uint8_t strap_side, const sval_side_record_t *rec, uint8_t
     d->write_source = d->source;
 }
 
-uint8_t sval_side_host_check(uint8_t strap_side, uint8_t side, uint8_t source) {
+uint8_t sval_side_host_check(uint8_t strap_side, uint8_t build_side, uint8_t side, uint8_t source) {
     if (!side_value_ok(side)) return SVAL_SIDE_INVALID;
     if (side == SVAL_SIDE_UNKNOWN ? source != SVAL_SIDE_SRC_NONE : (source != SVAL_SIDE_SRC_FACTORY && source != SVAL_SIDE_SRC_HOST)) return SVAL_SIDE_INVALID;
     if (strap_side != SVAL_SIDE_UNKNOWN && side != strap_side) return SVAL_SIDE_STRAP;
+    // A one-side build without a strap: its side is the only one (a clear included).
+    if (strap_side == SVAL_SIDE_UNKNOWN && build_side != SVAL_SIDE_UNKNOWN && side != build_side) return SVAL_SIDE_BUILD;
     return SVAL_SIDE_OK;
 }
 
@@ -242,13 +257,13 @@ void sval_side_init(void) {
     // firmware's store; a Vial board left no valid store here, so its side comes
     // from the old Vial store, read at board_init(). A valid store here never
     // falls back to the Vial area, which now holds this firmware's second copy.
-    if (!rec && identity_available()) {
+    if (!rec && SVAL_SIDE_OF_BUILD == SVAL_SIDE_UNKNOWN && identity_available()) {
         const uint16_t magic = eeprom_read_word((const uint16_t *)0);
         migrated             = sval_side_from_eeconfig(magic, eeprom_read_byte((const uint8_t *)SVAL_SIDE_EECONFIG_HANDEDNESS));
         if (migrated == SVAL_SIDE_UNKNOWN && sval_side_from_eeconfig(magic, 0) == SVAL_SIDE_UNKNOWN) migrated = vial_side;
     }
     sval_side_decision_t d;
-    sval_side_decide(strap, rec, migrated, &d);
+    sval_side_decide(strap, SVAL_SIDE_OF_BUILD, rec, migrated, &d);
     side   = d.side;
     source = d.source;
     if (d.write && identity_available()) save(d.write_side, d.write_source);
@@ -306,7 +321,7 @@ bool pre_process_record_kb(uint16_t keycode, keyrecord_t *record) {
 }
 
 static uint8_t host_write(uint8_t s, uint8_t src, uint8_t flags) {
-    uint8_t st = sval_side_host_check(sval_side_from_strap(sval_thumb_hand()), s, src);
+    uint8_t st = sval_side_host_check(sval_side_from_strap(sval_thumb_hand()), SVAL_SIDE_OF_BUILD, s, src);
     if (st == SVAL_SIDE_OK) st = save(s, src);
     if (st == SVAL_SIDE_OK && (flags & 1)) {
         restart_at = timer_read32() + 100;
@@ -461,7 +476,7 @@ static uint8_t relay(uint8_t op, uint8_t s, uint8_t src, uint8_t flags) {
 
 bool sval_side_rpc(uint8_t in_len, const uint8_t *in, uint8_t out_len, uint8_t *out) {
     if (in_len < 5 || in[0] != SVAL_SIDE_RPC_OP || out_len < 2) return false;
-    uint8_t st = sval_side_host_check(sval_side_from_strap(sval_thumb_hand()), in[2], in[3]);
+    uint8_t st = sval_side_host_check(sval_side_from_strap(sval_thumb_hand()), SVAL_SIDE_OF_BUILD, in[2], in[3]);
     if (st == SVAL_SIDE_OK && !identity_available()) st = SVAL_SIDE_UNAVAILABLE;
     if (st == SVAL_SIDE_OK) {
         rpc_side    = in[2];
@@ -495,7 +510,8 @@ void sval_side_command(uint8_t *d, uint8_t length) {
         d[11] = pair_now();
         d[12] = sval_side_link_tx(&how);
         d[13] = how;
-        d[14] = (sval_side_input_blocked() ? 1 : 0) | (rec && rec->side != side ? 2 : 0) | (identity_available() ? 4 : 0) | (is_keyboard_master() ? 8 : 0);
+        d[14] = (sval_side_input_blocked() ? 1 : 0) | (rec && rec->side != side ? 2 : 0) | (identity_available() ? 4 : 0) | (is_keyboard_master() ? 8 : 0) | (SVAL_SIDE_OF_BUILD != SVAL_SIDE_UNKNOWN && side != SVAL_SIDE_OF_BUILD ? 16 : 0);
+        d[15] = SVAL_SIDE_OF_BUILD; // a one-side build's side, FF in the either builds
         return;
     }
     if (op != SIDE_OP_SET && op != SIDE_OP_CLEAR) {

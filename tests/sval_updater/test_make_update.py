@@ -172,6 +172,19 @@ def test_pair(out, tmp, release_img):
     side.write_bytes(uf2(img))
     rc, text = run("pair", side, "-o", tmp / "x.uf2", "--kb", "svalboard/right", "--yes")
     check(rc == 2 and "either hand" in text and not (tmp / "x.uf2").exists(), f"pair refuses a one-side image: {text.strip()}")
+    # A one-side build (SVAL_BUILD_SIDE: the left and right release files) named
+    # as svalboard/either: its build-info record says one side, and --yes does not
+    # override it, so its image never reaches a pair UF2 or the other half.
+    for hand in (0, 1):
+        one = tmp / f"one_side_{hand}.uf2"
+        one.write_bytes(uf2(release_img(hand=hand)))
+        rc, text = run("pair", one, "-o", tmp / "x.uf2", "--kb", "svalboard/either", "--keymap", "sval", "--yes")
+        check(rc == 2 and "one-side build" in text and not (tmp / "x.uf2").exists(), f"pair refuses a one-side build (hand {hand}) with --yes: {text.strip()}")
+        img1 = release_img(hand=hand)
+        forged = mu.pair_uf2_bytes(mu.build_manifest(img1, hand=2, pointing_id=mu.POINTING["auto"], keymap_id=1, flags=mu.FLAG_RELEASE, epoch=0, storage_format=mu.STORAGE_FORMAT, fw_version=3, version="vM3-test"), img1)
+        (tmp / "forged.uf2").write_bytes(forged)
+        rc, text = run("verify-pair", tmp / "forged.uf2", "--build", "release")
+        check(rc == 2 and "one-side build" in text, f"verify-pair refuses a one-side image under an either manifest (hand {hand}): {text.strip()}")
 
     def bad(what, blob, needle):
         p = tmp / "bad_pair.uf2"
