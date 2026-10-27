@@ -465,7 +465,6 @@ void sval_reload_labels(void) {
 
     // Load macro labels
     sval_read_eeprom(SVAL_MACRO_LABEL_OFFSET, sval_macro_labels, DYNAMIC_KEYMAP_MACRO_COUNT * SVAL_LABEL_SIZE);
-
 }
 
 void sval_save(void) {
