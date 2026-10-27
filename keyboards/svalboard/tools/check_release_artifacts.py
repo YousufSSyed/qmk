@@ -107,9 +107,7 @@ def check_dir(d, version):
     problems, hashes = [], {}
     want = {build_name(kb, km): (kb, km) for kb, km in RELEASE_BUILDS}
     one_side = {build_name(kb, km, side): (kb, km, side) for kb, km, side in ONE_SIDE_BUILDS}
-    expected_files = ({f"{n}.elf" for n in list(want) + list(one_side)}
-                      | {published_name(km, version) for _, km in want.values()}
-                      | {published_name(km, version, side) for _, km, side in one_side.values()})
+    expected_files = ({f"{n}.elf" for n in list(want) + list(one_side)} | {published_name(km, version) for _, km in want.values()} | {published_name(km, version, side) for _, km, side in one_side.values()})
     present = {p.name for p in d.iterdir()} if d.is_dir() else set()
     for extra in sorted(present - expected_files):
         problems.append(f"unexpected file {extra}: the directory must hold only the {len(want) + len(one_side)} "
@@ -178,15 +176,13 @@ def one_side_image_problems(img, kb, km, side, version, fw_versions=()):
     info = mu.build_info(img)
     if info is None:
         return ["the image has no build-info record: not an updater build"]
-    problems = [f"the image's build-info record says {k} {info[k]}, the {side} {km} build is {v}"
-                for k, v in ident.items() if info[k] != v]
+    problems = [f"the image's build-info record says {k} {info[k]}, the {side} {km} build is {v}" for k, v in ident.items() if info[k] != v]
     if info["version"] != version:
         problems.append(f"the image's version is {info['version']!r}, not {version!r}")
     if fw_versions and info["fw_version"] not in fw_versions:
         problems.append(f"the image's fw_version is {info['fw_version']}, the pair builds' {sorted(fw_versions)}")
     # The release checks make_update.py --release runs, on the manifest a host would make for it.
-    m = mu.build_manifest(img, flags=mu.FLAG_RELEASE, epoch=0, storage_format=mu.STORAGE_FORMAT,
-                          fw_version=info["fw_version"], version=version, **ident)
+    m = mu.build_manifest(img, flags=mu.FLAG_RELEASE, epoch=0, storage_format=mu.STORAGE_FORMAT, fw_version=info["fw_version"], version=version, **ident)
     return problems + mu.release_image_problems(m, img)
 
 

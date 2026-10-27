@@ -111,9 +111,12 @@ def main():
     check(cra.RELEASE_BUILDS == [("svalboard/either", "sval"), ("svalboard/either", "blank")], f"the release is one image for both halves, sval and blank (D34, D40): {cra.RELEASE_BUILDS}")
     check(all(mu.kb_fields(kb) == (mu.HAND["either"], mu.POINTING["auto"]) for kb, _ in cra.RELEASE_BUILDS), "release builds are either-hand and auto")
     check(cra.ONE_SIDE_BUILDS == [("svalboard/either", "sval", "left"), ("svalboard/either", "sval", "right")], f"one-side builds: sval, left and right: {cra.ONE_SIDE_BUILDS}")
-    check(sorted(p.name for p in good.iterdir()) == sorted(["svalboard_either_sval.elf", "svalboard_either_blank.elf", f"svalboard_sval_{VER}.uf2", f"svalboard_blank_{VER}.uf2",
-                                                            "svalboard_either_left_sval.elf", "svalboard_either_right_sval.elf", f"svalboard_sval_left_{VER}.uf2", f"svalboard_sval_right_{VER}.uf2"]),
-          "four ELFs, two pair UF2s and two one-side UF2s, no .svup")
+    check(
+        sorted(p.name for p in good.iterdir()) == sorted([
+            "svalboard_either_sval.elf", "svalboard_either_blank.elf", f"svalboard_sval_{VER}.uf2", f"svalboard_blank_{VER}.uf2", "svalboard_either_left_sval.elf", "svalboard_either_right_sval.elf", f"svalboard_sval_left_{VER}.uf2",
+            f"svalboard_sval_right_{VER}.uf2"
+        ]), "four ELFs, two pair UF2s and two one-side UF2s, no .svup"
+    )
     check(not problems and len(hashes) == 4, f"a clean directory passes: {problems}")
     check(quiet_main([str(good), "--version", VER]) == 0, "main passes a clean directory")
     check(quiet_main([str(good), "--version", "vOther"]) == 1, "another version refused")
@@ -163,7 +166,10 @@ def main():
         flash += b"\xff" * (-len(flash) % 256)
         (d / f"{s}.elf").write_bytes(elf(flash))
         (d / "x.uf2").write_bytes(tmu.uf2(flash))
-        p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "pair", str(d / "x.uf2"), "-o", str(d / "x_pair.uf2"), "--kb", "svalboard/either", "--keymap", km, "--release", "--expect-version", VER, "--yes"], capture_output=True, text=True)
+        p = subprocess.run([sys.executable, "-I", str(TOOLS / "make_update.py"), "pair",
+                            str(d / "x.uf2"), "-o", str(d / "x_pair.uf2"), "--kb", "svalboard/either", "--keymap", km, "--release", "--expect-version", VER, "--yes"],
+                           capture_output=True,
+                           text=True)
         (d / "x.uf2").unlink()
         check(p.returncode == 2 and "one-side build" in p.stdout + p.stderr, f"make_update.py pair refuses {kb}'s image even with --yes: {p.stdout}{p.stderr}")
         # Made by hand instead (an either manifest over the one-side image): the lint still refuses it.
@@ -197,7 +203,12 @@ def main():
     case("a flipped byte in a one-side file", "not the ELF's flash contents", lambda d: flip(d / lu, 32 + 0x10))
     case("a one-side file of another release", "fw_version", lambda d: write_one_side(d, "svalboard/either", "sval", "right", fw=4))
     case("a one-side file with another version string", "version", lambda d: write_one_side(d, "svalboard/either", "sval", "left", version="x9"))
-    case("a blank one-side file", "keymap_id", lambda d: [write_one_side(d, "svalboard/either", "blank", "left", hand=mu.HAND["left"]), shutil.move(d / cra.published_name("blank", VER, "left"), d / lu), shutil.move(d / "svalboard_either_left_blank.elf", d / f"{ln}.elf")])
+    case(
+        "a blank one-side file", "keymap_id",
+        lambda d: [write_one_side(d, "svalboard/either", "blank", "left", hand=mu.HAND["left"]),
+                   shutil.move(d / cra.published_name("blank", VER, "left"), d / lu),
+                   shutil.move(d / "svalboard_either_left_blank.elf", d / f"{ln}.elf")]
+    )
     case("a non-release one-side file", "SVAL_UPDATE_RELEASE", lambda d: one_side_flags(d, 0))
     case("a one-side file with test hooks", "test hooks", lambda d: one_side_flags(d, mu.BI_RELEASE | mu.BI_TEST_HOOKS))
 
