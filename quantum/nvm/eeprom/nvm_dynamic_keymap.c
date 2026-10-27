@@ -91,7 +91,14 @@ uint32_t nvm_dynamic_keymap_layout_stamp(void) {
         0,
 #endif
         DYNAMIC_KEYMAP_MACRO_EEPROM_ADDR,
+#ifdef DYNAMIC_KEYMAP_STAMP_MAX_ADDR
+        // The buffer's end as it was before a module took space after it (Sval
+        // combo names): a shorter buffer reads its stored bytes the same way,
+        // so it must not change the stamp and reset every keymap and macro.
+        (DYNAMIC_KEYMAP_STAMP_MAX_ADDR) - DYNAMIC_KEYMAP_MACRO_EEPROM_ADDR + 1,
+#else
         DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE,
+#endif
         DYNAMIC_KEYMAP_LAYOUT_SCHEMA,
     };
     return layout_stamp(values, sizeof(values) / sizeof(values[0]));

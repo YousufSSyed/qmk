@@ -117,6 +117,7 @@ enum sval_feature_flags2 {
     // Bit 4 is allocated by the per-reader motion branch (0x2D reader ids).
     sval_flag2_pointing_contacts = (1 << 5), // 0x2F reports each touch contact on its pad
     sval_flag2_side              = (1 << 6), // 0x33 reads and sets which half is which (either-hand builds)
+    sval_flag2_combo_labels      = (1 << 7), // label type 3 (combo names) in 0x1B-0x1D
 };
 
 // Status byte after the modifiers in the 0x16 reply (sval_flag2_modifier_state).
@@ -248,6 +249,7 @@ enum sval_label_type {
     sval_label_type_layer     = 0,
     sval_label_type_tap_dance = 1,
     sval_label_type_macro     = 2,
+    sval_label_type_combo     = 3, // with sval_flag2_combo_labels
 };
 
 // Label System v2: Fixed 16-byte UTF-8 storage

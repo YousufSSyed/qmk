@@ -14,6 +14,10 @@ The earlier five-file/~70-line inventory predates the storage and identity chang
 - RP2040 backing store: ROM erase beyond `PICO_FLASH_SIZE_BYTES`; when the store extends beyond it, a JEDEC capacity check; uncached reads so retries reread the flash; erasing one 64 KB block (or 4 KB sector, for stores not 64 KB-aligned) at a time, skipping erased ones, with interrupts restored in between; skipping program operations for batches that are all erased; and `backing_store_erase_range()`.
 - Tests: upstream tests that seeded an invalid checksum beside a never-consolidated image now leave it erased, as QMK writes it, and also check nothing is reported lost; `wear_leveling_mirror` and `wear_leveling_mirror_large` are new.
 
+## Combo names after the macro buffer
+
+`quantum/nvm/eeprom/nvm_dynamic_keymap.c`: with `DYNAMIC_KEYMAP_STAMP_MAX_ADDR` defined, the dynamic-keymap layout stamp (part of VIA's EEPROM magic) uses the macro buffer's end at that address instead of `DYNAMIC_KEYMAP_EEPROM_MAX_ADDR`. The Sval module shortens the macro buffer to keep combo names after it (`post_config.h`) and sets the stamp address to the original end, so an update keeps keymaps and macros: a shorter buffer reads the bytes it still has the same way.
+
 ## Merge/rebase checks
 
 1. Compare all core changes with the actual upstream merge base; do not rely on a fixed line count.
