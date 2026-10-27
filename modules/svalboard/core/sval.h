@@ -269,9 +269,6 @@ enum sval_label_type {
 extern char sval_td_labels[SVAL_TAP_DANCE_ENTRIES][SVAL_LABEL_SIZE];
 extern char sval_macro_labels[DYNAMIC_KEYMAP_MACRO_COUNT][SVAL_LABEL_SIZE];
 extern char sval_layer_labels[DYNAMIC_KEYMAP_LAYER_COUNT][SVAL_LABEL_SIZE];
-#ifdef SVAL_COMBO_LABELS
-extern char sval_combo_labels[SVAL_COMBO_ENTRIES][SVAL_LABEL_SIZE];
-#endif
 
 // EEPROM layout constants - shared across all sval modules
 #define SVAL_TAP_DANCE_OFFSET 0
