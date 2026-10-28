@@ -33,9 +33,15 @@ void               unselect_row(uint8_t row);
 #endif
 #define BOARD_ID_SAMPLES 8
 
+// Finger rows only (1-4). Measured on a Mini (sval:E46450D2A7094232, Scan Lab sweeps):
+// a finger cluster made for the Mini reads correctly from 26 us (center; sides from
+// 10 us), an original finger cluster lights at 145-155 us. 60 us sits 2.3x above the
+// one and 2.4x below the other. The thumb row is not checked: an original thumb
+// cluster reads correctly from 55 us, and no Mini thumb cluster has been measured yet.
+#define CC_FIRST_ROW  1
 #define CC_ROWS       5
 #define CC_GAP_US     200 // all rows dark before each read (results flat from 100 us to 10 ms)
-#define CC_EARLY_US   20  // a Mini cluster is lit by 0.3 us; an original one needs >= 145 us
+#define CC_EARLY_US   60
 #define CC_LATE_US    400 // an original cluster is lit by ~155 us (longest seen)
 #define CC_EARLY_MAX  100 // a late early read (interrupted) can't tell: vote unknown
 #define CC_REPS       3
@@ -138,7 +144,7 @@ void sval_cluster_check(void) {
     for (uint8_t r = 0; r < CC_ROWS; r++) unselect_row(r);
     uint16_t classes = 0;
     bool     unsupported = false;
-    for (uint8_t r = 0; r < CC_ROWS; r++) {
+    for (uint8_t r = CC_FIRST_ROW; r < CC_ROWS; r++) {
         uint8_t cls = cluster_read_row(r);
         if (cls == SVAL_CLUSTER_ORIGINAL || cls == SVAL_CLUSTER_NOT_CHECKED) {
             // Fast and dark are decisive after one read (only a fast emitter is lit at

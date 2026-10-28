@@ -52,8 +52,8 @@ enum sval_main_board {
 // Per-position cluster class, 2 bits each (row 0 thumb, rows 1-4 index..pinky).
 enum sval_cluster_class {
     SVAL_CLUSTER_NOT_CHECKED = 0, // not a Mini, or the reads disagreed
-    SVAL_CLUSTER_FAST        = 1, // lit within 20 us: a cluster made for the Mini
-    SVAL_CLUSTER_ORIGINAL    = 2, // dark at 20 us, lit by 400 us: original 330 ohm cluster
+    SVAL_CLUSTER_FAST        = 1, // lit within 60 us: a cluster made for the Mini
+    SVAL_CLUSTER_ORIGINAL    = 2, // dark at 60 us, lit by 400 us: original 330 ohm cluster
     SVAL_CLUSTER_DARK        = 3, // dark at both: no cluster, or every lit-at-rest key held
 };
 

@@ -201,6 +201,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef SVAL_FLIPFET_DEFAULT_POSTWAIT_US
     #define SVAL_FLIPFET_DEFAULT_POSTWAIT_US 5
 #endif
+// SvalMCUMini V1.0 (found from GP3, mainboard.c) uses the revision B defaults with a
+// longer pre-wait. Measured on a Mini: a finger cluster made for it reads correctly
+// from 26 us, so 75 us is 2.9x. (An original thumb cluster reads from 55 us.)
+#ifndef SVAL_MINI_DEFAULT_PREWAIT_US
+    #define SVAL_MINI_DEFAULT_PREWAIT_US 75
+#endif
 // Frame pacing: sensor LED duty = rows x (pre-wait + read) / period. 1 ms
 // matches the USB poll interval; the idle period defaults to the same value
 // so there is no latency trade-off unless a user chooses one.
