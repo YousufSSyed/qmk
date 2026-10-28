@@ -66,7 +66,7 @@ Check feature flags before using an extension, send one request at a time per co
   - `gp3`: diagnostic. Bits 0-2 are the last sample's pull-down, pull-up and release reads; bits 4-7 how many of the 8 samples agreed.
   - `clusters`: 2 bits per row, row 0 (thumb) in bits 0-1, then index, middle, ring and pinky. `0` not checked, `1` lit within 60 us (a cluster made for this board), `2` dark at 60 us and lit by 400 us (an original cluster: it can't be scanned on a SvalMCUMini V1.0), `3` dark at both (no cluster, or its lit-at-rest keys held). Row 0 (thumb) is not checked and reads `0`.
 - How the board is found: GP3 is read with the pull-down (high only when the V3.1/V3.2 op-amp drives it), then, if low, driven high for 5 us, released with no pull and read 20 us later (low on the Mini, whose R1 30k pulls it to ground; high when it floats). Eight samples must agree.
-- The cluster check runs only on a SvalMCUMini V1.0, before the first scan, on the four finger rows. Other boards report `clusters` `0`.
+- The cluster check runs only on a SvalMCUMini V1.0, before the first scan, on the four finger rows. Other boards report `clusters` `0`. A row that reads `2` (an original cluster) has its keys muted, because its center would otherwise read as held; Scan Lab still sees the raw row.
 - The other half reports through the split link's half-second presence ping, so its block is zero while it is disconnected, for up to half a second after it connects, and when it runs firmware without this command.
 
 ## Pointing fragments

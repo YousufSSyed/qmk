@@ -74,6 +74,7 @@ typedef struct __attribute__((__packed__)) {
 
 uint8_t sval_main_board(void);                          // cached; first call reads GP3
 void    sval_cluster_check(void);                       // matrix_init_custom: Mini only, before the first scan
+uint8_t sval_muted_rows(void);                          // bit per row (row 0 = bit 0): original cluster, keys muted
 void    sval_local_board_identity(sval_board_identity_t *id);
 void    sval_other_board_set(const sval_board_identity_t *id); // master: from the presence reply, NULL = none
 void    sval_main_board_kb(uint8_t *out, uint8_t length); // Sval 0x38 reply body

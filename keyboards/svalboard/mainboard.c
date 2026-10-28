@@ -35,9 +35,10 @@ void               unselect_row(uint8_t row);
 
 // Finger rows only (1-4). Measured on a Mini (sval:E46450D2A7094232, Scan Lab sweeps):
 // a finger cluster made for the Mini reads correctly from 26 us (center; sides from
-// 10 us), an original finger cluster lights at 145-155 us. 60 us sits 2.3x above the
-// one and 2.4x below the other. The thumb row is not checked: an original thumb
-// cluster reads correctly from 55 us, and no Mini thumb cluster has been measured yet.
+// 10 us), an original finger cluster lights at 145-155 us. The early read at 60 us
+// sits 2.3x above the one and 2.4x below the other. The check times its own reads
+// before the first scan, so the scan pre-wait (45 us on a Mini) doesn't move it. The
+// thumb row is not checked.
 #define CC_FIRST_ROW  1
 #define CC_ROWS       5
 #define CC_GAP_US     200 // all rows dark before each read (results flat from 100 us to 10 ms)
@@ -52,6 +53,7 @@ static sval_board_identity_t local_id;
 static sval_board_identity_t other_id;
 static bool                  other_valid = false;
 static uint32_t              board_us, check_us; // time spent at boot (Sval 0x38 trailer)
+static uint8_t               muted_rows;         // rows with an original cluster: keys muted
 
 static inline uint32_t now_us(void) {
     return (uint32_t)chVTGetSystemTimeX(); // 1 MHz system timer (matrix.c asserts it)
@@ -148,7 +150,7 @@ void sval_cluster_check(void) {
         uint8_t cls = cluster_read_row(r);
         if (cls == SVAL_CLUSTER_ORIGINAL || cls == SVAL_CLUSTER_NOT_CHECKED) {
             // Fast and dark are decisive after one read (only a fast emitter is lit at
-            // 20 us, and dark is never reported). The one result that is reported,
+            // 60 us, and dark is never reported). The one result that is reported,
             // "original", needs two of three reads to agree.
             uint8_t votes[4] = {0};
             votes[cls]++;
@@ -158,12 +160,21 @@ void sval_cluster_check(void) {
             else if (votes[SVAL_CLUSTER_ORIGINAL] >= 2) cls = SVAL_CLUSTER_ORIGINAL;
             else if (votes[SVAL_CLUSTER_DARK] >= 2) cls = SVAL_CLUSTER_DARK;
         }
-        if (cls == SVAL_CLUSTER_ORIGINAL) unsupported = true;
+        if (cls == SVAL_CLUSTER_ORIGINAL) {
+            unsupported = true;
+            muted_rows |= (uint8_t)(1u << r);
+        }
         classes |= (uint16_t)cls << (2 * r);
     }
     local_id.clusters = classes;
     check_us          = now_us() - t0;
     local_id.flags |= SVAL_BOARD_CHECK_RAN | (unsupported ? SVAL_BOARD_UNSUPPORTED : 0);
+}
+
+// An original cluster on a Mini can't be scanned: its center key would read as held
+// all the time. Its row's keys are muted instead (matrix.c); Scan Lab still sees them.
+uint8_t sval_muted_rows(void) {
+    return muted_rows;
 }
 
 void sval_local_board_identity(sval_board_identity_t *id) {

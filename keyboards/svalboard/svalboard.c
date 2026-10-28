@@ -218,7 +218,7 @@ void svalboard_saved_values_defaults(void) {
     global_saved_values.automouse_threshold = 15;
     global_saved_values.automouse_decay     = 7; // 70ms
     // Revision B settles more slowly; start it on explicit conservative timing.
-    global_saved_values.scan_prewait_us     = sval_main_board() == SVAL_MAIN_BOARD_MINI_V1_0 ? SVAL_MINI_DEFAULT_PREWAIT_US : sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_PREWAIT_US : 0;
+    global_saved_values.scan_prewait_us     = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_PREWAIT_US : 0;
     global_saved_values.scan_postwait_us    = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_POSTWAIT_US : 0;
     global_saved_values.scan_period_us      = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_SCAN_PERIOD_US : 0;
     global_saved_values.scan_idle_period_ms = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_IDLE_PERIOD_MS : 0;
