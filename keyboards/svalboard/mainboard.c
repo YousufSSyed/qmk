@@ -140,9 +140,10 @@ void sval_cluster_check(void) {
     bool     unsupported = false;
     for (uint8_t r = 0; r < CC_ROWS; r++) {
         uint8_t cls = cluster_read_row(r);
-        if (cls != SVAL_CLUSTER_FAST) {
-            // Only a fast emitter can be lit at 20 us, so one fast read is decisive.
-            // Anything else needs two of three reads to agree.
+        if (cls == SVAL_CLUSTER_ORIGINAL || cls == SVAL_CLUSTER_NOT_CHECKED) {
+            // Fast and dark are decisive after one read (only a fast emitter is lit at
+            // 20 us, and dark is never reported). The one result that is reported,
+            // "original", needs two of three reads to agree.
             uint8_t votes[4] = {0};
             votes[cls]++;
             for (uint8_t i = 1; i < CC_REPS; i++) votes[cluster_read_row(r)]++;
