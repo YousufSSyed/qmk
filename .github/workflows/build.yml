@@ -1,0 +1,257 @@
+name: Build QMK Firmware
+
+on:
+  workflow_call:
+    inputs:
+      keyboard:
+        required: true
+        type: string
+      keymap:
+        required: true
+        type: string
+      side:
+        required: true
+        type: string
+      # In-firmware updater (docs/updater.md, "Releases"). With updater
+      # true the firmware is a release updater build (SVAL_UPDATER=yes
+      # SVAL_UPDATE_RELEASE=yes) carrying version_string, and instead of
+      # publishing its .uf2 the job uploads the pair UF2 (docs/pair-uf2.md:
+      # the image and the record that installs it on the other half too) and
+      # the ELF as the artifact release-<name>; release.yml publishes the
+      # pair UF2 once the lint passes. fw_version is the number
+      # release_version.py read from updater/fw_version.txt: the pair UF2's
+      # manifest must carry it. With updater false
+      # (the default) the job builds and publishes what it always did; a tag
+      # build checks out the run's commit (github.sha) and keeps no Git
+      # credentials.
+      updater:
+        required: false
+        type: boolean
+        default: false
+      version_string:
+        required: false
+        type: string
+        default: ''
+      fw_version:
+        required: false
+        type: string
+        default: ''
+      # A one-side build of svalboard/either (left or right, SVAL_BUILD_SIDE,
+      # keyboards/svalboard/side.h): the image with its side fixed, so copying
+      # it onto a half sets that half's side. With updater true the job uploads
+      # it as a plain UF2 for that half (svalboard_KEYMAP_SIDE_TAG.uf2), never
+      # as a pair UF2: it must not be relayed to the other half.
+      build_side:
+        required: false
+        type: string
+        default: ''
+
+  # Manual runs from the Actions tab ("Run workflow") or `gh workflow run`.
+  # These mirror the workflow_call inputs above; keep the two in sync.
+  # Run it against a branch: a tag ref takes the release path and publishes.
+  workflow_dispatch:
+    inputs:
+      keyboard:
+        description: 'Keyboard path, e.g. svalboard'
+        required: true
+        type: string
+        default: svalboard
+      keymap:
+        description: 'Keymap name, e.g. default'
+        required: true
+        type: string
+        default: default
+      side:
+        description: 'Keyboard variant, e.g. left, right or either'
+        required: true
+        type: string
+      updater:
+        description: 'Release updater build (needs version_string and fw_version)'
+        required: false
+        type: boolean
+        default: false
+      version_string:
+        description: 'Version string for updater builds'
+        required: false
+        type: string
+        default: ''
+      fw_version:
+        description: 'fw_version number for updater builds'
+        required: false
+        type: string
+        default: ''
+      build_side:
+        description: 'One-side build: left, right, or empty for none'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Updater (release) builds use a pinned image and, below, the pinned Arm
+    # GNU 13.2.rel1 toolchain the updater was tested with: the image's own GCC
+    # (15.2 in this digest) builds the commit's RAM code differently, and
+    # check_ram_funcs.py refuses it (docs/updater.md, "Toolchain"). Other
+    # callers keep the image they always had.
+    container: ${{ inputs.updater && 'ghcr.io/qmk/qmk_cli@sha256:b7d7fa8fb4432b569931de5ad59098cb788f440ed61a62c5126746b71aee0f4a' || 'ghcr.io/qmk/qmk_cli' }}
+
+    steps:
+    # A tag build checks out the run's commit (github.sha), not the tag by
+    # name: a tag moved while the run runs cannot change what later jobs of
+    # the same run build or publish.
+    - name: Checkout code - Non PR
+      uses: actions/checkout@v4
+      if: ${{ startsWith(github.ref, 'refs/tags') }}
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        submodules: 'recursive'
+        persist-credentials: false
+
+    # For a manual (workflow_dispatch) run github.event.pull_request is empty,
+    # so ref is empty and checkout uses the branch the run was started on.
+    - name: Checkout code - PR
+      uses: actions/checkout@v4
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        ref: ${{ github.event.pull_request.head.sha }}
+        fetch-depth: 0
+        submodules: 'recursive'
+        persist-credentials: false
+
+    - name: Pinned Arm toolchain (updater builds)
+      if: ${{ inputs.updater }}
+      run: |
+        T=arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi
+        U=https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel
+        curl -fsSL --retry 3 -o "/tmp/$T.tar.xz" "$U/$T.tar.xz"
+        echo "6cd1bbc1d9ae57312bcd169ae283153a9572bd6a8e4eeae2fedfbc33b115fdbb  /tmp/$T.tar.xz" | sha256sum -c -
+        mkdir -p /opt/arm
+        tar -xJf "/tmp/$T.tar.xz" -C /opt/arm
+        echo "/opt/arm/arm-gnu-toolchain-13.2.Rel1-x86_64-arm-none-eabi/bin" >> "$GITHUB_PATH"
+      shell: bash
+
+    - name: Get tag version
+      if: ${{ startsWith(github.ref, 'refs/tags/')}}
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      shell: bash
+
+    - name: Calculate keyboard name
+      id: keyboard_vars
+      env:
+        BUILD_SIDE: ${{ inputs.build_side }}
+      run: |
+        case "$BUILD_SIDE" in
+          ""|left|right) ;;
+          *) echo "::error::build_side '$BUILD_SIDE' must be left, right or empty"; exit 1 ;;
+        esac
+        KEYBOARD_NAME="${{ inputs.keyboard }}"
+        KEYBOARD_NAME="${KEYBOARD_NAME//\//_}"
+        # The build's file name: a one-side build adds its side after the target.
+        BUILD_NAME="${KEYBOARD_NAME}_${{ inputs.side }}_${BUILD_SIDE:+${BUILD_SIDE}_}${{ inputs.keymap }}"
+        echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_ENV
+        echo "keyboard_name=$KEYBOARD_NAME" >> $GITHUB_OUTPUT
+        echo "build_name=$BUILD_NAME" >> $GITHUB_ENV
+      shell: bash
+
+    - name: Build firmware
+      id: build_firmware
+      env:
+        UPDATER: ${{ inputs.updater }}
+        VERSION_STRING: ${{ inputs.version_string }}
+        BUILD_SIDE: ${{ inputs.build_side }}
+      run: |
+        git config --global --add safe.directory '*'
+        pip3 install --break-system-packages -r requirements.txt
+        qmk setup -y
+        SIDE_ARGS=()
+        if [ -n "$BUILD_SIDE" ]; then SIDE_ARGS=("SVAL_BUILD_SIDE=$BUILD_SIDE" "TARGET=$build_name"); fi
+        if [ "$UPDATER" = "true" ]; then
+          command -v arm-none-eabi-gcc
+          test "$(arm-none-eabi-gcc -dumpversion)" = 13.2.1
+          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }} "${SIDE_ARGS[@]}" \
+            SVAL_UPDATER=yes SVAL_UPDATE_RELEASE=yes "SVAL_FW_VERSION_STRING=$VERSION_STRING"
+        else
+          make ${{ inputs.keyboard }}/${{ inputs.side }}:${{ inputs.keymap }} "${SIDE_ARGS[@]}"
+        fi
+        test -f "$build_name.uf2"
+      shell: bash
+
+    - name: Updater pair UF2
+      if: ${{ inputs.updater && inputs.build_side == '' }}
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
+        VERSION_STRING: ${{ inputs.version_string }}
+        FW_VERSION: ${{ inputs.fw_version }}
+      run: |
+        NAME="$build_name"
+        OUT="svalboard_${{ inputs.keymap }}_${VERSION}.uf2"
+        mkdir -p updater-out
+        # The commit's RAM code must not reach flash (plan R2).
+        python3 -I keyboards/svalboard/tools/check_ram_funcs.py ".build/$NAME.elf"
+        python3 -I keyboards/svalboard/tools/make_update.py pair "$NAME.uf2" \
+          -o "updater-out/$OUT" \
+          --kb "${{ inputs.keyboard }}/${{ inputs.side }}" --keymap "${{ inputs.keymap }}" --release \
+          --expect-version "$VERSION_STRING" --expect-fw-version "$FW_VERSION"
+        python3 -I keyboards/svalboard/tools/make_update.py verify-pair "updater-out/$OUT" --build release
+        cp ".build/$NAME.elf" "updater-out/$NAME.elf"
+        echo "release_name=$NAME" >> "$GITHUB_ENV"
+      shell: bash
+
+    # A one-side build is published as the build's own UF2, for one half: no
+    # pair record, so nothing relays it to the other half (docs/pair-uf2.md,
+    # "Left and right files"). release.yml's lint checks it against the ELF.
+    - name: Updater one-side UF2
+      if: ${{ inputs.updater && inputs.build_side != '' }}
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
+        BUILD_SIDE: ${{ inputs.build_side }}
+      run: |
+        NAME="$build_name"
+        OUT="svalboard_${{ inputs.keymap }}_${BUILD_SIDE}_${VERSION}.uf2"
+        mkdir -p updater-out
+        python3 -I keyboards/svalboard/tools/check_ram_funcs.py ".build/$NAME.elf"
+        cp "$NAME.uf2" "updater-out/$OUT"
+        cp ".build/$NAME.elf" "updater-out/$NAME.elf"
+        echo "release_name=$NAME" >> "$GITHUB_ENV"
+      shell: bash
+
+    - name: Upload the pair UF2 and ELF
+      uses: actions/upload-artifact@v4
+      if: ${{ inputs.updater }}
+      with:
+        name: release-${{ env.release_name }}
+        path: updater-out/
+        if-no-files-found: error
+
+    - name: Add file to PR.
+      uses: actions/upload-artifact@v4
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      with:
+        name: ${{ env.build_name }}.uf2
+        path: ${{ env.build_name }}.uf2
+
+    - name: Move file into position (for tags only)
+      id: move_file
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        FILE_NAME="${{ env.build_name }}_${{ steps.get_version.outputs.VERSION }}.uf2"
+        mv "${{ env.build_name }}.uf2" "$FILE_NAME"
+        echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - name: Release
+      uses: ncipollo/release-action@v1.11.2
+      # Updater builds are published by release.yml after the lint.
+      if: ${{ startsWith(github.ref, 'refs/tags/') && !inputs.updater }}
+      with:
+        allowUpdates: True
+        # Every build job updates the same release; keep the title and notes
+        # written after the first upload instead of resetting them.
+        omitBodyDuringUpdate: True
+        omitNameDuringUpdate: True
+        artifacts: "${{ steps.move_file.outputs.file_name }}"
