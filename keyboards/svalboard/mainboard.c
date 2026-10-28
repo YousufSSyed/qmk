@@ -51,33 +51,29 @@ static inline uint32_t now_us(void) {
     return (uint32_t)chVTGetSystemTimeX(); // 1 MHz system timer (matrix.c asserts it)
 }
 
-// One sample: bit0 pull-down read, bit1 pull-up read, bit2 release read.
+// One sample: bit0 pull-down read, bit2 release read (bit1, the pull-up read, is
+// taken once at the end, for diagnosis only: ~1 V on a Mini, so it decides nothing).
 static uint8_t board_id_sample(void) {
-    pin_t   pin = SVAL_BOARD_ID_PIN;
-    uint8_t s   = 0;
+    pin_t pin = SVAL_BOARD_ID_PIN;
     gpio_set_pin_input_low(pin);
-    wait_us(50);
-    bool pd = gpio_read_pin(pin);
-    gpio_set_pin_input_high(pin);
-    wait_us(50);
-    bool pu = gpio_read_pin(pin); // diagnostic only: ~1 V on a Mini
-    bool rel = true;
-    if (!pd) {
-        // Nothing drives the pin (a pull-down read is high only on V3.1 / V3.2), so
-        // it is safe to drive: the Mini sinks 110 uA through R1, a V3.0 header nothing.
-        ATOMIC_BLOCK_FORCEON {
-            gpio_set_pin_output(pin);
-            gpio_write_pin_high(pin);
-            wait_us(5);
-            gpio_set_pin_input(pin);
-        }
-        wait_us(20);
-        rel = gpio_read_pin(pin);
+    wait_us(20);
+    if (gpio_read_pin(pin)) return 1 | 4; // driven high: V3.1 / V3.2, never driven against
+    // Nothing drives the pin, so it is safe to drive it: a Mini sinks 110 uA
+    // through R1, a V3.0 header nothing.
+    ATOMIC_BLOCK_FORCEON {
+        gpio_set_pin_output(pin);
+        gpio_write_pin_high(pin);
+        wait_us(5);
+        gpio_set_pin_input(pin);
     }
-    s = (pd ? 1 : 0) | (pu ? 2 : 0) | (rel ? 4 : 0);
-    return s;
+    wait_us(20);
+    bool rel = gpio_read_pin(pin);
+    gpio_set_pin_input_low(pin);
+    return rel ? 4 : 0;
 }
 
+// Only "pull-down low and release low" in every sample is a Mini. Anything
+// else, including disagreement, is a normal board.
 static uint8_t board_from_sample(uint8_t s) {
     if (s & 1) return SVAL_MAIN_BOARD_V3_1_V3_2;
     return (s & 4) ? SVAL_MAIN_BOARD_V3_0_V2B : SVAL_MAIN_BOARD_MINI_V1_0;
@@ -87,26 +83,24 @@ uint8_t sval_main_board(void) {
     if (board_cache >= 0) return (uint8_t)board_cache;
 #if defined(SVAL_MAIN_BOARD_FORCE)
     // Dev-only: a prototype main board this rule can't see (never in a release build).
-    board_cache   = SVAL_MAIN_BOARD_FORCE;
+    board_cache  = SVAL_MAIN_BOARD_FORCE;
     local_id.gp3 = 0xF0;
 #else
     uint32_t t0    = now_us();
-    uint8_t first = board_id_sample(), last = first, agree = 1;
-    uint8_t board = board_from_sample(first);
+    uint8_t  first = board_id_sample(), last = first, agree = 1;
+    uint8_t  board = board_from_sample(first);
     for (uint8_t i = 1; i < BOARD_ID_SAMPLES; i++) {
-        wait_us(100);
         last = board_id_sample();
         if (board_from_sample(last) == board) agree++;
     }
-    if (agree != BOARD_ID_SAMPLES) board = SVAL_MAIN_BOARD_NOT_IDENTIFIED; // safe default: regular timing
-    // Leave the pin quiet: no pull against an op-amp output, a pull-down elsewhere.
-    if (board == SVAL_MAIN_BOARD_V3_1_V3_2) {
-        gpio_set_pin_input(SVAL_BOARD_ID_PIN);
-    } else {
-        gpio_set_pin_input_low(SVAL_BOARD_ID_PIN);
-    }
+    if (agree != BOARD_ID_SAMPLES) board = SVAL_MAIN_BOARD_NOT_IDENTIFIED; // regular timing, no check
+    gpio_set_pin_input_high(SVAL_BOARD_ID_PIN);
+    wait_us(20);
+    bool pu = gpio_read_pin(SVAL_BOARD_ID_PIN);
+    // Back to the RP2040's reset state for the pin (input, pull-down), as before this read.
+    gpio_set_pin_input_low(SVAL_BOARD_ID_PIN);
     board_cache  = board;
-    local_id.gp3 = (uint8_t)((last & 7) | (agree << 4));
+    local_id.gp3 = (uint8_t)((last & 5) | (pu ? 2 : 0) | (agree << 4));
     board_us     = now_us() - t0;
 #endif
     local_id.main_board = (uint8_t)board_cache;
