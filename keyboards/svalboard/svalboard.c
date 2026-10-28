@@ -8,6 +8,7 @@
 #include "layout_stamp.h"
 #include "split_common/transactions.h"
 #include <string.h>
+#include <stddef.h>
 #include QMK_KEYBOARD_H
 #include "usb_main.h"
 #include "suspend.h"
@@ -56,9 +57,15 @@ uint8_t       sval_hw_rev(void) {
 #if defined(SVAL_HW_REV_FORCE)
         hw_rev_cache = SVAL_HW_REV_FORCE;
 #else
-        gpio_set_pin_input_high(SVAL_HW_REV_PIN);
-        wait_us(200);
-        hw_rev_cache = gpio_read_pin(SVAL_HW_REV_PIN) ? SVAL_HW_REV_A : SVAL_HW_REV_FLIPFET;
+        if (sval_main_board() == SVAL_MAIN_BOARD_MINI_V1_0) {
+            // SvalMCUMini V1.0, found from GP3 (mainboard.c): its own scan timing.
+            hw_rev_cache = SVAL_HW_REV_FLIPFET;
+        } else {
+            // Otherwise the GP22 strap (revision B boards), as before.
+            gpio_set_pin_input_high(SVAL_HW_REV_PIN);
+            wait_us(200);
+            hw_rev_cache = gpio_read_pin(SVAL_HW_REV_PIN) ? SVAL_HW_REV_A : SVAL_HW_REV_FLIPFET;
+        }
 #endif
     }
     return (uint8_t)hw_rev_cache;
@@ -570,8 +577,12 @@ void kb_sync_listener(uint8_t in_buflen, const void *in_data, uint8_t out_buflen
     updater_split_light_seen(has_light, has_light ? in->update_light : 0);
 #endif
     // Tell the master this half's side and sensor (Sval 0x2C). Older masters ignore it.
-    if (out_data && out_buflen >= sizeof(presence_rsp_t)) {
+    if (out_data && out_buflen >= offsetof(presence_rsp_t, board_magic)) {
         presence_rsp_t *out = (presence_rsp_t *)out_data;
+        if (out_buflen >= sizeof(presence_rsp_t)) {
+            out->board_magic = SVAL_BOARD_RPC_MAGIC;
+            sval_local_board_identity(&out->board);
+        }
         out->magic[0]       = SVAL_PRESENCE_RSP_MAGIC0;
         out->magic[1]       = SVAL_PRESENCE_RSP_MAGIC1;
         sval_local_pointer_identity(&out->pointer);
@@ -871,6 +882,8 @@ void housekeeping_task_kb(void) {
                 } else {
                     memset(&other_pointer, 0, sizeof(other_pointer));
                 }
+                // The other half's main board block (Sval 0x38), when its firmware sends one.
+                sval_other_board_set(rpcin.board_magic == SVAL_BOARD_RPC_MAGIC && (rpcin.board.flags & SVAL_BOARD_REPORTED) ? &rpcin.board : NULL);
 #ifdef SVAL_EITHER_HAND
                 {
                     const uint8_t f = other_pointer.flags;
@@ -895,6 +908,7 @@ void housekeeping_task_kb(void) {
 #ifdef SVAL_UPDATER
                 update_split_presence_result(false, NULL, 0);
 #endif
+                sval_other_board_set(NULL);
 #ifdef SVAL_EITHER_HAND
                 sval_side_other_set(false, false, SVAL_SIDE_UNKNOWN);
 #endif

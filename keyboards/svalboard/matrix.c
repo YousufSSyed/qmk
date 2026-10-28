@@ -264,6 +264,8 @@ void matrix_init_custom(void) {
             }
         }
     }
+    // SvalMCUMini V1.0 only: which clusters it can scan (mainboard.c), ~1-4 ms.
+    sval_cluster_check();
 }
 bool first_scan = true;
 bool matrix_scan_custom(matrix_row_t current_matrix[]) {

@@ -563,6 +563,7 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             // different firmware build was installed; cleared by 0x2A.
             data[18] = (sval_storage_was_reset() ? 1 : 0) | (sval_storage_write_failed() ? 2 : 0) | sval_storage_flags_kb();
             data[19] = sval_get_feature_flags2();
+            if (length > 20) data[20] = sval_get_feature_flags3_kb();
             break;
         }
 
@@ -861,6 +862,17 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             if (length > 2) {
                 memset(&data[2], 0, length - 2);
                 sval_pointing_hardware_kb(&data[2], length - 2);
+            }
+            break;
+        }
+
+        case sval_cmd_main_board: {
+            // Request:  [0xDF] [0x38]
+            // Response: [0xDF] [0x38] [format] [report...]
+            // format 0: nothing to report (keyboards/svalboard/docs/protocol.md).
+            if (length > 2) {
+                memset(&data[2], 0, length - 2);
+                sval_main_board_kb(&data[2], length - 2);
             }
             break;
         }
@@ -1196,6 +1208,12 @@ __attribute__((weak)) void sval_host_packet_kb(void) {}
 __attribute__((weak)) void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {}
 
 __attribute__((weak)) void sval_pointing_motion_kb(uint8_t *out, uint8_t length) {}
+
+__attribute__((weak)) void sval_main_board_kb(uint8_t *out, uint8_t length) {}
+
+__attribute__((weak)) uint8_t sval_get_feature_flags3_kb(void) {
+    return 0;
+}
 
 __attribute__((weak)) void sval_pointing_contacts_kb(uint8_t *out, uint8_t length) {}
 
