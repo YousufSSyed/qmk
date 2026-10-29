@@ -15,6 +15,7 @@
 #include "keytest.h"
 #include "typing_pause.h"
 #include "flicker_latch.h"
+#include "debounce_sval.h"
 #include "sval.h"
 #include "pointing_motion.h" // after sval.h: needs the generated fragment ids
 #include "identity.h"
@@ -40,7 +41,17 @@
 _Static_assert(sizeof(((presence_rsp_t *)0)->update) == UPDATE_PRESENCE_BYTES, "presence reply: update_presence_t");
 _Static_assert(sizeof(presence_rsp_t) <= RPC_S2M_BUFFER_SIZE, "presence reply fits the split RPC buffer");
 _Static_assert(sizeof(presence_rpc_t) <= RPC_M2S_BUFFER_SIZE, "presence ping fits the split RPC buffer");
+_Static_assert(offsetof(presence_rpc_t, debounce_mode) == 18, "presence ping: the debounce mode follows the updater light");
 #endif
+// The debounce mode took the last spare bit of the first byte: the settings
+// keep their size, so a board that updates keeps them and reads it as 0 (on).
+_Static_assert(offsetof(saved_values_t, left_dpi_index) == 1, "saved_values: the flag bits stay one byte");
+
+// The optical keys' debounce mode (debounce_sval.c). The half with USB owns
+// the saved setting; the other half uses the mode its presence ping carries.
+bool sval_optical_debounce_on(void) {
+    return !global_saved_values.optical_debounce_off;
+}
 
 // USB remote wakeup status bit (from USB spec, not exported by QMK headers)
 #ifndef USB_GETSTATUS_REMOTE_WAKEUP_ENABLED
@@ -322,7 +333,7 @@ void output_keyboard_info(void) {
     send_string(output_buffer);
     uint16_t pre, post;
     sval_scan_timing(&pre, &post);
-    sprintf(output_buffer, "HW rev: %s, Scan timing: pre %d us, post %d us (%s)\n", sval_hw_rev_is_flipfet() ? "B (flipfet)" : "A", pre, post, (global_saved_values.scan_prewait_us || global_saved_values.scan_postwait_us) ? "explicit" : "turbo table");
+    sprintf(output_buffer, "HW rev: %s, Scan timing: pre %d us, post %d us (%s), Optical debounce: %s\n", sval_hw_rev_is_flipfet() ? "B (flipfet)" : "A", pre, post, (global_saved_values.scan_prewait_us || global_saved_values.scan_postwait_us) ? "explicit" : "turbo table", sval_optical_debounce_on() ? "on" : "off");
     send_string(output_buffer);
     uint32_t frame_us;
     uint16_t led_us;
@@ -585,6 +596,9 @@ void kb_sync_listener(uint8_t in_buflen, const void *in_data, uint8_t out_buflen
         sval_pointer_rest_apply();
     }
     global_saved_values.scan_deep_clock_idx = in->scan_deep_clock_idx;
+    // The master's optical debounce mode, when its ping carries it (RAM only, as above).
+    bool has_debounce                        = in_buflen >= offsetof(presence_rpc_t, debounce_mode) + 1;
+    global_saved_values.optical_debounce_off = !sval_debounce_sync_mode(has_debounce, has_debounce ? in->debounce_mode : 0, sval_optical_debounce_on());
 #ifdef SVAL_UPDATER
     // The master's updater light (D24), when its ping carries it.
     bool has_light = in_buflen >= sizeof(presence_rpc_t);
@@ -887,6 +901,7 @@ void housekeeping_task_kb(void) {
 #ifdef SVAL_UPDATER
             rpcout.update_light = updater_split_light();
 #endif
+            rpcout.debounce_mode = sval_debounce_sync_byte(sval_optical_debounce_on());
             presence_rsp_t rpcin  = {0};
             if (transaction_rpc_exec(KEYBOARD_SYNC_A, sizeof(presence_rpc_t), &rpcout, sizeof(presence_rsp_t), &rpcin)) {
                 if (rpcin.magic[0] == SVAL_PRESENCE_RSP_MAGIC0 && rpcin.magic[1] == SVAL_PRESENCE_RSP_MAGIC1 && (rpcin.pointer.flags & SVAL_POINTER_REPORTED)) {
@@ -994,6 +1009,7 @@ enum sval_via_value_id {
     // 31: id_thumb_hand (above)
     id_layer0_color = 32,
     // 32-47 are layer colors (id_layer0_color + layer)
+    id_optical_debounce = 48, // toggle: debounce the optical keys (1, the default) or not (0); the thumb Double Down always is
 };
 
 void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
@@ -1110,6 +1126,9 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                 case id_idle_rgb_dim:
                 case id_idle_cpu_sleep:
                 case id_idle_low_clock:
+                case id_optical_debounce:
+                    global_saved_values.optical_debounce_off = value_data[0] == 0;
+                    break;
                 case id_idle_long_nap: {
                     uint8_t bit = 1u << (*value_id - id_idle_pointer_rest);
                     if (value_data[0])
@@ -1227,6 +1246,9 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                 case id_idle_low_clock:
                 case id_idle_long_nap:
                     value_data[0] = (global_saved_values.idle_flags >> (*value_id - id_idle_pointer_rest)) & 1;
+                    break;
+                case id_optical_debounce:
+                    value_data[0] = sval_optical_debounce_on() ? 1 : 0;
                     break;
                 default:
                     // Layer colors: id 32-47

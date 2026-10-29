@@ -239,3 +239,18 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 - Request `DF 3D 01 <half>` (`0` left, `1` right): that half's change counts, one byte per switch (row by row, 6 columns each), then cleared. Response: `[op 1] [status] [bit 0: valid] [half] [30 counts]`.
 - Both need the 64-byte report (34 bytes after `3D`); a client-wrapped 32-byte report is answered with status `3`.
 - A host that reads both ops on a schedule keeps a running count per switch; a switch's presses since the last read are its changes, halved, rounded up when it was up at the last read and down when it was down.
+
+## Debounce mode
+
+The optical keys have a saved debounce mode; Keybard's Scan Lab switches it. The thumb Double Down, the one mechanical switch, is debounced in both modes: 5 ms per key, deferred (a change is reported once it has held for 5 ms).
+
+- **On** (the default): QMK's `sym_defer_g` on the optical keys, as release firmware types. Once no optical key on a half has changed for 5 ms, that half's optical keys are reported, all at once. A board that has never changed the setting reads on.
+- **Off**: no debounce. A raw change reaches the keymap on the scan that sees it.
+
+The setting is a VIA custom value, not a Sval command:
+
+- Discovery: Scan Lab (VIA custom-value channel `0x53`) `STATUS` reply byte 23: bit 0, the firmware has this setting; bit 1, that half debounces its optical keys now. Older firmware sends 23 bytes, so the byte reads zero.
+- Read: VIA `id_custom_get_value` (`0x08`), channel `0`, value ID `48` (`id_optical_debounce`): `1` on, `0` off.
+- Write: `id_custom_set_value` (`0x07`), channel `0`, value ID `48`, `[1]` or `[0]`; then `id_custom_save` (`0x09`), channel `0`, stores it with the other keyboard settings. It works at once, saved or not.
+- Both halves use the same mode. The half with USB owns the setting and sends its mode in the split presence ping (every 0.5 s; its last byte), as it sends the scan timing; the other half uses it and doesn't store it. Until the first ping, and with an older half on USB, the other half uses its own saved mode. Each half's `STATUS` bit 1 shows the mode it uses, so a host can see the other half follow.
+- Stored in the last spare bit of the keyboard settings' first byte (`optical_debounce_off`, 0 = on), so the settings keep their size and layout stamp: updating to this firmware keeps them.

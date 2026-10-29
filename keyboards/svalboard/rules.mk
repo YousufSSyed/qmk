@@ -44,9 +44,10 @@ VIA_INSECURE = yes
 
 # Note: Sval module is enabled via keymap.json with "modules": ["svalboard/core"]
 
-# Debounce (debounce_sval.c): the optical keys have nothing to bounce and pass
-# straight through; only the thumb Double Down tact switch (thumb row, COL6,
-# each half) is debounced, 5 ms per key, deferred.
+# Debounce (debounce_sval.c): the optical keys follow a saved mode, on (the
+# default: QMK's sym_defer_g, 5 ms, as release firmware types) or off (straight
+# through); the thumb Double Down tact switch (thumb row, COL6, each half) is
+# debounced in both, 5 ms per key, deferred.
 DEBOUNCE_TYPE = custom
 SRC += debounce_sval.c
 

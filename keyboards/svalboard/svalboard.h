@@ -35,7 +35,7 @@ struct __attribute__((__packed__)) saved_values {
     bool natural_scroll: 1;
     bool left_automouse: 1;  // Left pointer movement activates the auto mouse layer
     bool right_automouse: 1; // Right pointer movement activates the auto mouse layer
-    unsigned int unused0 :1;
+    bool optical_debounce_off: 1; // Optical keys not debounced; 0, the default, debounces them (debounce_sval.c)
     uint8_t left_dpi_index;
     uint8_t right_dpi_index;
     uint8_t mh_timer_index;
@@ -73,6 +73,10 @@ typedef struct __attribute__((__packed__)) _presence_rpc_t {
     // older slave never reads past its own fields.
     uint8_t update_light;
 #endif
+    // The optical keys' debounce mode (sval_debounce_sync_byte(), debounce_sval.h),
+    // appended: the slave uses it only when the ping is long enough to hold it,
+    // so a master from before it leaves the slave on its own saved mode.
+    uint8_t debounce_mode;
 } presence_rpc_t;
 
 // Which pointing module a half's firmware drives and which one answered, so a host

@@ -9,3 +9,4 @@ uint16_t host_now_ms(void);
 void     debounce_init(void);
 bool     debounce(matrix_row_t raw[], matrix_row_t cooked[], bool changed);
 bool     sval_debounce_step(matrix_row_t raw[], matrix_row_t cooked[], uint16_t now_ms);
+// The saved mode comes from the test (sval_optical_debounce_on(), debounce_sval.h).

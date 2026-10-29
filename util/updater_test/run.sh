@@ -17,9 +17,9 @@ python3 -I "$tests/test_release_version.py" "$out/release_version"
 python3 -I "$tests/test_release_artifacts.py" "$out/release_artifacts"
 python3 -I "$tests/test_either_hand.py"
 
-# Debounce (kb/debounce_sval.c): optical keys on the same scan, only the thumb
-# Double Down debounced.
-${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all     -DSVAL_DEBOUNCE_HOST_TEST -I"$root/tests/sval_debounce"     "$root/tests/sval_debounce/test_debounce.c" "$kb/debounce_sval.c" -o "$out/test_debounce"
+# Debounce (kb/debounce_sval.c): optical keys off (same scan) and on
+# (sym_defer_g), the thumb Double Down debounced in both, mode changes, split sync.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all     -DSVAL_DEBOUNCE_HOST_TEST -I"$root/tests/sval_debounce" -I"$kb"     "$root/tests/sval_debounce/test_debounce.c" "$kb/debounce_sval.c" -o "$out/test_debounce"
 "$out/test_debounce"
 
 # Settings reset on the first boot of a different firmware build (kb/build_reset.c).
