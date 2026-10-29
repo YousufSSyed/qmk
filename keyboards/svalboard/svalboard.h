@@ -16,6 +16,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #pragma once
 
+#include "mainboard.h"
+
 #include "quantum.h"
 #include "pointing_motion_vs.h"
 #include "sval_timing.h"
@@ -137,6 +139,11 @@ typedef struct __attribute__((__packed__)) {
 #ifdef SVAL_UPDATER
     uint8_t update[17]; // the updater's update_presence_t (D17), appended
 #endif
+    // This half's main board and cluster check (Sval 0x38), appended. An older
+    // master asks for fewer bytes and never sees it; an older slave leaves the
+    // magic unset.
+    uint8_t               board_magic; // SVAL_BOARD_RPC_MAGIC
+    sval_board_identity_t board;
 } presence_rsp_t;
 
 // Hardware revision, read once from SVAL_HW_REV_PIN (internal pull-up; the

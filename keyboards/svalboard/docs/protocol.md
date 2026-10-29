@@ -53,6 +53,22 @@ Check feature flags before using an extension, send one request at a time per co
   - Each build checks its own module at startup. When that module doesn't answer, or the build has none, the half checks the other modules' buses about 1.5 s after boot (PS/2, then I2C, then SPI), so `detected` names whatever is attached. Until then it reads `0` (no module build) or `3` (its own module missing). While nothing works, the half looks again, its own module first, then the other buses: 3, 6, 12 and 30 s after boot, and never after that, so a board with no pointing module isn't probed again. It stops sooner once a module works, once a per-module build finds a module it can't drive, or once a module that answers has failed to start four times. A half whose module works is never probed. So `detected`, `built_for` and bit 2 can change during a half's first 30 s, after a host has connected (the other half's block follows within a presence ping, 0.5 s); a host that shows `3` or `0` should read again until then.
 - The other half reports through the split link's half-second presence ping, so its block is zero while it is disconnected, for up to half a second after it connects, and when it runs firmware without this command.
 
+## Main board
+
+`MAIN_BOARD` (`0x38`) tells a host which main board each half has, and, on a SvalMCUMini V1.0, whether every key cluster on it is one the board can scan. The firmware decides both at startup, so one image runs on every main board.
+
+- Discovery: GET_INFO byte 20 (the third feature byte), bit 0 (`sval_flag3_main_board`). Older firmware leaves it zero.
+- Request: `DF 38`
+- Response: `DF 38 <format> <this half: 5 bytes> <other half: 5 bytes> <board read us: u16> <cluster check us: u16>`. `format` is `1`. "This half" is the one plugged into USB; the two timings are its own boot cost (diagnostic).
+- Each half: `<flags> <main_board> <gp3> <clusters: u16>`.
+  - `flags`: bit 0 the block holds a report, bit 1 the half is the left half, bit 2 the cluster check ran, bit 3 a cluster this main board can't scan was found, bit 5 the half has no side yet (one-image builds), and bit 1 means nothing.
+  - `main_board`: `0` not identified (the samples disagreed; the half keeps the regular scan timing), `1` SvalMCUMini V1.0, `2` V3.1 or V3.2, `3` V3.0 or V2B.
+  - `gp3`: diagnostic. Bits 0-2 are the last sample's pull-down, pull-up and release reads; bits 4-7 how many of the 8 samples agreed.
+  - `clusters`: 2 bits per row, row 0 (thumb) in bits 0-1, then index, middle, ring and pinky. `0` not checked, `1` lit within 60 us (a cluster made for this board), `2` dark at 60 us and lit by 400 us (an original cluster: it can't be scanned on a SvalMCUMini V1.0), `3` dark at both (no cluster, or its lit-at-rest keys held). Row 0 (thumb) is not checked and reads `0`.
+- How the board is found: GP3 is read with the pull-down (high only when the V3.1/V3.2 op-amp drives it), then, if low, driven high for 5 us, released with no pull and read 20 us later (low on the Mini, whose R1 30k pulls it to ground; high when it floats). Eight samples must agree.
+- The cluster check runs only on a SvalMCUMini V1.0, before the first scan, on the four finger rows. Other boards report `clusters` `0`. A row that reads `2` (an original cluster) has its keys muted, because its center would otherwise read as held; Scan Lab still sees the raw row.
+- The other half reports through the split link's half-second presence ping, so its block is zero while it is disconnected, for up to half a second after it connects, and when it runs firmware without this command.
+
 ## Pointing fragments
 
 The keyboard definition (`sval.json`, keymaps `sval` and `blank`) describes each hand's pointing module as a zero-key fragment, so a host can draw it in the layout. Fragments `pointing_none` (4), `pointing_trackball_pmw3360` (5), `pointing_trackball_pmw3389` (6), `pointing_touchpad_azoteq` (7), `pointing_trackpoint` (8) and `pointing_unknown` (9) have `"kle": []` and a `widget` object (`kind`, `module`, `sensor`, `w`, `h` in key units). Instances `left_pointing` (10) and `right_pointing` (11) have `hardware_detect: true`; their selection bytes are not used.
@@ -195,7 +211,7 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 
 `TYPING_PAUSE` (`0x3C`) stops the board's typing from reaching the computer while a host app's key tester is open. The keymap keeps running and layers work; only what would be typed is held back. The tester reads the switches with VIA's matrix state as before.
 
-- Discovery: GET_INFO byte 20 (the third feature byte), bit 2 (`sval_flag3_typing_pause`, `0x04`). Older firmware leaves it zero, and answers `0x3C` with the command byte `0xFF` (unknown command). (Byte 20 bit 0 is allocated by the main board branch, and bit 1 is left for the board ID record branch.)
+- Discovery: GET_INFO byte 20 (the third feature byte), bit 2 (`sval_flag3_typing_pause`, `0x04`). Older firmware leaves it zero, and answers `0x3C` with the command byte `0xFF` (unknown command). (Byte 20 bit 0 is `MAIN_BOARD`, and bit 1 is left for the board ID record branch.)
 - Request: `DF 3C <op>`: `0` off, `1` on, `2` read the state. "On" also renews the pause, and the client that sends it owns the pause from then on. Any client may turn it off.
 - While on, the half with USB sends no keyboard or NKRO reports (letters, Tab, Enter, Esc, arrows, F-keys, GUI, Ctrl, Alt, Shift) and no consumer or system reports (media, volume, sleep). The mouse report still goes out: buttons, motion and scroll. Both halves are covered, since the half with USB sends every report.
 - Turning it on clears the modifiers, one-shot modifiers and keys, and sends an empty keyboard report first, so nothing is left held on the computer.

@@ -262,6 +262,8 @@ void matrix_init_custom(void) {
             }
         }
     }
+    // SvalMCUMini V1.0 only: which clusters it can scan (mainboard.c), ~1-4 ms.
+    sval_cluster_check();
 }
 bool first_scan = true;
 bool matrix_scan_custom(matrix_row_t current_matrix[]) {
@@ -331,6 +333,14 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
         matrix_read_cols_on_row(curr_matrix, current_row);
     }
     ema16(&stat_led_us, led_on_acc_us);
+    // SvalMCUMini V1.0: an original cluster can't be scanned, so its keys are muted
+    // (its center would read as held). Scan Lab still sees the raw rows.
+    uint8_t muted = sval_muted_rows();
+    if (muted && !scanlab_active()) {
+        for (uint8_t r = 0; r < ROWS_PER_HAND; r++) {
+            if (muted & (1u << r)) curr_matrix[r] = 0;
+        }
+    }
 #ifdef SVAL_PERF_STATS
     // Raw frames with a key down, and raw changes (keyboards/svalboard/perf.c).
     extern void sval_perf_matrix(const matrix_row_t *rows, uint8_t count);

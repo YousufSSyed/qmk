@@ -866,6 +866,17 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             break;
         }
 
+        case sval_cmd_main_board: {
+            // Request:  [0xDF] [0x38]
+            // Response: [0xDF] [0x38] [format] [report...]
+            // format 0: nothing to report (keyboards/svalboard/docs/protocol.md).
+            if (length > 2) {
+                memset(&data[2], 0, length - 2);
+                sval_main_board_kb(&data[2], length - 2);
+            }
+            break;
+        }
+
         case sval_cmd_pointing_motion: {
             // Request:  [0xDF] [0x2D]
             // Response: [0xDF] [0x2D] [format] [report...]
@@ -1226,6 +1237,8 @@ __attribute__((weak)) void sval_flicker_latch_kb(uint8_t *data, uint8_t length) 
 __attribute__((weak)) void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {}
 
 __attribute__((weak)) void sval_pointing_motion_kb(uint8_t *out, uint8_t length) {}
+
+__attribute__((weak)) void sval_main_board_kb(uint8_t *out, uint8_t length) {}
 
 __attribute__((weak)) void sval_pointing_contacts_kb(uint8_t *out, uint8_t length) {}
 
