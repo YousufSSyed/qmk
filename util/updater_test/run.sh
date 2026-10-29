@@ -20,6 +20,13 @@ python3 -I "$tests/test_either_hand.py"
 # Debounce (kb/debounce_sval.c): optical keys off (same scan) and on
 # (sym_defer_g), the thumb Double Down debounced in both, mode changes, split sync.
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all     -DSVAL_DEBOUNCE_HOST_TEST -I"$root/tests/sval_debounce" -I"$kb"     "$root/tests/sval_debounce/test_debounce.c" "$kb/debounce_sval.c" -o "$out/test_debounce"
+
+# Scan timing in us only (kb/sval_timing.c): the boot migration from each turbo
+# index, id_turbo_scan read and write, SV_TURBO_SCAN, split sync with older
+# halves; the auto mouse layer timeout, 100-2000 ms.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$kb" "$root/tests/sval_timing/test_timing.c" "$kb/sval_timing.c" -o "$out/test_timing"
+"$out/test_timing"
 "$out/test_debounce"
 
 # Settings reset on the first boot of a different firmware build (kb/build_reset.c).

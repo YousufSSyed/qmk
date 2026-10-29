@@ -59,7 +59,10 @@ bool sval_optical_debounce_on(void) {
 #endif
 
 saved_values_t global_saved_values;
-const int16_t  mh_timer_choices[6] = {200, 300, 400, 500, 800, -1}; // -1 is infinite.
+// The turbo index the half with USB sent in the last presence ping (half
+// without USB only). Used only for a wait of 0, which only an older half with
+// USB sends (sval_timing_effective).
+uint8_t sval_ping_turbo = 0;
 
 uint8_t sval_active_layer = 0;
 
@@ -217,15 +220,16 @@ void svalboard_saved_values_defaults(void) {
     global_saved_values.left_scroll         = true;
     global_saved_values.auto_mouse          = true;
     global_saved_values.axis_scroll_lock    = true;
-    global_saved_values.turbo_scan          = 0;
+    global_saved_values.automouse_10ms      = 50; // 500 ms, mh_timer_choices[3]
     global_saved_values.natural_scroll      = false;
     global_saved_values.left_automouse      = true;
     global_saved_values.right_automouse     = true;
     global_saved_values.automouse_threshold = 15;
     global_saved_values.automouse_decay     = 7; // 70ms
-    // Revision B settles more slowly; start it on explicit conservative timing.
-    global_saved_values.scan_prewait_us     = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_PREWAIT_US : 0;
-    global_saved_values.scan_postwait_us    = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_POSTWAIT_US : 0;
+    // Revision B settles more slowly; start it on conservative timing.
+    // Revision A starts on the first preset, 90 / 90 us, as it always has.
+    global_saved_values.scan_prewait_us     = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_PREWAIT_US : sval_turbo_us[0];
+    global_saved_values.scan_postwait_us    = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_POSTWAIT_US : sval_turbo_us[0];
     global_saved_values.scan_period_us      = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_SCAN_PERIOD_US : 0;
     global_saved_values.scan_idle_period_ms = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_IDLE_PERIOD_MS : 0;
     global_saved_values.scan_idle_after_ms  = sval_hw_rev_is_flipfet() ? SVAL_FLIPFET_DEFAULT_IDLE_AFTER_MS : 0;
@@ -293,6 +297,12 @@ void read_eeprom_kb(void) {
 #if VIA_ENABLE
         via_read_custom_config(&global_saved_values, SVALBOARD_VIA_CONFIG_OFFSET, SVALBOARD_VIA_CONFIG_SIZE);
 #endif
+        // Once, on settings saved by firmware with the turbo setting: a wait of
+        // 0 meant "the turbo table". Fill it in from the saved turbo index, so
+        // the board keeps the timing it ran, and free that byte.
+        if (sval_timing_migrate(&global_saved_values.scan_prewait_us, &global_saved_values.scan_postwait_us, &global_saved_values.automouse_10ms)) {
+            write_eeprom_kb();
+        }
     }
     sval_active_layer = 0;
 }
@@ -327,13 +337,13 @@ void output_keyboard_info(void) {
     if (sval_storage_write_failed()) send_string("Settings can't be saved right now: changes will be lost on restart. Unplug and reconnect, then check again.\n");
     sprintf(output_buffer, "Left Ptr: Scroll %s, cpi: %d, Right Ptr: Scroll %s, cpi: %d\n", yes_or_no(global_saved_values.left_scroll), dpi_choices[global_saved_values.left_dpi_index], yes_or_no(global_saved_values.right_scroll), dpi_choices[global_saved_values.right_dpi_index]);
     send_string(output_buffer);
-    sprintf(output_buffer, "Axis Scroll Lock: %s (is Mac: %d), Natural Scroll: %s, Mouse Layer: %s (left: %s, right: %s), Mouse Layer Timeout: %d, Turbo Scan: %d\n", yes_or_no(global_saved_values.axis_scroll_lock), is_mac, yes_or_no(global_saved_values.natural_scroll), yes_or_no(global_saved_values.auto_mouse), yes_or_no(global_saved_values.left_automouse), yes_or_no(global_saved_values.right_automouse), mh_timer_choices[global_saved_values.mh_timer_index], global_saved_values.turbo_scan);
+    sprintf(output_buffer, "Axis Scroll Lock: %s (is Mac: %d), Natural Scroll: %s, Mouse Layer: %s (left: %s, right: %s), Mouse Layer Timeout: %ld ms (-1 = none)\n", yes_or_no(global_saved_values.axis_scroll_lock), is_mac, yes_or_no(global_saved_values.natural_scroll), yes_or_no(global_saved_values.auto_mouse), yes_or_no(global_saved_values.left_automouse), yes_or_no(global_saved_values.right_automouse), (long)sval_automouse_timeout(global_saved_values.mh_timer_index, global_saved_values.automouse_10ms));
     send_string(output_buffer);
     sprintf(output_buffer, "BOOST: hold[2,3,5]=%d,%d,%d  tg[2,3,5]=%d,%d,%d  mult=%d\n", boost_hold_2, boost_hold_3, boost_hold_5, boost_toggle_2, boost_toggle_3, boost_toggle_5, boost_x.mult);
     send_string(output_buffer);
     uint16_t pre, post;
     sval_scan_timing(&pre, &post);
-    sprintf(output_buffer, "HW rev: %s, Scan timing: pre %d us, post %d us (%s), Optical debounce: %s\n", sval_hw_rev_is_flipfet() ? "B (flipfet)" : "A", pre, post, (global_saved_values.scan_prewait_us || global_saved_values.scan_postwait_us) ? "explicit" : "turbo table", sval_optical_debounce_on() ? "on" : "off");
+    sprintf(output_buffer, "HW rev: %s, Scan timing: pre %d us, post %d us, Optical debounce: %s\n", sval_hw_rev_is_flipfet() ? "B (flipfet)" : "A", pre, post, sval_optical_debounce_on() ? "on" : "off");
     send_string(output_buffer);
     uint32_t frame_us;
     uint16_t led_us;
@@ -345,15 +355,10 @@ void output_keyboard_info(void) {
     send_string(output_buffer);
 }
 
-const uint16_t sval_postwait_us[] = {90, 60, 45, 30, 25, 20, 15};
-const uint16_t sval_prewait_us[]  = {90, 60, 45, 30, 25, 20, 15};
-#define TURBO_CHOICES_LENGTH (sizeof(sval_postwait_us) / sizeof(sval_postwait_us[0]))
+// SV_TURBO_SCAN: both scan waits to the next faster preset (sval_turbo_us,
+// 90 down to 15 us), and back to 90 after the fastest; saved.
 void change_turbo_scan(void) {
-    if (global_saved_values.turbo_scan + 1 < TURBO_CHOICES_LENGTH) {
-        global_saved_values.turbo_scan++;
-    } else {
-        global_saved_values.turbo_scan = 0;
-    }
+    sval_timing_step(&global_saved_values.scan_prewait_us, &global_saved_values.scan_postwait_us);
     write_eeprom_kb();
 }
 
@@ -583,7 +588,7 @@ void sval_set_active_layer(uint32_t layer, bool save) {
 // RPC listener for split keyboard sync
 void kb_sync_listener(uint8_t in_buflen, const void *in_data, uint8_t out_buflen, void *out_data) {
     const presence_rpc_t *in                = (const presence_rpc_t *)in_data;
-    global_saved_values.turbo_scan          = in->turbo_scan;
+    sval_ping_turbo                         = in->turbo_scan; // only for a wait of 0 from an older half
     global_saved_values.scan_prewait_us     = in->scan_prewait_us;
     global_saved_values.scan_postwait_us    = in->scan_postwait_us;
     global_saved_values.scan_period_us      = in->scan_period_us;
@@ -897,7 +902,7 @@ void housekeeping_task_kb(void) {
 #else
         if (timer_elapsed(last_ping) > 500) {
 #endif
-            presence_rpc_t rpcout = {global_saved_values.turbo_scan, global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us, global_saved_values.scan_period_us, global_saved_values.scan_idle_period_ms, global_saved_values.scan_idle_after_ms, global_saved_values.scan_deep_after_s, global_saved_values.scan_deep_period_ms, global_saved_values.idle_flags, global_saved_values.scan_deep_clock_idx};
+            presence_rpc_t rpcout = {sval_timing_ping_turbo(global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us), global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us, global_saved_values.scan_period_us, global_saved_values.scan_idle_period_ms, global_saved_values.scan_idle_after_ms, global_saved_values.scan_deep_after_s, global_saved_values.scan_deep_period_ms, global_saved_values.idle_flags, global_saved_values.scan_deep_clock_idx};
 #ifdef SVAL_UPDATER
             rpcout.update_light = updater_split_light();
 #endif
@@ -982,12 +987,12 @@ enum sval_via_value_id {
     id_automouse_threshold = 6,
     id_natural_scroll      = 7,
     id_axis_lock           = 8,
-    id_turbo_scan          = 9,
+    id_turbo_scan          = 9,  // older hosts: a write sets both scan waits from the preset; a read returns the preset they match, or 0xFF
     id_automouse_decay     = 10, // Accumulator decay time in 10ms units
     id_left_automouse      = 11, // Left pointer movement activates the mouse layer
     id_right_automouse     = 12, // Right pointer movement activates the mouse layer
-    id_scan_prewait_us     = 13, // u16: row-on settle time (0 = turbo table)
-    id_scan_postwait_us    = 14, // u16: row-off recovery time (0 = turbo table)
+    id_scan_prewait_us     = 13, // u16: row-on settle time, us (a write of 0 stores 90)
+    id_scan_postwait_us    = 14, // u16: row-off recovery time, us (a write of 0 stores 90)
     id_hw_revision         = 15, // read-only: 0 = revision A, 1 = revision B (flipfet)
     // 16-19: tapping settings
     id_scan_period_us      = 20, // u16: frame period while active (0 = unpaced)
@@ -1010,6 +1015,8 @@ enum sval_via_value_id {
     id_layer0_color = 32,
     // 32-47 are layer colors (id_layer0_color + layer)
     id_optical_debounce = 48, // toggle: debounce the optical keys (1, the default) or not (0); the thumb Double Down always is
+    id_automouse_timeout_ms = 49, // u16: auto mouse layer timeout, ms, 100-2000 in 10 ms steps
+    id_automouse_no_timeout = 50, // toggle: the auto mouse layer has no timeout (the old "Infinite")
 };
 
 void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
@@ -1071,9 +1078,13 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                     global_saved_values.auto_mouse = value_data[0];
                     break;
                 case id_automouse_timeout:
-                    if (value_data[0] < 6) {
-                        global_saved_values.mh_timer_index = value_data[0];
-                    }
+                    sval_automouse_set_choice(value_data[0], &global_saved_values.mh_timer_index, &global_saved_values.automouse_10ms);
+                    break;
+                case id_automouse_timeout_ms:
+                    sval_automouse_set_ms(value_data[0] | (value_data[1] << 8), &global_saved_values.mh_timer_index, &global_saved_values.automouse_10ms);
+                    break;
+                case id_automouse_no_timeout:
+                    sval_automouse_set_never(value_data[0] != 0, &global_saved_values.mh_timer_index, &global_saved_values.automouse_10ms);
                     break;
                 case id_natural_scroll:
                     global_saved_values.natural_scroll = value_data[0];
@@ -1082,9 +1093,7 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                     global_saved_values.axis_scroll_lock = value_data[0];
                     break;
                 case id_turbo_scan:
-                    if (value_data[0] < TURBO_CHOICES_LENGTH) {
-                        global_saved_values.turbo_scan = value_data[0];
-                    }
+                    sval_timing_set_preset(value_data[0], &global_saved_values.scan_prewait_us, &global_saved_values.scan_postwait_us);
                     break;
                 case id_automouse_threshold:
                     global_saved_values.automouse_threshold = value_data[0] | (value_data[1] << 8);
@@ -1099,10 +1108,10 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                     global_saved_values.right_automouse = value_data[0];
                     break;
                 case id_scan_prewait_us:
-                    global_saved_values.scan_prewait_us = value_data[0] | (value_data[1] << 8);
+                    global_saved_values.scan_prewait_us = sval_timing_written_us(value_data[0] | (value_data[1] << 8));
                     break;
                 case id_scan_postwait_us:
-                    global_saved_values.scan_postwait_us = value_data[0] | (value_data[1] << 8);
+                    global_saved_values.scan_postwait_us = sval_timing_written_us(value_data[0] | (value_data[1] << 8));
                     break;
                 case id_scan_period_us:
                     global_saved_values.scan_period_us = value_data[0] | (value_data[1] << 8);
@@ -1122,13 +1131,15 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                 case id_scan_deep_clock_idx:
                     global_saved_values.scan_deep_clock_idx = value_data[0] > 2 ? 2 : value_data[0];
                     break;
+                case id_optical_debounce:
+                    global_saved_values.optical_debounce_off = value_data[0] == 0;
+                    break;
+                // Before this, the four idle toggles above id_idle_long_nap fell
+                // into id_optical_debounce: they changed the debounce mode, not their bit.
                 case id_idle_pointer_rest:
                 case id_idle_rgb_dim:
                 case id_idle_cpu_sleep:
                 case id_idle_low_clock:
-                case id_optical_debounce:
-                    global_saved_values.optical_debounce_off = value_data[0] == 0;
-                    break;
                 case id_idle_long_nap: {
                     uint8_t bit = 1u << (*value_id - id_idle_pointer_rest);
                     if (value_data[0])
@@ -1187,7 +1198,16 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                     value_data[0] = global_saved_values.axis_scroll_lock;
                     break;
                 case id_turbo_scan:
-                    value_data[0] = global_saved_values.turbo_scan;
+                    value_data[0] = sval_timing_preset(global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us);
+                    break;
+                case id_automouse_timeout_ms: {
+                    uint16_t ms   = sval_automouse_ms(global_saved_values.mh_timer_index, global_saved_values.automouse_10ms);
+                    value_data[0] = ms & 0xFF;
+                    value_data[1] = ms >> 8;
+                    break;
+                }
+                case id_automouse_no_timeout:
+                    value_data[0] = global_saved_values.mh_timer_index == SVAL_AUTOMOUSE_NEVER_INDEX ? 1 : 0;
                     break;
                 case id_automouse_threshold:
                     value_data[0] = global_saved_values.automouse_threshold & 0xFF;

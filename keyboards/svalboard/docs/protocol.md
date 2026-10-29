@@ -254,3 +254,24 @@ The setting is a VIA custom value, not a Sval command:
 - Write: `id_custom_set_value` (`0x07`), channel `0`, value ID `48`, `[1]` or `[0]`; then `id_custom_save` (`0x09`), channel `0`, stores it with the other keyboard settings. It works at once, saved or not.
 - Both halves use the same mode. The half with USB owns the setting and sends its mode in the split presence ping (every 0.5 s; its last byte), as it sends the scan timing; the other half uses it and doesn't store it. Until the first ping, and with an older half on USB, the other half uses its own saved mode. Each half's `STATUS` bit 1 shows the mode it uses, so a host can see the other half follow.
 - Stored in the last spare bit of the keyboard settings' first byte (`optical_debounce_off`, 0 = on), so the settings keep their size and layout stamp: updating to this firmware keeps them.
+
+## Scan timing
+
+The board scans its keys with two saved waits per row, in microseconds: before reading the row (`id_scan_prewait_us`, VIA value `13`) and after it (`id_scan_postwait_us`, `14`). They are the timing the board runs, always; there is no other timing setting. Both are 16-bit little-endian, on channel `0`; `id_custom_save` (`0x09`) stores them. A Scan Lab sweep overrides them while it runs, and the updater raises them while it waits for its chord.
+
+- Defaults: 90 / 90 µs on revision A boards; 45 / 5 µs on revision B and the Mini.
+- A write of `0` stores 90 (older hosts wrote 0 to mean "the turbo table"). Read back after a write: the reply is what the board runs.
+- Presets: 90, 60, 45, 30, 25, 20 and 15 µs, the same for both waits (the old turbo table, `sval_turbo_us`). A host offers them by writing both waits.
+- `id_turbo_scan` (VIA value `9`) is kept for older hosts. A write of `0`-`6` sets both waits to that preset; other values change nothing. A read returns the preset both waits match, or `0xFF` when they match none. Scan Lab `STATUS` byte 21 reads the same.
+- The `SV_TURBO_SCAN` key steps both waits to the first preset faster than the slower wait now, and from 15 µs (or faster) back to 90, and saves them. On a board at 45 / 5 µs it goes to 30 / 30.
+- Upgrading: firmware before this stored `0` in a wait to mean "use the turbo table at the saved turbo index". At the first boot, a wait of `0` is filled in from the table with that index, and saved, so every board keeps the timing it ran. A board on turbo 6 with both waits at 0 reads 15 / 15 afterwards; one on turbo 0, 90 / 90; explicit waits are kept as they are. The settings keep their size and layout stamp, so nothing else resets. The byte that held the turbo index now holds the auto mouse layer timeout (below).
+- Split: the half with USB sends both waits in the presence ping (every 0.5 s), as before, with the matching preset (0 for none) in the turbo byte. The other half uses them and doesn't store them. Waits are never 0 now, so an older half without USB runs them too. A new half without USB under an older half with USB that still sends 0 fills a 0 wait in from the turbo byte, as before.
+
+## Auto mouse layer timeout
+
+How long the auto mouse layer stays on after the pointer stops, in milliseconds.
+
+- `id_automouse_timeout_ms` (VIA value `49`), 16-bit little-endian: 100 to 2000 ms. A write is clamped to that range and rounded to 10 ms; read it back for the stored value. Default 500.
+- `id_automouse_no_timeout` (VIA value `50`): `1`, the layer stays on until it is turned off another way (the old "Infinite"); `0`, it times out after value 49. Value 49 keeps its time while this is on.
+- `id_automouse_timeout` (VIA value `5`), kept for older hosts: the old choice, `0`-`5` = 200, 300, 400, 500, 800 ms, no timeout. A write sets value 49 to that time (or turns value 50 on for `5`); a read returns the nearest old choice. The `SV_MH_CHANGE_TIMEOUTS` key steps through the old choices, as before.
+- Storage: the time is kept in 10 ms units in the byte that held the turbo index, and the old choice byte keeps the nearest old choice, so firmware from before this on the same settings still finds a valid one. Values 100-2000 fit in that byte (10-200); a turbo index left there (0-6) is cleared at the first boot.

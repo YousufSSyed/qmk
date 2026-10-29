@@ -306,7 +306,7 @@ void scanlab_handle(const uint8_t *req, uint8_t *rsp) {
             rsp[16] = probe.row;
             put16(&rsp[17], global_saved_values.scan_prewait_us);
             put16(&rsp[19], global_saved_values.scan_postwait_us);
-            rsp[21] = global_saved_values.turbo_scan;
+            rsp[21] = sval_timing_preset(global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us); // the preset, or 0xFF
             rsp[22] = is_keyboard_master() ? (sval_other_half_connected() ? 1 : 0) : 0;
             // Capabilities: bit 0, the optical debounce switch (VIA value 48);
             // bit 1, this half debounces its optical keys now. The half

@@ -18,8 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "quantum.h"
 #include "pointing_motion_vs.h"
-
-extern const int16_t mh_timer_choices[6];
+#include "sval_timing.h"
 
 struct layer_hsv {
     uint8_t hue;
@@ -38,13 +37,16 @@ struct __attribute__((__packed__)) saved_values {
     bool optical_debounce_off: 1; // Optical keys not debounced; 0, the default, debounces them (debounce_sval.c)
     uint8_t left_dpi_index;
     uint8_t right_dpi_index;
-    uint8_t mh_timer_index;
+    uint8_t mh_timer_index;       // auto mouse timeout, the old choice (mh_timer_choices); kept at the nearest one
     struct layer_hsv layer_colors[DYNAMIC_KEYMAP_LAYER_COUNT];
-    uint8_t turbo_scan;
+    // Was turbo_scan. Until the boot migration (sval_timing_migrate) it may
+    // hold the old turbo index (0-6); after it, the auto mouse layer timeout
+    // in 10 ms units (10-200), or 0 for "use mh_timer_index".
+    uint8_t automouse_10ms;
     uint16_t automouse_threshold; // Movement distance required for layer activation (0=disabled)
     uint8_t automouse_decay;      // Accumulator decay time in 10ms units (0=no decay)
-    uint16_t scan_prewait_us;     // Row-on settle time before reading (0 = use turbo table)
-    uint16_t scan_postwait_us;    // Row-off recovery time after reading (0 = use turbo table)
+    uint16_t scan_prewait_us;     // Row-on settle time before reading (never 0 after the boot migration)
+    uint16_t scan_postwait_us;    // Row-off recovery time after reading (never 0 after the boot migration)
     uint16_t scan_period_us;      // Frame period while active (0 = unpaced, scan back to back)
     uint16_t scan_idle_period_ms; // Light idle: frame period in ms once idle (<= active = no change)
     uint16_t scan_idle_after_ms;  // Light idle: timeout since last raw matrix change (0 = never)
@@ -136,8 +138,6 @@ typedef struct __attribute__((__packed__)) {
     uint8_t update[17]; // the updater's update_presence_t (D17), appended
 #endif
 } presence_rsp_t;
-
-#define SVAL_TURBO_CHOICES 7
 
 // Hardware revision, read once from SVAL_HW_REV_PIN (internal pull-up; the
 // board straps the pin to ground on revision B "flipfet").
