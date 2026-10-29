@@ -17,6 +17,18 @@ python3 -I "$tests/test_release_version.py" "$out/release_version"
 python3 -I "$tests/test_release_artifacts.py" "$out/release_artifacts"
 python3 -I "$tests/test_either_hand.py"
 
+# Debounce (kb/debounce_sval.c): optical keys off (same scan) and on
+# (sym_defer_g), the thumb Double Down debounced in both, mode changes, split sync.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all     -DSVAL_DEBOUNCE_HOST_TEST -I"$root/tests/sval_debounce" -I"$kb"     "$root/tests/sval_debounce/test_debounce.c" "$kb/debounce_sval.c" -o "$out/test_debounce"
+
+# Scan timing in us only (kb/sval_timing.c): the boot migration from each turbo
+# index, id_turbo_scan read and write, SV_TURBO_SCAN, split sync with older
+# halves; the auto mouse layer timeout, 100-2000 ms.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$kb" "$root/tests/sval_timing/test_timing.c" "$kb/sval_timing.c" -o "$out/test_timing"
+"$out/test_timing"
+"$out/test_debounce"
+
 # Settings reset on the first boot of a different firmware build (kb/build_reset.c).
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
     -DBUILD_RESET_HOST_TEST -I"$kb" "$tests/test_build_reset.c" "$kb/build_reset.c" -o "$out/test_build_reset"
@@ -30,6 +42,20 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fn
 # Raw HID framing (tmk_core/protocol/chibios/usb_packet.h) against ChibiOS's
 # real input buffers queue: a short packet never misframes the next report.
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_rawhid" -I"$root/lib/chibios/os/hal/include" -I"$root/tmk_core/protocol/chibios"     "$root/tests/sval_rawhid/test_packet.c" "$root/lib/chibios/os/hal/src/hal_buffers.c"     -o "$out/test_packet"
+
+# Typing pause (Sval 0x3C, keyboards/svalboard/typing_pause.c): the filter at
+# the host driver, the lease only the owning client extends, held keys at the end.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_typing_pause/stub" -I"$kb"     "$root/tests/sval_typing_pause/test_typing_pause.c" -o "$out/test_typing_pause"
+
+# Flicker latch (Sval 0x3D, keyboards/svalboard/flicker_latch.c): one-scan
+# bounces latch and count on the raw rows, reads clear them, both halves answer.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_flicker_latch/stub" -I"$kb"     "$root/tests/sval_flicker_latch/test_flicker_latch.c" -o "$out/test_flicker_latch"
+# The client ID lease (modules/svalboard/core/client_wrapper.c) across the
+# 32-bit timer wrap: the typing pause is tied to one ID.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_client_id/stub" -I"$root/modules/svalboard/core"     "$root/tests/sval_client_id/test_client_id.c" -o "$out/test_client_id"
+"$out/test_flicker_latch"
+"$out/test_typing_pause"
+"$out/test_client_id"
 "$out/test_packet"
 
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \

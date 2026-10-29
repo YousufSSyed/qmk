@@ -10,7 +10,7 @@ WS2812_DRIVER   = vendor
 
 CUSTOM_MATRIX = lite
 
-SRC += axis_scale.c matrix.c scanlab.c power.c identity.c pointing_detect.c pointer_reprobe.c build_reset.c velocity_scroll.c
+SRC += axis_scale.c sval_timing.c matrix.c scanlab.c power.c identity.c pointing_detect.c pointer_reprobe.c build_reset.c velocity_scroll.c typing_pause.c flicker_latch.c
 
 # Settings start at 0x160000; keep firmware below them.
 LDFLAGS += -Wl,-T,keyboards/svalboard/flash_reservation.ld
@@ -43,6 +43,13 @@ VIA_ENABLE = yes
 VIA_INSECURE = yes
 
 # Note: Sval module is enabled via keymap.json with "modules": ["svalboard/core"]
+
+# Debounce (debounce_sval.c): the optical keys follow a saved mode, on (the
+# default: QMK's sym_defer_g, 5 ms, as release firmware types) or off (straight
+# through); the thumb Double Down tact switch (thumb row, COL6, each half) is
+# debounced in both, 5 ms per key, deferred.
+DEBOUNCE_TYPE = custom
+SRC += debounce_sval.c
 
 # On-device action-path tests; opt in with -e SVAL_KEYTEST=yes.
 ifeq ($(strip $(SVAL_KEYTEST)), yes)

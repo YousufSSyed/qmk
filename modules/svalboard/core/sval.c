@@ -563,6 +563,7 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             // different firmware build was installed; cleared by 0x2A.
             data[18] = (sval_storage_was_reset() ? 1 : 0) | (sval_storage_write_failed() ? 2 : 0) | sval_storage_flags_kb();
             data[19] = sval_get_feature_flags2();
+            if (length > 20) data[20] = sval_get_feature_flags3_kb();
             break;
         }
 
@@ -878,6 +879,20 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
         }
 
 #ifdef SVAL_EITHER_HAND
+        case sval_cmd_typing_pause: {
+            // Request:  [0xDF] [0x3C] [op]
+            // Response: [0xDF] [0x3C] [op] [status] [...] (keyboards/svalboard/docs/protocol.md)
+            if (length > 3) sval_typing_pause_kb(&data[2], length - 2);
+            break;
+        }
+
+        case sval_cmd_flicker_latch: {
+            // Request:  [0xDF] [0x3D] [op] [arg]
+            // Response: [0xDF] [0x3D] [op] [status] [...] (keyboards/svalboard/docs/protocol.md)
+            if (length > 3) sval_flicker_latch_kb(&data[2], length - 2);
+            break;
+        }
+
         case sval_cmd_side: {
             // Request:  [0xDF] [0x33] [op] ...
             // Response: [0xDF] [0x33] [op] [status] ... (keyboards/svalboard/docs/protocol.md, "Side")
@@ -1193,6 +1208,21 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
 
 __attribute__((weak)) void sval_host_packet_kb(void) {}
 
+__attribute__((weak)) void sval_client_packet_kb(uint32_t client_id) {}
+
+__attribute__((weak)) uint8_t sval_get_feature_flags3_kb(void) {
+    return 0;
+}
+
+// Without the keyboard's handler: status 0xFF after the echoed op.
+__attribute__((weak)) void sval_typing_pause_kb(uint8_t *data, uint8_t length) {
+    data[1] = 0xFF;
+}
+
+__attribute__((weak)) void sval_flicker_latch_kb(uint8_t *data, uint8_t length) {
+    data[1] = 0xFF;
+}
+
 __attribute__((weak)) void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {}
 
 __attribute__((weak)) void sval_pointing_motion_kb(uint8_t *out, uint8_t length) {}
@@ -1206,6 +1236,7 @@ bool via_command_kb(uint8_t *data, uint8_t length) {
     // long as it's open, which would keep the board out of deep idle the whole time.
     bool live_poll = length > 6 && data[0] == WRAPPER_PREFIX && data[5] == SVAL_PREFIX && (data[6] == sval_cmd_pointing_motion || data[6] == sval_cmd_pointing_contacts);
     if (!live_poll) sval_host_packet_kb();
+    if (length > 4 && data[0] == WRAPPER_PREFIX) sval_client_packet_kb(data[1] | ((uint32_t)data[2] << 8) | ((uint32_t)data[3] << 16) | ((uint32_t)data[4] << 24));
     switch (data[0]) {
         case WRAPPER_PREFIX: // 0xDD - Client ID wrapper
             return client_wrapper_receive(data, length);

@@ -190,3 +190,88 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 - Discovery: GET_INFO byte 19, bit 7 (`sval_flag2_combo_labels`, `0x80`). Older firmware leaves it zero and answers label type `3` as an invalid type (`LABEL_SET` status `1`).
 - Requests and replies are those of the other label types: `DF 1C 03 <index lo> <index hi> <16 bytes, null-padded>` → `DF 1C <status>` (`0` saved, `1` invalid type or UTF-8, `2` index out of range); `DF 1D 03 <index lo> <index hi>` clears one; `DF 1B 03 <start lo> <start hi>` returns the next named combo at or after `start`.
 - The names are stored after the macro buffer, at the very end of the stored settings, with their own header. A board that updates to this firmware keeps everything it had and starts with no combo names; the macro buffer is 4104 bytes shorter (256 combos × 16 bytes, plus 8). A settings reset clears the names with everything else.
+
+## Typing pause
+
+`TYPING_PAUSE` (`0x3C`) stops the board's typing from reaching the computer while a host app's key tester is open. The keymap keeps running and layers work; only what would be typed is held back. The tester reads the switches with VIA's matrix state as before.
+
+- Discovery: GET_INFO byte 20 (the third feature byte), bit 2 (`sval_flag3_typing_pause`, `0x04`). Older firmware leaves it zero, and answers `0x3C` with the command byte `0xFF` (unknown command). (Byte 20 bit 0 is allocated by the main board branch, and bit 1 is left for the board ID record branch.)
+- Request: `DF 3C <op>`: `0` off, `1` on, `2` read the state. "On" also renews the pause, and the client that sends it owns the pause from then on. Any client may turn it off.
+- While on, the half with USB sends no keyboard or NKRO reports (letters, Tab, Enter, Esc, arrows, F-keys, GUI, Ctrl, Alt, Shift) and no consumer or system reports (media, volume, sleep). The mouse report still goes out: buttons, motion and scroll. Both halves are covered, since the half with USB sends every report.
+- Turning it on clears the modifiers, one-shot modifiers and keys, and sends an empty keyboard report first, so nothing is left held on the computer.
+- Lease: only the owner's packets keep the pause on: any wrapped packet with its client ID, such as the tester's matrix reads, or another "on". When the owner sends nothing for 1.5 s, the pause ends by itself. Another app's traffic, or another client of the same app, never extends it, so a closed or crashed tester can't leave the board mute. A host whose client ID is renewed sends "on" again with the new ID. The pause also ends when USB leaves the active state (suspend, reset, unplug).
+- Ending, by command, lease or USB: keys held at that moment are released inside the pause, and their real release is ignored later, so they never type. Output stays held back for 0.5 s more (state `2`) so a pending tap, tap dance or combo comes to nothing; presses in that time are ignored until released. Then an empty keyboard report goes to the computer and typing works again. An "on" during those 0.5 s keeps the pause.
+- Response: `DF 3C` then 16 bytes (offsets from the first of them):
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | op, echoed |
+| 1 | 1 | status: `0` done, `1` unknown op, `2` refused (not the half with USB, USB not active, or no valid client ID), `3` report too short |
+| 2 | 1 | state: `0` off, `1` paused, `2` ending (output still held back) |
+| 3 | 1 | how the last pause ended: `0` none yet, `1` command, `2` the owner went quiet, `3` USB |
+| 4 | 1 | bit 0: the pause is on and the sender owns it |
+| 5 | 2 | ms left on the lease, while paused |
+| 7 | 2 | keyboard and NKRO reports held back since the pause began (saturates) |
+| 9 | 2 | consumer and system reports held back |
+| 11 | 2 | mouse reports sent through |
+| 13 | 1 | keys released when the last pause ended |
+| 14 | 1 | empty keyboard reports sent when turning on or ending, since boot (wraps) |
+| 15 | 1 | keys whose release is still being ignored |
+
+## Flicker latch
+
+`FLICKER_LATCH` (`0x3D`) lets a key tester see every change of every switch, even a bounce that lasts one scan. Debounce hides those from the keymap and from VIA's matrix state, which reads the debounced matrix. Each half watches its raw rows on every scan, before debounce: a switch that went down since the last read sets its pressed-since bit, one that went up sets its released-since bit, and every change adds one to that switch's count (8 bits, stops at 255). Reading clears what it returns. Debounce and what gets typed are unchanged.
+
+- Discovery: GET_INFO byte 20, bit 3 (`sval_flag3_flicker_latch`, `0x08`). Older firmware leaves it zero, and answers `0x3D` with the command byte `0xFF` (unknown command).
+- The half with USB answers for both halves; it asks the other half over the split link on each read. A block the other half didn't send (not connected, or the link paused for an update) is flagged as missing.
+- Request `DF 3D 00`: the raw rows and the latches of both halves; clears the latches. Response, offsets from the first byte after `3D`:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | op `0`, echoed |
+| 1 | 1 | status: `0` done, `1` unknown op, `2` not the half with USB, `3` report too short |
+| 2 | 1 | bit 0: the left half's rows (0-4) are valid; bit 1: the right half's (5-9) |
+| 3 | 1 | rows (`10`) |
+| 4 | 10 | raw rows now, one byte per row, bit = column |
+| 14 | 10 | pressed since the last read |
+| 24 | 10 | released since the last read |
+
+- Request `DF 3D 01 <half>` (`0` left, `1` right): that half's change counts, one byte per switch (row by row, 6 columns each), then cleared. Response: `[op 1] [status] [bit 0: valid] [half] [30 counts]`.
+- Both need the 64-byte report (34 bytes after `3D`); a client-wrapped 32-byte report is answered with status `3`.
+- A host that reads both ops on a schedule keeps a running count per switch; a switch's presses since the last read are its changes, halved, rounded up when it was up at the last read and down when it was down.
+
+## Debounce mode
+
+The optical keys have a saved debounce mode; Keybard's Scan Lab switches it. The thumb Double Down, the one mechanical switch, is debounced in both modes: 5 ms per key, deferred (a change is reported once it has held for 5 ms).
+
+- **On** (the default): QMK's `sym_defer_g` on the optical keys, as release firmware types. Once no optical key on a half has changed for 5 ms, that half's optical keys are reported, all at once. A board that has never changed the setting reads on.
+- **Off**: no debounce. A raw change reaches the keymap on the scan that sees it.
+
+The setting is a VIA custom value, not a Sval command:
+
+- Discovery: Scan Lab (VIA custom-value channel `0x53`) `STATUS` reply byte 23: bit 0, the firmware has this setting; bit 1, that half debounces its optical keys now. Older firmware sends 23 bytes, so the byte reads zero.
+- Read: VIA `id_custom_get_value` (`0x08`), channel `0`, value ID `48` (`id_optical_debounce`): `1` on, `0` off.
+- Write: `id_custom_set_value` (`0x07`), channel `0`, value ID `48`, `[1]` or `[0]`; then `id_custom_save` (`0x09`), channel `0`, stores it with the other keyboard settings. It works at once, saved or not.
+- Both halves use the same mode. The half with USB owns the setting and sends its mode in the split presence ping (every 0.5 s; its last byte), as it sends the scan timing; the other half uses it and doesn't store it. Until the first ping, and with an older half on USB, the other half uses its own saved mode. Each half's `STATUS` bit 1 shows the mode it uses, so a host can see the other half follow.
+- Stored in the last spare bit of the keyboard settings' first byte (`optical_debounce_off`, 0 = on), so the settings keep their size and layout stamp: updating to this firmware keeps them.
+
+## Scan timing
+
+The board scans its keys with two saved waits per row, in microseconds: before reading the row (`id_scan_prewait_us`, VIA value `13`) and after it (`id_scan_postwait_us`, `14`). They are the timing the board runs, always; there is no other timing setting. Both are 16-bit little-endian, on channel `0`; `id_custom_save` (`0x09`) stores them. A Scan Lab sweep overrides them while it runs, and the updater raises them while it waits for its chord.
+
+- Defaults: 90 / 90 µs on revision A boards; 45 / 5 µs on revision B and the Mini.
+- A write of `0` stores 90 (older hosts wrote 0 to mean "the turbo table"). Read back after a write: the reply is what the board runs.
+- Presets: 90, 60, 45, 30, 25, 20 and 15 µs, the same for both waits (the old turbo table, `sval_turbo_us`). A host offers them by writing both waits.
+- `id_turbo_scan` (VIA value `9`) is kept for older hosts. A write of `0`-`6` sets both waits to that preset; other values change nothing. A read returns the preset both waits match, or `0xFF` when they match none. Scan Lab `STATUS` byte 21 reads the same.
+- The `SV_TURBO_SCAN` key steps both waits to the first preset faster than the slower wait now, and from 15 µs (or faster) back to 90, and saves them. On a board at 45 / 5 µs it goes to 30 / 30.
+- Upgrading: firmware before this stored `0` in a wait to mean "use the turbo table at the saved turbo index". At the first boot, a wait of `0` is filled in from the table with that index, and saved, so every board keeps the timing it ran. A board on turbo 6 with both waits at 0 reads 15 / 15 afterwards; one on turbo 0, 90 / 90; explicit waits are kept as they are. The settings keep their size and layout stamp, so nothing else resets. The byte that held the turbo index now holds the auto mouse layer timeout (below).
+- Split: the half with USB sends both waits in the presence ping (every 0.5 s), as before, with the matching preset (0 for none) in the turbo byte. The other half uses them and doesn't store them. Waits are never 0 now, so an older half without USB runs them too. A new half without USB under an older half with USB that still sends 0 fills a 0 wait in from the turbo byte, as before.
+
+## Auto mouse layer timeout
+
+How long the auto mouse layer stays on after the pointer stops, in milliseconds.
+
+- `id_automouse_timeout_ms` (VIA value `49`), 16-bit little-endian: 100 to 2000 ms. A write is clamped to that range and rounded to 10 ms; read it back for the stored value. Default 500.
+- `id_automouse_no_timeout` (VIA value `50`): `1`, the layer stays on until it is turned off another way (the old "Infinite"); `0`, it times out after value 49. Value 49 keeps its time while this is on.
+- `id_automouse_timeout` (VIA value `5`), kept for older hosts: the old choice, `0`-`5` = 200, 300, 400, 500, 800 ms, no timeout. A write sets value 49 to that time (or turns value 50 on for `5`); a read returns the nearest old choice. The `SV_MH_CHANGE_TIMEOUTS` key steps through the old choices, as before.
+- Storage: the time is kept in 10 ms units in the byte that held the turbo index, and the old choice byte keeps the nearest old choice, so firmware from before this on the same settings still finds a valid one. Values 100-2000 fit in that byte (10-200); a turbo index left there (0-6) is cleared at the first boot.
