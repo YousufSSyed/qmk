@@ -190,3 +190,30 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 - Discovery: GET_INFO byte 19, bit 7 (`sval_flag2_combo_labels`, `0x80`). Older firmware leaves it zero and answers label type `3` as an invalid type (`LABEL_SET` status `1`).
 - Requests and replies are those of the other label types: `DF 1C 03 <index lo> <index hi> <16 bytes, null-padded>` → `DF 1C <status>` (`0` saved, `1` invalid type or UTF-8, `2` index out of range); `DF 1D 03 <index lo> <index hi>` clears one; `DF 1B 03 <start lo> <start hi>` returns the next named combo at or after `start`.
 - The names are stored after the macro buffer, at the very end of the stored settings, with their own header. A board that updates to this firmware keeps everything it had and starts with no combo names; the macro buffer is 4104 bytes shorter (256 combos × 16 bytes, plus 8). A settings reset clears the names with everything else.
+
+## Typing pause
+
+`TYPING_PAUSE` (`0x3C`) stops the board's typing from reaching the computer while a host app's key tester is open. The keymap keeps running and layers work; only what would be typed is held back. The tester reads the switches with VIA's matrix state as before.
+
+- Discovery: GET_INFO byte 20 (the third feature byte), bit 2 (`sval_flag3_typing_pause`, `0x04`). Older firmware leaves it zero, and answers `0x3C` with status `0xFF`. (Byte 20 bit 0 is allocated by the main board branch, and bit 1 is left for the board ID record branch.)
+- Request: `DF 3C <op>`: `0` off, `1` on, `2` read the state. "On" also renews the pause, and the client that sends it owns the pause from then on. Any client may turn it off.
+- While on, the half with USB sends no keyboard or NKRO reports (letters, Tab, Enter, Esc, arrows, F-keys, GUI, Ctrl, Alt, Shift) and no consumer or system reports (media, volume, sleep). The mouse report still goes out: buttons, motion and scroll. Both halves are covered, since the half with USB sends every report.
+- Turning it on clears the modifiers, one-shot modifiers and keys, and sends an empty keyboard report first, so nothing is left held on the computer.
+- Lease: only the owner's packets keep the pause on: any wrapped packet with its client ID, such as the tester's matrix reads, or another "on". When the owner sends nothing for 1.5 s, the pause ends by itself. Another app's traffic, or another client of the same app, never extends it, so a closed or crashed tester can't leave the board mute. A host whose client ID is renewed sends "on" again with the new ID. The pause also ends when USB leaves the active state (suspend, reset, unplug).
+- Ending, by command, lease or USB: keys held at that moment are released inside the pause, and their real release is ignored later, so they never type. Output stays held back for 0.5 s more (state `2`) so a pending tap, tap dance or combo comes to nothing; presses in that time are ignored until released. Then an empty keyboard report goes to the computer and typing works again. An "on" during those 0.5 s keeps the pause.
+- Response: `DF 3C` then 16 bytes (offsets from the first of them):
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | op, echoed |
+| 1 | 1 | status: `0` done, `1` unknown op, `2` refused (not the half with USB, USB not active, or no valid client ID), `3` report too short, `0xFF` firmware without the command |
+| 2 | 1 | state: `0` off, `1` paused, `2` ending (output still held back) |
+| 3 | 1 | how the last pause ended: `0` none yet, `1` command, `2` the owner went quiet, `3` USB |
+| 4 | 1 | bit 0: the pause is on and the sender owns it |
+| 5 | 2 | ms left on the lease, while paused |
+| 7 | 2 | keyboard and NKRO reports held back since the pause began (saturates) |
+| 9 | 2 | consumer and system reports held back |
+| 11 | 2 | mouse reports sent through |
+| 13 | 1 | keys released when the last pause ended |
+| 14 | 1 | empty keyboard reports sent when turning on or ending, since boot (wraps) |
+| 15 | 1 | keys whose release is still being ignored |

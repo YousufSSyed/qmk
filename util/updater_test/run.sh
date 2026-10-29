@@ -30,6 +30,11 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fn
 # Raw HID framing (tmk_core/protocol/chibios/usb_packet.h) against ChibiOS's
 # real input buffers queue: a short packet never misframes the next report.
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_rawhid" -I"$root/lib/chibios/os/hal/include" -I"$root/tmk_core/protocol/chibios"     "$root/tests/sval_rawhid/test_packet.c" "$root/lib/chibios/os/hal/src/hal_buffers.c"     -o "$out/test_packet"
+
+# Typing pause (Sval 0x3C, keyboards/svalboard/typing_pause.c): the filter at
+# the host driver, the lease only the owning client extends, held keys at the end.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_typing_pause/stub" -I"$kb"     "$root/tests/sval_typing_pause/test_typing_pause.c" -o "$out/test_typing_pause"
+"$out/test_typing_pause"
 "$out/test_packet"
 
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \

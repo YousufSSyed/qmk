@@ -13,6 +13,7 @@
 #include "suspend.h"
 #include "scanlab.h"
 #include "keytest.h"
+#include "typing_pause.h"
 #include "sval.h"
 #include "pointing_motion.h" // after sval.h: needs the generated fragment ids
 #include "identity.h"
@@ -415,6 +416,21 @@ void sval_host_packet_kb(void) {
 
 uint32_t sval_host_idle_ms(void) {
     return host_seen_any ? timer_elapsed32(host_last_ms) : UINT32_MAX;
+}
+
+// ---- Typing pause (Sval 0x3C, typing_pause.c). Its lease follows one client's
+// packets, never the host-activity stamp above: another app polling the board
+// must not keep it mute.
+void sval_client_packet_kb(uint32_t client_id) {
+    sval_typing_pause_client_packet(client_id);
+}
+
+uint8_t sval_get_feature_flags3_kb(void) {
+    return sval_flag3_typing_pause;
+}
+
+void sval_typing_pause_kb(uint8_t *data, uint8_t length) {
+    sval_typing_pause_command(data, length);
 }
 
 bool sval_host_recent(void) {
@@ -832,6 +848,7 @@ void housekeeping_task_kb(void) {
     sval_side_task();
 #endif
     sval_usb_wake_handler();
+    if (is_keyboard_master()) sval_typing_pause_task();
     scanlab_housekeeping();
 #ifdef SVAL_KEYTEST
     keytest_task();

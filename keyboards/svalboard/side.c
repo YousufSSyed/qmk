@@ -5,6 +5,7 @@
 
 #include <string.h>
 #include "side.h"
+#include "typing_pause.h"
 
 // The strap classes this file reads (enum sval_thumb_hand, svalboard.h).
 #define STRAP_LEFT 1
@@ -317,6 +318,7 @@ bool sval_side_input_blocked(void) {
 
 bool pre_process_record_kb(uint16_t keycode, keyrecord_t *record) {
     if (IS_KEYEVENT(record->event) && !sval_side_row_allowed(record->event.key.row)) return false;
+    if (!sval_typing_pause_pre_process(record)) return false; // a key held when a typing pause ended
     return pre_process_record_user(keycode, record);
 }
 
