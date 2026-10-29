@@ -95,9 +95,9 @@ enum sval_command_id {
     sval_cmd_side                 = 0x33, // advertised by sval_flag2_side (either-hand builds)
     // 0x34-0x37 are allocated by the pointing tools branch, 0x38 by the main
     // board branch and 0x3A by the board ID record branch.
-    sval_cmd_typing_pause         = 0x3C, // advertised by sval_flag3_typing_pause
-    sval_cmd_flicker_latch        = 0x3D, // advertised by sval_flag3_flicker_latch
-    sval_cmd_error                = 0xFF,
+    sval_cmd_typing_pause  = 0x3C, // advertised by sval_flag3_typing_pause
+    sval_cmd_flicker_latch = 0x3D, // advertised by sval_flag3_flicker_latch
+    sval_cmd_error         = 0xFF,
 };
 
 // Feature capability flags (returned in protocol info)
@@ -128,7 +128,7 @@ enum sval_feature_flags2 {
 enum sval_feature_flags3 {
     // Bit 0 is allocated by the main board branch (0x38); bit 1 is left for
     // the board ID record branch.
-    sval_flag3_typing_pause = (1 << 2), // 0x3C pauses keyboard output while a key tester is open
+    sval_flag3_typing_pause  = (1 << 2), // 0x3C pauses keyboard output while a key tester is open
     sval_flag3_flicker_latch = (1 << 3), // 0x3D reads each switch's raw changes since the last read
 };
 

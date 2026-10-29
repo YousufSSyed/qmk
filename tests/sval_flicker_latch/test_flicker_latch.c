@@ -19,18 +19,26 @@ static int checks, failures;
 static bool    left = true, connected = true;
 static uint8_t other_reply[SVAL_FLICKER_RPC_REPLY];
 static int     rpcs;
-bool is_keyboard_master(void) { return true; }
-bool is_keyboard_left(void) { return left; }
-bool is_transport_connected(void) { return connected; }
+bool           is_keyboard_master(void) {
+    return true;
+}
+bool is_keyboard_left(void) {
+    return left;
+}
+bool is_transport_connected(void) {
+    return connected;
+}
 bool transaction_rpc_exec(int id, uint8_t in_len, const void *in, uint8_t out_len, void *out) {
-    (void)id; (void)in_len; (void)in;
+    (void)id;
+    (void)in_len;
+    (void)in;
     rpcs++;
     memcpy(out, other_reply, out_len < sizeof(other_reply) ? out_len : sizeof(other_reply));
     return true;
 }
 
 static uint8_t buf[57];
-static void read_latch(void) {
+static void    read_latch(void) {
     memset(buf, 0, sizeof(buf));
     buf[0] = SVAL_FLICKER_READ;
     sval_flicker_command(buf, sizeof(buf));
@@ -72,7 +80,8 @@ static void test_held_key_and_counts_saturate(void) {
     frame(1, 0);
     read_latch();
     CHECK(RAW(0) == 1 && PRESSED(0) == 1 && RELEASED(0) == 0);
-    for (int i = 0; i < 300; i++) frame(i & 1 ? 1 : 0, 0);
+    for (int i = 0; i < 300; i++)
+        frame(i & 1 ? 1 : 0, 0);
     read_counts(0);
     CHECK(buf[4 + 0] == 255);
 }
@@ -92,7 +101,7 @@ static void test_other_half_merged(void) {
     CHECK(buf[2] == 1); // only the left block
     connected = true;
     memset(other_reply, 0, sizeof(other_reply));
-    other_reply[0] = SVAL_FLICKER_RPC_OP;
+    other_reply[0]                       = SVAL_FLICKER_RPC_OP;
     other_reply[1 + 2 * MATRIX_COLS + 3] = 5;
     read_counts(1);
     CHECK(buf[2] == 1 && buf[3] == 1 && buf[4 + 2 * MATRIX_COLS + 3] == 5);

@@ -33,7 +33,8 @@ static void old_firmware_timing(uint8_t turbo, uint16_t pre, uint16_t post, uint
 }
 
 static void test_table(void) {
-    for (int i = 0; i < SVAL_TURBO_CHOICES; i++) CHECK(sval_turbo_us[i] == table[i], "table[%d] = %u", i, sval_turbo_us[i]);
+    for (int i = 0; i < SVAL_TURBO_CHOICES; i++)
+        CHECK(sval_turbo_us[i] == table[i], "table[%d] = %u", i, sval_turbo_us[i]);
 }
 
 // Every board keeps exactly the timing it ran: each turbo index, with both,
@@ -172,9 +173,7 @@ static void test_automouse(void) {
         uint16_t in, out;
         uint8_t  choice;
     } ms_cases[] = {
-        {0, 100, 0},    {50, 100, 0},    {99, 100, 0},   {100, 100, 0},   {104, 100, 0},  {105, 110, 0},
-        {250, 250, 0},  {251, 250, 0},   {640, 640, 3},  {1000, 1000, 4}, {1999, 2000, 4}, {2000, 2000, 4},
-        {2001, 2000, 4}, {2550, 2000, 4}, {65535, 2000, 4}, {500, 500, 3},  {360, 360, 2},
+        {0, 100, 0}, {50, 100, 0}, {99, 100, 0}, {100, 100, 0}, {104, 100, 0}, {105, 110, 0}, {250, 250, 0}, {251, 250, 0}, {640, 640, 3}, {1000, 1000, 4}, {1999, 2000, 4}, {2000, 2000, 4}, {2001, 2000, 4}, {2550, 2000, 4}, {65535, 2000, 4}, {500, 500, 3}, {360, 360, 2},
     };
     for (unsigned i = 0; i < sizeof(ms_cases) / sizeof(ms_cases[0]); i++) {
         mh = 3, u = 50;

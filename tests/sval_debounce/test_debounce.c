@@ -157,12 +157,16 @@ static void test_dd_bounce(bool on) {
     reset_mode(2000, on);
     int at = -1;
     //                      bounces for 6 ms, then held
-    int n  = feed_dd("101101" "1111111111", &at);
+    int n = feed_dd("101101"
+                    "1111111111",
+                    &at);
     CHECK(n == 1, "mode %d: bouncing press: %d changes (want 1)", on, n);
     CHECK(dd_cooked(), "mode %d: bouncing press settles down", on);
     CHECK(at == 5 + DD_MS, "mode %d: bouncing press settled at %d ms (want %d)", on, at, 5 + DD_MS);
 
-    n = feed_dd("010010" "0000000000", &at);
+    n = feed_dd("010010"
+                "0000000000",
+                &at);
     CHECK(n == 1, "mode %d: bouncing release: %d changes (want 1)", on, n);
     CHECK(!dd_cooked(), "mode %d: bouncing release settles up", on);
 
@@ -180,7 +184,7 @@ static void test_dd_bounce_does_not_delay_optical(void) {
     reset(3000);
     const char *bounce = "1010110101101010";
     for (int i = 0; bounce[i]; i++) {
-        raw[0] = (raw[0] & (matrix_row_t)~DD) | (bounce[i] == '1' ? DD : 0);
+        raw[0]           = (raw[0] & (matrix_row_t)~DD) | (bounce[i] == '1' ? DD : 0);
         int          r   = i % MATRIX_ROWS_PER_HAND;
         matrix_row_t bit = (matrix_row_t)1 << (i % DOUBLEDOWN_COL); // never the DD column
         raw[r] ^= bit;
@@ -199,7 +203,7 @@ static void test_dd_bounce_does_not_delay_optical(void) {
 // keys changing every ms never delay Double Down.
 static void test_dd_and_optical_independent_when_on(void) {
     reset_mode(3500, true);
-    raw[2] = 0x01; // an optical press
+    raw[2]             = 0x01; // an optical press
     const char *bounce = "10101101";
     for (int i = 0; bounce[i]; i++) {
         raw[0] = (raw[0] & (matrix_row_t)~DD) | (bounce[i] == '1' ? DD : 0);
@@ -314,10 +318,12 @@ static void test_on_matches_sym_defer_g(void) {
             if (r == 0 && c == DOUBLEDOWN_COL) c = 0;
             raw[r] ^= (matrix_row_t)1 << c;
         } else if (roll < 9) { // a chord
-            for (int k = 0; k < 3; k++) raw[1 + rand() % 4] ^= (matrix_row_t)1 << (rand() % 6);
+            for (int k = 0; k < 3; k++)
+                raw[1 + rand() % 4] ^= (matrix_row_t)1 << (rand() % 6);
         }
         matrix_row_t opt[MATRIX_ROWS_PER_HAND];
-        for (int r = 0; r < MATRIX_ROWS_PER_HAND; r++) opt[r] = raw[r] & (r == 0 ? (matrix_row_t)~DD : (matrix_row_t)~0);
+        for (int r = 0; r < MATRIX_ROWS_PER_HAND; r++)
+            opt[r] = raw[r] & (r == 0 ? (matrix_row_t)~DD : (matrix_row_t)~0);
         matrix_row_t before[MATRIX_ROWS_PER_HAND];
         memcpy(before, cooked, sizeof(before));
         bool reported = scan();

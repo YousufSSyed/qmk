@@ -9,21 +9,21 @@
 #include "../../keyboards/svalboard/typing_pause.c"
 
 static int checks, failures;
-#define CHECK(c)                                                  \
-    do {                                                          \
-        checks++;                                                 \
-        if (!(c)) {                                               \
-            failures++;                                           \
-            printf("FAIL %s:%d %s\n", __func__, __LINE__, #c);    \
-        }                                                         \
+#define CHECK(c)                                               \
+    do {                                                       \
+        checks++;                                              \
+        if (!(c)) {                                            \
+            failures++;                                        \
+            printf("FAIL %s:%d %s\n", __func__, __LINE__, #c); \
+        }                                                      \
     } while (0)
 
 /* ---- mocks ---- */
-usb_driver_t    USB_DRIVER;
-keymap_config_t keymap_config;
-static uint32_t now;
-static matrix_row_t phys[MATRIX_ROWS];   // switches down
-static matrix_row_t keymap[MATRIX_ROWS]; // what the keymap thinks is down
+usb_driver_t          USB_DRIVER;
+keymap_config_t       keymap_config;
+static uint32_t       now;
+static matrix_row_t   phys[MATRIX_ROWS];   // switches down
+static matrix_row_t   keymap[MATRIX_ROWS]; // what the keymap thinks is down
 static host_driver_t *driver;
 // What reached the computer.
 static int usb_keyboard, usb_keyboard_empty, usb_nkro, usb_mouse, usb_extra;
@@ -32,7 +32,8 @@ static int keymap_presses, keymap_releases;
 static void usb_send_keyboard(report_keyboard_t *r) {
     usb_keyboard++;
     bool empty = !r->mods;
-    for (int i = 0; i < 6; i++) empty = empty && !r->keys[i];
+    for (int i = 0; i < 6; i++)
+        empty = empty && !r->keys[i];
     if (empty) usb_keyboard_empty++;
 }
 static void usb_send_nkro(report_nkro_t *r) {
@@ -49,12 +50,22 @@ static void usb_send_extra(report_extra_t *r) {
 }
 static host_driver_t usb = {NULL, usb_send_keyboard, usb_send_nkro, usb_send_mouse, usb_send_extra};
 
-host_driver_t *host_get_driver(void) { return driver; }
-void           host_set_driver(host_driver_t *d) { driver = d; }
-void           host_keyboard_send(report_keyboard_t *r) { if (driver) driver->send_keyboard(r); }
-void           host_nkro_send(report_nkro_t *r) { if (driver) driver->send_nkro(r); }
-bool           host_can_send_nkro(void) { return true; }
-static void    send_key_report(uint8_t key) {
+host_driver_t *host_get_driver(void) {
+    return driver;
+}
+void host_set_driver(host_driver_t *d) {
+    driver = d;
+}
+void host_keyboard_send(report_keyboard_t *r) {
+    if (driver) driver->send_keyboard(r);
+}
+void host_nkro_send(report_nkro_t *r) {
+    if (driver) driver->send_nkro(r);
+}
+bool host_can_send_nkro(void) {
+    return true;
+}
+static void send_key_report(uint8_t key) {
     report_keyboard_t r = {0};
     r.keys[0]           = key;
     host_keyboard_send(&r);
@@ -72,14 +83,26 @@ void clear_keyboard(void) {
     memset(keymap, 0, sizeof(keymap));
     send_key_report(0);
 }
-void         clear_oneshot_mods(void) {}
-void         clear_oneshot_layer_state(int s) { (void)s; }
-uint32_t     timer_read32(void) { return now; }
-uint32_t     timer_elapsed32(uint32_t t) { return now - t; }
-bool         is_keyboard_master(void) { return true; }
+void clear_oneshot_mods(void) {}
+void clear_oneshot_layer_state(int s) {
+    (void)s;
+}
+uint32_t timer_read32(void) {
+    return now;
+}
+uint32_t timer_elapsed32(uint32_t t) {
+    return now - t;
+}
+bool is_keyboard_master(void) {
+    return true;
+}
 static uint32_t expired_id; // a client ID whose lease (CLIENT_WRAPPER_TTL_SECS) has run out
-bool         client_wrapper_valid_id(uint32_t id) { return id != 0 && id != 0xFFFFFFFF && id != expired_id; }
-matrix_row_t matrix_get_row(uint8_t row) { return phys[row]; }
+bool            client_wrapper_valid_id(uint32_t id) {
+    return id != 0 && id != 0xFFFFFFFF && id != expired_id;
+}
+matrix_row_t matrix_get_row(uint8_t row) {
+    return phys[row];
+}
 
 // QMK's action_exec: pre_process_record_kb, then the keymap types the key.
 void action_exec(keyevent_t e) {
@@ -100,18 +123,20 @@ void action_exec(keyevent_t e) {
 /* ---- helpers ---- */
 static void reset(void) {
     // A fresh module per test: the statics in typing_pause.c.
-    state = SVAL_TYPING_PAUSE_STATE_OFF;
-    last_end = 0; owner = owner_seen = drain_started = current_client = 0;
-    saved_driver = NULL; synthesizing = false;
+    state    = SVAL_TYPING_PAUSE_STATE_OFF;
+    last_end = 0;
+    owner = owner_seen = drain_started = current_client = 0;
+    saved_driver                                        = NULL;
+    synthesizing                                        = false;
     memset(swallow, 0, sizeof(swallow));
     blocked_keyboard = blocked_extra = passed_mouse = 0;
     released_keys = empty_sent = 0;
-    now = 1000;
-    expired_id = 0;
+    now                        = 1000;
+    expired_id                 = 0;
     memset(phys, 0, sizeof(phys));
     memset(keymap, 0, sizeof(keymap));
-    driver = &usb;
-    USB_DRIVER.state = USB_ACTIVE;
+    driver             = &usb;
+    USB_DRIVER.state   = USB_ACTIVE;
     keymap_config.nkro = false;
     usb_keyboard = usb_keyboard_empty = usb_nkro = usb_mouse = usb_extra = 0;
     keymap_presses = keymap_releases = 0;
@@ -125,7 +150,9 @@ static uint8_t cmd(uint32_t client, uint8_t op) {
     sval_typing_pause_command(reply, sizeof(reply));
     return reply[1];
 }
-static void poll(uint32_t client) { sval_typing_pause_client_packet(client); } // e.g. a VIA matrix read
+static void poll(uint32_t client) {
+    sval_typing_pause_client_packet(client);
+} // e.g. a VIA matrix read
 static void advance(uint32_t ms) {
     for (uint32_t i = 0; i < ms; i += 10) {
         now += 10;
@@ -149,17 +176,17 @@ static void test_on_blocks_keyboard_and_media_passes_mouse(void) {
     reset();
     CHECK(cmd(A, SVAL_TYPING_PAUSE_ON) == SVAL_TYPING_PAUSE_OK);
     CHECK(reply[2] == SVAL_TYPING_PAUSE_STATE_PAUSED);
-    CHECK(reply[4] == 1); // A owns it
+    CHECK(reply[4] == 1);           // A owns it
     CHECK(usb_keyboard_empty >= 1); // turning on sends an empty report
     int before = usb_keyboard;
     press(0, 1);
     release(0, 1);
     press(7, 2); // the other half's rows: same path on the USB half
     release(7, 2);
-    CHECK(usb_keyboard == before);  // nothing typed reached the computer
-    CHECK(keymap_presses == 2);     // the keymap still ran
+    CHECK(usb_keyboard == before); // nothing typed reached the computer
+    CHECK(keymap_presses == 2);    // the keymap still ran
     keymap_config.nkro = true;
-    report_nkro_t n = {0};
+    report_nkro_t n    = {0};
     host_nkro_send(&n);
     CHECK(usb_nkro == 0);
     send_media(0xE9); // volume up
@@ -221,7 +248,7 @@ static void test_off_releases_held_keys_inside_pause(void) {
     cmd(A, SVAL_TYPING_PAUSE_ON);
     press(0, 0); // held while the tester closes (Esc held to exit)
     press(8, 3); // and one on the other half
-    int typed = usb_keyboard;
+    int typed   = usb_keyboard;
     int empties = usb_keyboard_empty;
     CHECK(cmd(A, SVAL_TYPING_PAUSE_OFF) == SVAL_TYPING_PAUSE_OK);
     CHECK(reply[2] == SVAL_TYPING_PAUSE_STATE_RELEASING);
@@ -241,7 +268,7 @@ static void test_off_releases_held_keys_inside_pause(void) {
     release(2, 2);
     CHECK(usb_keyboard == after);
     CHECK(keymap_releases == 2); // only the two synthetic ones
-    press(0, 0); // typing works again
+    press(0, 0);                 // typing works again
     CHECK(usb_keyboard == after + 1);
     cmd(A, SVAL_TYPING_PAUSE_STATUS);
     CHECK(reply[13] == 2); // keys released at the end
@@ -400,7 +427,7 @@ static void test_expired_owner_id_does_not_extend(void) {
     advance(500);
     poll(A);
     uint32_t last = now;
-    expired_id = A;
+    expired_id    = A;
     for (int i = 0; i < 40; i++) { // 2 s of stale packets
         advance(50);
         poll(A);
