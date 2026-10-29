@@ -77,7 +77,8 @@ void         clear_oneshot_layer_state(int s) { (void)s; }
 uint32_t     timer_read32(void) { return now; }
 uint32_t     timer_elapsed32(uint32_t t) { return now - t; }
 bool         is_keyboard_master(void) { return true; }
-bool         client_wrapper_valid_id(uint32_t id) { return id != 0 && id != 0xFFFFFFFF; }
+static uint32_t expired_id; // a client ID whose lease (CLIENT_WRAPPER_TTL_SECS) has run out
+bool         client_wrapper_valid_id(uint32_t id) { return id != 0 && id != 0xFFFFFFFF && id != expired_id; }
 matrix_row_t matrix_get_row(uint8_t row) { return phys[row]; }
 
 // QMK's action_exec: pre_process_record_kb, then the keymap types the key.
@@ -106,6 +107,7 @@ static void reset(void) {
     blocked_keyboard = blocked_extra = passed_mouse = 0;
     released_keys = empty_sent = 0;
     now = 1000;
+    expired_id = 0;
     memset(phys, 0, sizeof(phys));
     memset(keymap, 0, sizeof(keymap));
     driver = &usb;
@@ -298,7 +300,171 @@ static void test_bad_op_and_short(void) {
     CHECK(!sval_typing_pause_active());
 }
 
+/* ---- the board never stays mute ---- */
+
+static uint16_t lease_left(void) {
+    return reply[5] | (reply[6] << 8);
+}
+
+// The lease and the drain across the 32-bit millisecond timer's wrap (49.7 days
+// after boot): owner_seen just below UINT32_MAX, "now" past zero.
+static void test_lease_ends_across_timer_wrap(void) {
+    reset();
+    now = UINT32_MAX - 700;
+    cmd(A, SVAL_TYPING_PAUSE_ON);
+    for (int i = 0; i < 20; i++) { // 1 s of owner polls, across the wrap
+        advance(50);
+        poll(A);
+    }
+    CHECK(now < 1000); // wrapped
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_PAUSED);
+    uint32_t last = now;
+    advance(1490);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_PAUSED);
+    advance(20);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_RELEASING);
+    CHECK(last_end == SVAL_TYPING_PAUSE_END_LEASE);
+    CHECK(now - last <= SVAL_TYPING_PAUSE_LEASE_MS + 10);
+    advance(SVAL_TYPING_PAUSE_DRAIN_MS + 20);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_OFF);
+    CHECK(driver == &usb);
+}
+
+// The owner's last packet lands just below UINT32_MAX and the lease runs out
+// after the wrap.
+static void test_owner_seen_near_uint32_max(void) {
+    reset();
+    now = UINT32_MAX - 30;
+    cmd(A, SVAL_TYPING_PAUSE_ON);
+    CHECK(owner_seen == UINT32_MAX - 30);
+    cmd(B, SVAL_TYPING_PAUSE_STATUS);
+    CHECK(lease_left() == SVAL_TYPING_PAUSE_LEASE_MS);
+    advance(100); // past zero
+    cmd(B, SVAL_TYPING_PAUSE_STATUS);
+    CHECK(reply[2] == SVAL_TYPING_PAUSE_STATE_PAUSED);
+    CHECK(lease_left() == SVAL_TYPING_PAUSE_LEASE_MS - 100);
+    advance(1390);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_PAUSED);
+    advance(20);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_RELEASING);
+    advance(SVAL_TYPING_PAUSE_DRAIN_MS + 20);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_OFF);
+    CHECK(driver == &usb);
+}
+
+// The drain starts just below UINT32_MAX and ends after the wrap.
+static void test_drain_across_timer_wrap(void) {
+    reset();
+    now = UINT32_MAX - 200;
+    cmd(A, SVAL_TYPING_PAUSE_ON);
+    cmd(A, SVAL_TYPING_PAUSE_OFF);
+    CHECK(drain_started == UINT32_MAX - 200);
+    advance(SVAL_TYPING_PAUSE_DRAIN_MS - 20);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_RELEASING);
+    advance(30);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_OFF);
+    CHECK(driver == &usb);
+}
+
+// Every starting point of the clock near the wrap, 1 ms apart: the pause always
+// ends between 1.5 s and 1.5 s + one task pass after the owner's last packet,
+// and typing is back by the drain after that.
+static void test_every_phase_near_wrap_ends(void) {
+    for (uint32_t back = 0; back <= 2100; back += 7) {
+        reset();
+        now = UINT32_MAX - back;
+        cmd(A, SVAL_TYPING_PAUSE_ON);
+        uint32_t t = 0;
+        while (state == SVAL_TYPING_PAUSE_STATE_PAUSED && t < 10000) {
+            now += 1;
+            t += 1;
+            sval_typing_pause_task();
+        }
+        CHECK(t == SVAL_TYPING_PAUSE_LEASE_MS);
+        while (state != SVAL_TYPING_PAUSE_STATE_OFF && t < 10000) {
+            now += 1;
+            t += 1;
+            sval_typing_pause_task();
+        }
+        CHECK(t == SVAL_TYPING_PAUSE_LEASE_MS + SVAL_TYPING_PAUSE_DRAIN_MS);
+        CHECK(driver == &usb);
+    }
+}
+
+// An owner whose client ID expired keeps sending with it (the wrapper rejects
+// those packets, but via_command_kb hands the ID to the pause first): they must
+// not extend the lease.
+static void test_expired_owner_id_does_not_extend(void) {
+    reset();
+    cmd(A, SVAL_TYPING_PAUSE_ON);
+    advance(500);
+    poll(A);
+    uint32_t last = now;
+    expired_id = A;
+    for (int i = 0; i < 40; i++) { // 2 s of stale packets
+        advance(50);
+        poll(A);
+        cmd(A, SVAL_TYPING_PAUSE_ON); // refused: no valid client ID
+        if (state != SVAL_TYPING_PAUSE_STATE_PAUSED) break;
+    }
+    CHECK(state != SVAL_TYPING_PAUSE_STATE_PAUSED);
+    CHECK(last_end == SVAL_TYPING_PAUSE_END_LEASE);
+    CHECK(now - last <= SVAL_TYPING_PAUSE_LEASE_MS + 50);
+    advance(SVAL_TYPING_PAUSE_DRAIN_MS + 20);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_OFF);
+    CHECK(cmd(A, SVAL_TYPING_PAUSE_ON) == SVAL_TYPING_PAUSE_REFUSED);
+    CHECK(!sval_typing_pause_active());
+}
+
+// A renewed client ID that never sends "on" again: its packets are not the
+// owner's, so they don't extend the pause.
+static void test_renewed_id_without_on_does_not_extend(void) {
+    reset();
+    cmd(A, SVAL_TYPING_PAUSE_ON);
+    uint32_t last = now;
+    for (int i = 0; i < 40; i++) {
+        advance(50);
+        poll(B);
+        if (state != SVAL_TYPING_PAUSE_STATE_PAUSED) break;
+    }
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_RELEASING);
+    CHECK(now - last <= SVAL_TYPING_PAUSE_LEASE_MS + 50);
+}
+
+// The main loop stalls for 5 s (the task does not run): the first pass after
+// it ends the pause, and the drain follows.
+static void test_stalled_loop_ends_on_first_pass(void) {
+    reset();
+    cmd(A, SVAL_TYPING_PAUSE_ON);
+    now += 5000;
+    sval_typing_pause_task();
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_RELEASING);
+    advance(SVAL_TYPING_PAUSE_DRAIN_MS + 10);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_OFF);
+    CHECK(driver == &usb);
+}
+
+// USB resets and comes back between two task passes: the lease still ends it.
+static void test_usb_blip_between_passes_lease_still_ends(void) {
+    reset();
+    cmd(A, SVAL_TYPING_PAUSE_ON);
+    USB_DRIVER.state = USB_READY; // reset, then configured again before the task runs
+    USB_DRIVER.state = USB_ACTIVE;
+    advance(1510);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_RELEASING);
+    advance(SVAL_TYPING_PAUSE_DRAIN_MS + 20);
+    CHECK(state == SVAL_TYPING_PAUSE_STATE_OFF);
+}
+
 int main(void) {
+    test_lease_ends_across_timer_wrap();
+    test_owner_seen_near_uint32_max();
+    test_drain_across_timer_wrap();
+    test_every_phase_near_wrap_ends();
+    test_expired_owner_id_does_not_extend();
+    test_renewed_id_without_on_does_not_extend();
+    test_stalled_loop_ends_on_first_pass();
+    test_usb_blip_between_passes_lease_still_ends();
     test_on_blocks_keyboard_and_media_passes_mouse();
     test_owner_polls_extend_lease();
     test_other_client_does_not_extend_lease();

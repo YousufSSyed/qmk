@@ -50,8 +50,12 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined
 # Flicker latch (Sval 0x3D, keyboards/svalboard/flicker_latch.c): one-scan
 # bounces latch and count on the raw rows, reads clear them, both halves answer.
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_flicker_latch/stub" -I"$kb"     "$root/tests/sval_flicker_latch/test_flicker_latch.c" -o "$out/test_flicker_latch"
+# The client ID lease (modules/svalboard/core/client_wrapper.c) across the
+# 32-bit timer wrap: the typing pause is tied to one ID.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_client_id/stub" -I"$root/modules/svalboard/core"     "$root/tests/sval_client_id/test_client_id.c" -o "$out/test_client_id"
 "$out/test_flicker_latch"
 "$out/test_typing_pause"
+"$out/test_client_id"
 "$out/test_packet"
 
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
