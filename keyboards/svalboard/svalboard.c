@@ -300,7 +300,10 @@ void read_eeprom_kb(void) {
         // Once, on settings saved by firmware with the turbo setting: a wait of
         // 0 meant "the turbo table". Fill it in from the saved turbo index, so
         // the board keeps the timing it ran, and free that byte.
-        if (sval_timing_migrate(&global_saved_values.scan_prewait_us, &global_saved_values.scan_postwait_us, &global_saved_values.automouse_10ms)) {
+        uint16_t pre = global_saved_values.scan_prewait_us, post = global_saved_values.scan_postwait_us; // packed: work on copies
+        if (sval_timing_migrate(&pre, &post, &global_saved_values.automouse_10ms)) {
+            global_saved_values.scan_prewait_us  = pre;
+            global_saved_values.scan_postwait_us = post;
             write_eeprom_kb();
         }
     }
@@ -358,7 +361,10 @@ void output_keyboard_info(void) {
 // SV_TURBO_SCAN: both scan waits to the next faster preset (sval_turbo_us,
 // 90 down to 15 us), and back to 90 after the fastest; saved.
 void change_turbo_scan(void) {
-    sval_timing_step(&global_saved_values.scan_prewait_us, &global_saved_values.scan_postwait_us);
+    uint16_t pre = global_saved_values.scan_prewait_us, post = global_saved_values.scan_postwait_us; // packed: work on copies
+    sval_timing_step(&pre, &post);
+    global_saved_values.scan_prewait_us  = pre;
+    global_saved_values.scan_postwait_us = post;
     write_eeprom_kb();
 }
 
@@ -1092,9 +1098,14 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
                 case id_axis_lock:
                     global_saved_values.axis_scroll_lock = value_data[0];
                     break;
-                case id_turbo_scan:
-                    sval_timing_set_preset(value_data[0], &global_saved_values.scan_prewait_us, &global_saved_values.scan_postwait_us);
+                case id_turbo_scan: {
+                    uint16_t pre, post;
+                    if (sval_timing_set_preset(value_data[0], &pre, &post)) {
+                        global_saved_values.scan_prewait_us  = pre;
+                        global_saved_values.scan_postwait_us = post;
+                    }
                     break;
+                }
                 case id_automouse_threshold:
                     global_saved_values.automouse_threshold = value_data[0] | (value_data[1] << 8);
                     break;
