@@ -14,6 +14,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+#include "flicker_latch.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -358,6 +359,7 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
         first_scan = false;
 	return true;
     } else {
+        sval_flicker_frame(curr_matrix, ROWS_PER_HAND); // raw, before debounce (Sval 0x3D)
         bool changed = memcmp(raw_matrix, curr_matrix, sizeof(curr_matrix)) != 0;
         if (changed) {
             memcpy(raw_matrix, curr_matrix, sizeof(curr_matrix));

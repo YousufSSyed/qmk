@@ -889,6 +889,16 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             break;
         }
 
+        case sval_cmd_flicker_latch: {
+            // Request:  [0xDF] [0x3D] [op] [arg]
+            // Response: [0xDF] [0x3D] [op] [status] [...] (keyboards/svalboard/docs/protocol.md)
+            if (length > 3) {
+                data[3] = 0xFF; // stays 0xFF on a keyboard without it
+                sval_flicker_latch_kb(&data[2], length - 2);
+            }
+            break;
+        }
+
         case sval_cmd_side: {
             // Request:  [0xDF] [0x33] [op] ...
             // Response: [0xDF] [0x33] [op] [status] ... (keyboards/svalboard/docs/protocol.md, "Side")
@@ -1211,6 +1221,8 @@ __attribute__((weak)) uint8_t sval_get_feature_flags3_kb(void) {
 }
 
 __attribute__((weak)) void sval_typing_pause_kb(uint8_t *data, uint8_t length) {}
+
+__attribute__((weak)) void sval_flicker_latch_kb(uint8_t *data, uint8_t length) {}
 
 __attribute__((weak)) void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {}
 

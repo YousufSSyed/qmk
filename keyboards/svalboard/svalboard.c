@@ -14,6 +14,7 @@
 #include "scanlab.h"
 #include "keytest.h"
 #include "typing_pause.h"
+#include "flicker_latch.h"
 #include "sval.h"
 #include "pointing_motion.h" // after sval.h: needs the generated fragment ids
 #include "identity.h"
@@ -426,7 +427,11 @@ void sval_client_packet_kb(uint32_t client_id) {
 }
 
 uint8_t sval_get_feature_flags3_kb(void) {
-    return sval_flag3_typing_pause;
+    return sval_flag3_typing_pause | sval_flag3_flicker_latch;
+}
+
+void sval_flicker_latch_kb(uint8_t *data, uint8_t length) {
+    sval_flicker_command(data, length);
 }
 
 void sval_typing_pause_kb(uint8_t *data, uint8_t length) {
@@ -608,6 +613,7 @@ static void scanlab_rpc_listener(uint8_t in_buflen, const void *in_data, uint8_t
 #ifdef SVAL_PERF_STATS
     if (sval_perf_split_rpc(in_buflen, (const uint8_t *)in_data, out_buflen, (uint8_t *)out_data)) return;
 #endif
+    if (sval_flicker_split_rpc(in_buflen, (const uint8_t *)in_data, out_buflen, (uint8_t *)out_data)) return; // Sval 0x3D for this half
 #ifdef SVAL_EITHER_HAND
     if (sval_side_rpc(in_buflen, (const uint8_t *)in_data, out_buflen, (uint8_t *)out_data)) return; // Sval 0x33 for this half
 #endif

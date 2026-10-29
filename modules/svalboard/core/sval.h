@@ -96,6 +96,7 @@ enum sval_command_id {
     // 0x34-0x37 are allocated by the pointing tools branch, 0x38 by the main
     // board branch and 0x3A by the board ID record branch.
     sval_cmd_typing_pause         = 0x3C, // advertised by sval_flag3_typing_pause
+    sval_cmd_flicker_latch        = 0x3D, // advertised by sval_flag3_flicker_latch
     sval_cmd_error                = 0xFF,
 };
 
@@ -128,6 +129,7 @@ enum sval_feature_flags3 {
     // Bit 0 is allocated by the main board branch (0x38); bit 1 is left for
     // the board ID record branch.
     sval_flag3_typing_pause = (1 << 2), // 0x3C pauses keyboard output while a key tester is open
+    sval_flag3_flicker_latch = (1 << 3), // 0x3D reads each switch's raw changes since the last read
 };
 
 // Status byte after the modifiers in the 0x16 reply (sval_flag2_modifier_state).
@@ -390,6 +392,8 @@ uint8_t sval_get_feature_flags3_kb(void);
 // TYPING_PAUSE (0x3C): the keyboard handles data after [0xDF] [0x3C] in place:
 // [op] -> [op] [status] [...]. Weak no-op in the module (status stays 0xFF).
 void sval_typing_pause_kb(uint8_t *data, uint8_t length);
+// FLICKER_LATCH (0x3D): as TYPING_PAUSE, data after [0xDF] [0x3D]. Weak no-op.
+void sval_flicker_latch_kb(uint8_t *data, uint8_t length);
 
 // POINTING_HARDWARE (0x2C): the keyboard fills out[0..length-1] (already zeroed)
 // with its report. Weak no-op in the module; out[0] = 0 means nothing to report.

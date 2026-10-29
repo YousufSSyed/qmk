@@ -217,3 +217,25 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 | 13 | 1 | keys released when the last pause ended |
 | 14 | 1 | empty keyboard reports sent when turning on or ending, since boot (wraps) |
 | 15 | 1 | keys whose release is still being ignored |
+
+## Flicker latch
+
+`FLICKER_LATCH` (`0x3D`) lets a key tester see every change of every switch, even a bounce that lasts one scan. Debounce hides those from the keymap and from VIA's matrix state, which reads the debounced matrix. Each half watches its raw rows on every scan, before debounce: a switch that went down since the last read sets its pressed-since bit, one that went up sets its released-since bit, and every change adds one to that switch's count (8 bits, stops at 255). Reading clears what it returns. Debounce and what gets typed are unchanged.
+
+- Discovery: GET_INFO byte 20, bit 3 (`sval_flag3_flicker_latch`, `0x08`). Older firmware leaves it zero, and answers `0x3D` with status `0xFF`.
+- The half with USB answers for both halves; it asks the other half over the split link on each read. A block the other half didn't send (not connected, or the link paused for an update) is flagged as missing.
+- Request `DF 3D 00`: the raw rows and the latches of both halves; clears the latches. Response, offsets from the first byte after `3D`:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | op `0`, echoed |
+| 1 | 1 | status: `0` done, `1` unknown op, `2` not the half with USB, `3` report too short, `0xFF` firmware without the command |
+| 2 | 1 | bit 0: the left half's rows (0-4) are valid; bit 1: the right half's (5-9) |
+| 3 | 1 | rows (`10`) |
+| 4 | 10 | raw rows now, one byte per row, bit = column |
+| 14 | 10 | pressed since the last read |
+| 24 | 10 | released since the last read |
+
+- Request `DF 3D 01 <half>` (`0` left, `1` right): that half's change counts, one byte per switch (row by row, 6 columns each), then cleared. Response: `[op 1] [status] [bit 0: valid] [half] [30 counts]`.
+- Both need the 64-byte report (34 bytes after `3D`); a client-wrapped 32-byte report is answered with status `3`.
+- A host that reads both ops on a schedule keeps a running count per switch; a switch's presses since the last read are its changes, halved, rounded up when it was up at the last read and down when it was down.

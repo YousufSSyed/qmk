@@ -34,6 +34,11 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined
 # Typing pause (Sval 0x3C, keyboards/svalboard/typing_pause.c): the filter at
 # the host driver, the lease only the owning client extends, held keys at the end.
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_typing_pause/stub" -I"$kb"     "$root/tests/sval_typing_pause/test_typing_pause.c" -o "$out/test_typing_pause"
+
+# Flicker latch (Sval 0x3D, keyboards/svalboard/flicker_latch.c): one-scan
+# bounces latch and count on the raw rows, reads clear them, both halves answer.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_flicker_latch/stub" -I"$kb"     "$root/tests/sval_flicker_latch/test_flicker_latch.c" -o "$out/test_flicker_latch"
+"$out/test_flicker_latch"
 "$out/test_typing_pause"
 "$out/test_packet"
 
