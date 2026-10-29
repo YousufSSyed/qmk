@@ -158,7 +158,6 @@ FILE_MESSAGES = {
 
 class FirmwareFileError(RuntimeError):
     """A firmware file the tool refuses: str() is the sentence for the person, kind the reason."""
-
     def __init__(self, kind, detail=""):
         super().__init__(FILE_MESSAGES[kind])
         self.kind = kind
@@ -191,9 +190,7 @@ def firmware_from_uf2(data):
         addrs.append(u32(o + 12) - mu.XIP_BASE)
     pps = mu.PAGES_PER_SECTOR
     record_at = count - pps
-    pair_layout = count % pps == 0 and count >= 2 * pps and all(
-        a == (i * mu.PAGE if i < record_at else mu.PAIR_RECORD_OFFSET + (i - record_at) * mu.PAGE)
-        for i, a in enumerate(addrs))
+    pair_layout = count % pps == 0 and count >= 2 * pps and all(a == (i * mu.PAGE if i < record_at else mu.PAIR_RECORD_OFFSET + (i - record_at) * mu.PAGE) for i, a in enumerate(addrs))
     if not pair_layout:
         raise FirmwareFileError("no-pair", "the blocks are not an image and a pair record sector")
     record = data[record_at * 512 + 32:record_at * 512 + 32 + mu.PAGE]
