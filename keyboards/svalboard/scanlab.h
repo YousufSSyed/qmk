@@ -52,7 +52,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define SCANLAB_REF_MAX_TRIES    64    // frames to find one before giving up
 #define SCANLAB_REBOOT_WINDOW_MS 5000  // "go" must follow "arm" within this
 #define SCANLAB_REQ_LEN          24    // bytes: [op][args...]
-#define SCANLAB_RSP_LEN          24    // bytes written back into the VIA packet (23 used)
+#define SCANLAB_RSP_LEN          24    // bytes written back into the VIA packet
+
+// STATUS byte 23: capabilities. Firmware from before it sends 23 bytes, so a
+// host reads zero there.
+#define SCANLAB_CAP_DEBOUNCE_SWITCH     0x01 // VIA value 48 switches the optical keys' debounce
+#define SCANLAB_CAP_OPTICAL_DEBOUNCE_ON 0x02 // this half debounces its optical keys now
 
 // Request ops. SET ops arrive as VIA id_custom_set_value with value_id = op and
 // value_data = [hand][args...]. GET ops arrive as id_custom_get_value with

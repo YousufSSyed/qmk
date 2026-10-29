@@ -215,8 +215,3 @@ void sval_main_board_kb(uint8_t *out, uint8_t length) {
         out[14] = c >> 8;
     }
 }
-
-// GET_INFO byte 20 (the third feature byte): this build answers 0x38.
-uint8_t sval_get_feature_flags3_kb(void) {
-    return sval_flag3_main_board;
-}

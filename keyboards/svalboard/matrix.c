@@ -14,6 +14,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+#include "flicker_latch.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -131,17 +132,14 @@ static void unselect_rows(void) {
 extern matrix_row_t raw_matrix[ROWS_PER_HAND]; // raw values
 extern matrix_row_t matrix[ROWS_PER_HAND];     // debounced values
 
-extern uint16_t sval_prewait_us[];
-extern uint16_t sval_postwait_us[];
+extern uint8_t sval_ping_turbo; // svalboard.c
 
-// Effective scan timing for this frame. Priority: Scan Lab override (while a
-// sweep runs), then the saved explicit microsecond values, then the turbo table.
+// Scan timing for this frame: the Scan Lab override while a sweep runs, else
+// the saved waits. A wait is 0 only when an older half with USB sent it; that
+// half's turbo index fills it in, as it did (sval_timing_effective).
 void sval_scan_timing(uint16_t *pre, uint16_t *post) {
     if (scanlab_timing(pre, post)) return;
-    uint8_t t = global_saved_values.turbo_scan;
-    if (t >= SVAL_TURBO_CHOICES) t = 0;
-    *pre  = global_saved_values.scan_prewait_us  ? global_saved_values.scan_prewait_us  : sval_prewait_us[t];
-    *post = global_saved_values.scan_postwait_us ? global_saved_values.scan_postwait_us : sval_postwait_us[t];
+    sval_timing_effective(global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us, sval_ping_turbo, pre, post);
 }
 static uint16_t cur_prewait_us = 90, cur_postwait_us = 90;
 
@@ -368,6 +366,7 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
         first_scan = false;
 	return true;
     } else {
+        sval_flicker_frame(curr_matrix, ROWS_PER_HAND); // raw, before debounce (Sval 0x3D)
         bool changed = memcmp(raw_matrix, curr_matrix, sizeof(curr_matrix)) != 0;
         if (changed) {
             memcpy(raw_matrix, curr_matrix, sizeof(curr_matrix));

@@ -93,8 +93,11 @@ enum sval_command_id {
     sval_cmd_pointing_motion      = 0x2D, // advertised by sval_flag2_pointing_motion
     sval_cmd_pointing_contacts    = 0x2F, // advertised by sval_flag2_pointing_contacts
     sval_cmd_side                 = 0x33, // advertised by sval_flag2_side (either-hand builds)
-    // 0x34-0x37 are allocated by the pointing tools branch.
+    // 0x34-0x37 are allocated by the pointing tools branch and 0x3A by the
+    // board ID record branch.
     sval_cmd_main_board           = 0x38, // advertised by sval_flag3_main_board
+    sval_cmd_typing_pause         = 0x3C, // advertised by sval_flag3_typing_pause
+    sval_cmd_flicker_latch        = 0x3D, // advertised by sval_flag3_flicker_latch
     sval_cmd_error                = 0xFF,
 };
 
@@ -124,7 +127,10 @@ enum sval_feature_flags2 {
 
 // Third feature byte, GET_INFO byte 20. Older firmware leaves it zero.
 enum sval_feature_flags3 {
-    sval_flag3_main_board = (1 << 0), // 0x38 reports each half's main board and cluster check
+    sval_flag3_main_board    = (1 << 0), // 0x38 reports each half's main board and cluster check
+    // Bit 1 is left for the board ID record branch.
+    sval_flag3_typing_pause  = (1 << 2), // 0x3C pauses keyboard output while a key tester is open
+    sval_flag3_flicker_latch = (1 << 3), // 0x3D reads each switch's raw changes since the last read
 };
 
 // Status byte after the modifiers in the 0x16 reply (sval_flag2_modifier_state).
@@ -378,6 +384,17 @@ void sval_reload_labels(void);
 // Weak no-op in the module; a keyboard overrides it to notice host activity
 // (for example to leave a low-power idle while a config app is talking).
 void sval_host_packet_kb(void);
+// Called with the client ID of every wrapped packet (0xDD) before it is
+// dispatched, so a handler can bind a session to one client. Weak no-op.
+void sval_client_packet_kb(uint32_t client_id);
+
+// GET_INFO byte 20 (sval_feature_flags3). Weak, returns 0.
+uint8_t sval_get_feature_flags3_kb(void);
+// TYPING_PAUSE (0x3C): the keyboard handles data after [0xDF] [0x3C] in place:
+// [op] -> [op] [status] [...]. The module's weak default answers status 0xFF.
+void sval_typing_pause_kb(uint8_t *data, uint8_t length);
+// FLICKER_LATCH (0x3D): as TYPING_PAUSE, data after [0xDF] [0x3D] (status 0xFF without it).
+void sval_flicker_latch_kb(uint8_t *data, uint8_t length);
 
 // POINTING_HARDWARE (0x2C): the keyboard fills out[0..length-1] (already zeroed)
 // with its report. Weak no-op in the module; out[0] = 0 means nothing to report.
@@ -386,7 +403,6 @@ void sval_pointing_hardware_kb(uint8_t *out, uint8_t length);
 // MAIN_BOARD (0x38): the keyboard fills out[0..length-1] (already zeroed) with
 // its report. Weak no-op in the module; out[0] = 0 means nothing to report.
 void sval_main_board_kb(uint8_t *out, uint8_t length);
-uint8_t sval_get_feature_flags3_kb(void);
 
 // POINTING_MOTION (0x2D): the keyboard fills out[0..length-1] (already zeroed) with
 // the motion since the previous read, then clears it. Weak no-op in the module;

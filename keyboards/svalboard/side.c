@@ -182,6 +182,7 @@ uint8_t sval_side_pair(uint8_t mine, bool other_connected, bool other_reported, 
 #    include "svalboard.h"
 #    include "identity.h"
 #    include "build_reset.h"
+#    include "typing_pause.h"
 #    include "split_common/transactions.h"
 #    include "split_common/split_util.h"
 #    include "hardware/regs/addressmap.h"
@@ -317,6 +318,7 @@ bool sval_side_input_blocked(void) {
 
 bool pre_process_record_kb(uint16_t keycode, keyrecord_t *record) {
     if (IS_KEYEVENT(record->event) && !sval_side_row_allowed(record->event.key.row)) return false;
+    if (!sval_typing_pause_pre_process(record)) return false; // a key held when a typing pause ended
     return pre_process_record_user(keycode, record);
 }
 
