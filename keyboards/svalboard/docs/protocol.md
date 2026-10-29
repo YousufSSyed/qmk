@@ -195,7 +195,7 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 
 `TYPING_PAUSE` (`0x3C`) stops the board's typing from reaching the computer while a host app's key tester is open. The keymap keeps running and layers work; only what would be typed is held back. The tester reads the switches with VIA's matrix state as before.
 
-- Discovery: GET_INFO byte 20 (the third feature byte), bit 2 (`sval_flag3_typing_pause`, `0x04`). Older firmware leaves it zero, and answers `0x3C` with status `0xFF`. (Byte 20 bit 0 is allocated by the main board branch, and bit 1 is left for the board ID record branch.)
+- Discovery: GET_INFO byte 20 (the third feature byte), bit 2 (`sval_flag3_typing_pause`, `0x04`). Older firmware leaves it zero, and answers `0x3C` with the command byte `0xFF` (unknown command). (Byte 20 bit 0 is allocated by the main board branch, and bit 1 is left for the board ID record branch.)
 - Request: `DF 3C <op>`: `0` off, `1` on, `2` read the state. "On" also renews the pause, and the client that sends it owns the pause from then on. Any client may turn it off.
 - While on, the half with USB sends no keyboard or NKRO reports (letters, Tab, Enter, Esc, arrows, F-keys, GUI, Ctrl, Alt, Shift) and no consumer or system reports (media, volume, sleep). The mouse report still goes out: buttons, motion and scroll. Both halves are covered, since the half with USB sends every report.
 - Turning it on clears the modifiers, one-shot modifiers and keys, and sends an empty keyboard report first, so nothing is left held on the computer.
@@ -206,7 +206,7 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 1 | op, echoed |
-| 1 | 1 | status: `0` done, `1` unknown op, `2` refused (not the half with USB, USB not active, or no valid client ID), `3` report too short, `0xFF` firmware without the command |
+| 1 | 1 | status: `0` done, `1` unknown op, `2` refused (not the half with USB, USB not active, or no valid client ID), `3` report too short |
 | 2 | 1 | state: `0` off, `1` paused, `2` ending (output still held back) |
 | 3 | 1 | how the last pause ended: `0` none yet, `1` command, `2` the owner went quiet, `3` USB |
 | 4 | 1 | bit 0: the pause is on and the sender owns it |
@@ -222,14 +222,14 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 
 `FLICKER_LATCH` (`0x3D`) lets a key tester see every change of every switch, even a bounce that lasts one scan. Debounce hides those from the keymap and from VIA's matrix state, which reads the debounced matrix. Each half watches its raw rows on every scan, before debounce: a switch that went down since the last read sets its pressed-since bit, one that went up sets its released-since bit, and every change adds one to that switch's count (8 bits, stops at 255). Reading clears what it returns. Debounce and what gets typed are unchanged.
 
-- Discovery: GET_INFO byte 20, bit 3 (`sval_flag3_flicker_latch`, `0x08`). Older firmware leaves it zero, and answers `0x3D` with status `0xFF`.
+- Discovery: GET_INFO byte 20, bit 3 (`sval_flag3_flicker_latch`, `0x08`). Older firmware leaves it zero, and answers `0x3D` with the command byte `0xFF` (unknown command).
 - The half with USB answers for both halves; it asks the other half over the split link on each read. A block the other half didn't send (not connected, or the link paused for an update) is flagged as missing.
 - Request `DF 3D 00`: the raw rows and the latches of both halves; clears the latches. Response, offsets from the first byte after `3D`:
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 1 | op `0`, echoed |
-| 1 | 1 | status: `0` done, `1` unknown op, `2` not the half with USB, `3` report too short, `0xFF` firmware without the command |
+| 1 | 1 | status: `0` done, `1` unknown op, `2` not the half with USB, `3` report too short |
 | 2 | 1 | bit 0: the left half's rows (0-4) are valid; bit 1: the right half's (5-9) |
 | 3 | 1 | rows (`10`) |
 | 4 | 10 | raw rows now, one byte per row, bit = column |

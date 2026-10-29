@@ -882,20 +882,14 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
         case sval_cmd_typing_pause: {
             // Request:  [0xDF] [0x3C] [op]
             // Response: [0xDF] [0x3C] [op] [status] [...] (keyboards/svalboard/docs/protocol.md)
-            if (length > 3) {
-                data[3] = 0xFF; // stays 0xFF on a keyboard without it
-                sval_typing_pause_kb(&data[2], length - 2);
-            }
+            if (length > 3) sval_typing_pause_kb(&data[2], length - 2);
             break;
         }
 
         case sval_cmd_flicker_latch: {
             // Request:  [0xDF] [0x3D] [op] [arg]
             // Response: [0xDF] [0x3D] [op] [status] [...] (keyboards/svalboard/docs/protocol.md)
-            if (length > 3) {
-                data[3] = 0xFF; // stays 0xFF on a keyboard without it
-                sval_flicker_latch_kb(&data[2], length - 2);
-            }
+            if (length > 3) sval_flicker_latch_kb(&data[2], length - 2);
             break;
         }
 
@@ -1220,9 +1214,14 @@ __attribute__((weak)) uint8_t sval_get_feature_flags3_kb(void) {
     return 0;
 }
 
-__attribute__((weak)) void sval_typing_pause_kb(uint8_t *data, uint8_t length) {}
+// Without the keyboard's handler: status 0xFF after the echoed op.
+__attribute__((weak)) void sval_typing_pause_kb(uint8_t *data, uint8_t length) {
+    data[1] = 0xFF;
+}
 
-__attribute__((weak)) void sval_flicker_latch_kb(uint8_t *data, uint8_t length) {}
+__attribute__((weak)) void sval_flicker_latch_kb(uint8_t *data, uint8_t length) {
+    data[1] = 0xFF;
+}
 
 __attribute__((weak)) void sval_pointing_hardware_kb(uint8_t *out, uint8_t length) {}
 

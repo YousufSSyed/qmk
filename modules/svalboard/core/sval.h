@@ -390,9 +390,9 @@ void sval_client_packet_kb(uint32_t client_id);
 // GET_INFO byte 20 (sval_feature_flags3). Weak, returns 0.
 uint8_t sval_get_feature_flags3_kb(void);
 // TYPING_PAUSE (0x3C): the keyboard handles data after [0xDF] [0x3C] in place:
-// [op] -> [op] [status] [...]. Weak no-op in the module (status stays 0xFF).
+// [op] -> [op] [status] [...]. The module's weak default answers status 0xFF.
 void sval_typing_pause_kb(uint8_t *data, uint8_t length);
-// FLICKER_LATCH (0x3D): as TYPING_PAUSE, data after [0xDF] [0x3D]. Weak no-op.
+// FLICKER_LATCH (0x3D): as TYPING_PAUSE, data after [0xDF] [0x3D] (status 0xFF without it).
 void sval_flicker_latch_kb(uint8_t *data, uint8_t length);
 
 // POINTING_HARDWARE (0x2C): the keyboard fills out[0..length-1] (already zeroed)
