@@ -5,7 +5,6 @@
 
 #include <string.h>
 #include "side.h"
-#include "typing_pause.h"
 
 // The strap classes this file reads (enum sval_thumb_hand, svalboard.h).
 #define STRAP_LEFT 1
@@ -183,6 +182,7 @@ uint8_t sval_side_pair(uint8_t mine, bool other_connected, bool other_reported, 
 #    include "svalboard.h"
 #    include "identity.h"
 #    include "build_reset.h"
+#    include "typing_pause.h"
 #    include "split_common/transactions.h"
 #    include "split_common/split_util.h"
 #    include "hardware/regs/addressmap.h"
