@@ -61,6 +61,8 @@ The implementation is in [`sval.h`](sval.h) and [`post_config.h`](post_config.h)
 
 Sval validity uses a **layout stamp**, not a build timestamp. Compatible updates preserve settings; changes to geometry or schema can invalidate the relevant data. VIA also stores the keycode version that wrote the keymap; when QMK renumbers keycodes, the stored keymap and the Sval tables are reset rather than translated.
 
+A settings reset writes the QMK defaults, and a leader timeout of 300 ms with per-key timing on (`SVAL_DEFAULT_LEADER_TIMEOUT`, `SVAL_DEFAULT_LEADER_PER_KEY_TIMING`). Five settings can't work at 0: the combo term, tapping term, Auto Shift timeout, mouse key interval and leader timeout. A 0 stored in one of them is replaced with its default at boot and saved, and a host that writes 0 to one gets the default stored instead. Settings where 0 has a meaning keep it: the one-shot timeout (no timeout), the Flow Tap term (off), the quick tap term (off) and the tap code delay.
+
 The firmware never reads configuration stored by other firmware, Vial included. Setups move between firmwares as layout files, which store keycodes by name.
 
 ## Host protocol and compatibility

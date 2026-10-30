@@ -9,7 +9,7 @@
 #ifdef LEADER_ENABLE
 
 // Dynamic timeout variable - referenced by LEADER_TIMEOUT macro
-uint16_t sval_leader_timeout = 300;
+uint16_t sval_leader_timeout = SVAL_DEFAULT_LEADER_TIMEOUT;
 
 // RAM cache of leader entries for fast matching
 static sval_leader_entry_t leader_entries[SVAL_LEADER_ENTRIES];

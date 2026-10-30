@@ -358,32 +358,6 @@
                     ]
                 }
             ]
-        },
-        {
-            "label": "Tapping",
-            "content": [
-                {
-                    "label": "Tapping Term (ms)",
-                    "type": "range",
-                    "options": [50, 500],
-                    "content": ["id_tapping_term", 1, 16]
-                },
-                {
-                    "label": "Permissive Hold",
-                    "type": "toggle",
-                    "content": ["id_permissive_hold", 1, 17]
-                },
-                {
-                    "label": "Hold On Other Key Press",
-                    "type": "toggle",
-                    "content": ["id_hold_on_other_key", 1, 18]
-                },
-                {
-                    "label": "Retro Tapping",
-                    "type": "toggle",
-                    "content": ["id_retro_tapping", 1, 19]
-                }
-            ]
         }
     ],
     "fragment_schema_version": 1,
