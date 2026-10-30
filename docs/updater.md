@@ -233,15 +233,17 @@ start a sweep or a probe while the updater is active.
 **LEDs (D24).** One meaning per color. Red means only that something failed;
 nothing you should simply wait through is ever red.
 
-| Light | Meaning | When |
-|---|---|---|
-| Blue blink | Your turn | Make the chord |
-| White double flash | Got it | The chord was recognized |
-| Rainbow | Updating, keep plugged in | On both halves, from the chord (or a pre-approved ARM) until the halves match, including while one half waits for the other to restart after a relay. While the half with USB shows the blue blink or the white flash, and while a manifest loads, the half without USB keeps its usual light: those are not sent on the ping (`updater_split_light`) |
-| Magenta | Writing | Only on the half that is committing, where the light must hold one color while flash is written from RAM |
-| Green double flash | Done | On both halves, once presence matches after an update or a relay |
-| Red blink (1 Hz) | It failed: open Keybard | A refused or failed install, or halves that still differ 60 s after an update or relay finished. It stops after 30 s; INFO flags bit5 and Keybard keep reporting the problem |
-| The usual light (layer color) | Nothing for you to do | The updater shows nothing and rgblight draws as usual. Also for a pair record kept waiting for an unplugged or absent other half, and after a red light's 30 s |
+| Light | Meaning |
+|---|---|
+| Blue, blinking | Waiting for the chord |
+| White double flash | Chord made |
+| Rainbow | Working: keep plugged in |
+| Magenta | Writing |
+| Green double flash | Done |
+| Red, blinking (1 Hz, 30 s) | Failure: open Keybard |
+
+While a half writes its firmware or restarts, the firmware isn't driving its
+lights, so they may freeze or show other colors until it's running again.
 
 After the chord the light goes straight to the rainbow (there is no separate
 "approved" color). A pre-approved ARM (protocol 4: this half's install
@@ -252,23 +254,21 @@ red stops after 30 s (`SVAL_UPDATE_RED_MS`).
 How each half knows. The half with USB opens an "after update" window when a
 relay ends done and on the first boot after its own commit (a marker in
 watchdog scratch 0, set just before the commit runs; it survives the commit's
-reset, not a power cut). It shows the rainbow until presence reads MATCH, then
-the green flash. If it has been idle for `SVAL_UPDATE_AFTER_WAIT_MS` (60 s)
+reset, not a power cut). While it is open the half shows the rainbow, and at
+MATCH the green flash. If it has been idle for `SVAL_UPDATE_AFTER_WAIT_MS` (60 s)
 with the halves still different, it shows red for 30 s and then its usual
 light. A half on its own (presence never answered after its own install)
 just goes back to its usual light. The half without USB cannot see presence, so the half with USB sends its
 light on the 500 ms presence ping (one byte appended to `presence_rpc_t`;
 `updater_split_light`), and the half without USB shows the same rainbow, the
-green flash once, and red. After its own commit it shows the rainbow from boot
-until the first ping. A half with USB from before this byte sends the shorter
+green flash once, and red. A half with USB from before this byte sends the shorter
 ping, and the other half then shows nothing after an update. No host protocol
 change, and the split message table is unchanged (the ping is a keyboard RPC
 of variable length).
 
 In a pair update from Keybard this means: blue, then white, on the half with
-USB (the other half keeps its usual light), then the rainbow on both halves
-through the relay, the other half's restart and this half's own
-install (magenta on each half only while it writes), then green on both.
+USB, the rainbow while the halves work, magenta while a half writes, then green
+on both. While a half writes or restarts its lights aren't driven (above).
 
 **Manifest checks** (at ARM, again at BEGIN, and at commit step 0). Magic
 `SVUP`, version 2, reserved fields 0, known flags; a release build refuses
@@ -540,8 +540,9 @@ instead, above).
 After a relay ends done, INFO flags bit5 stays set until presence first reads
 MATCH, also while presence reads NONE: a release that changes the split table
 cannot talk to the old half at all, and would otherwise look like an unplugged
-cable (V). Meanwhile the lights show the rainbow on both halves, then green at
-MATCH, or red for 30 s once the halves still differ after 60 s idle (see LEDs).
+cable (V). Meanwhile the halves show the rainbow where the firmware drives
+their lights, then green at MATCH, or red for 30 s once the halves still differ
+after 60 s idle (see LEDs).
 
 **The other half** (`update_split_slave_rpc` in the SlaveThread,
 `update_split_slave_task` from housekeeping):
