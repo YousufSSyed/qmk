@@ -157,9 +157,81 @@ static const sval_setting_desc_t *find_setting(uint16_t qsid) {
     return NULL;
 }
 
+// Defaults for the settings where a stored 0 can only be a mistake: a combo
+// term of 0 never fires a combo, a tapping term of 0 makes every tap-hold key a
+// hold, an Auto Shift timeout of 0 shifts every key, a mouse key interval of 0
+// moves the cursor every scan, and a leader timeout of 0 ends every sequence
+// 1 ms after it starts. Each comes from the same constant the reset uses.
+static uint16_t default_combo_term(void) {
+#ifdef COMBO_TERM
+    return COMBO_TERM;
+#else
+    return 50;
+#endif
+}
+
+static uint16_t default_auto_shift_timeout(void) {
+#ifdef AUTO_SHIFT_TIMEOUT
+    return AUTO_SHIFT_TIMEOUT;
+#else
+    return 175;
+#endif
+}
+
+static uint16_t default_mousekey_interval(void) {
+#ifdef MOUSEKEY_INTERVAL
+    return MOUSEKEY_INTERVAL;
+#else
+    return 20;
+#endif
+}
+
+// LEADER_TIMEOUT is the live variable (post_config.h), so it can't be the
+// default: SVAL_DEFAULT_LEADER_TIMEOUT is.
+static uint8_t default_leader_options(void) {
+#if SVAL_DEFAULT_LEADER_PER_KEY_TIMING
+    return 1 << LEADER_PER_KEY_TIMING_BIT;
+#else
+    return 0;
+#endif
+}
+
+// Replace a 0 in a setting where 0 is never valid with its default. Returns
+// true when something changed. Leader: a 0 timeout came from the reset bug
+// (no Keybard screen allows it), so the board never had working leader timing,
+// and the per-key option it was stored with gets the default too.
+static bool sval_qmk_settings_repair(void) {
+    bool changed = false;
+    if (settings.combo_term == 0) {
+        settings.combo_term = default_combo_term();
+        changed             = true;
+    }
+    if (settings.tapping_term == 0) {
+        settings.tapping_term = TAPPING_TERM;
+        changed               = true;
+    }
+    if (settings.auto_shift_timeout == 0) {
+        settings.auto_shift_timeout = default_auto_shift_timeout();
+        changed                     = true;
+    }
+    if (settings.mousekey_interval == 0) {
+        settings.mousekey_interval = default_mousekey_interval();
+        changed                    = true;
+    }
+    if (settings.leader_timeout == 0) {
+        settings.leader_timeout = SVAL_DEFAULT_LEADER_TIMEOUT;
+        settings.leader_options = (settings.leader_options & ~(1 << LEADER_PER_KEY_TIMING_BIT)) | default_leader_options();
+        changed                 = true;
+    }
+    return changed;
+}
+
 // Initialize QMK settings
 void sval_qmk_settings_init(void) {
     sval_qmk_settings_load();
+    if (sval_qmk_settings_repair()) {
+        sval_qmk_settings_save();
+    }
     sval_qmk_settings_apply();
 }
 
@@ -293,6 +365,9 @@ int sval_qmk_settings_set(uint16_t qsid, const uint8_t *data, uint8_t length) {
     // Regular settings
     if (desc->size > length) return -1;
     memcpy(((uint8_t *)&settings) + desc->offset, data, desc->size);
+    // A 0 from an older Keybard (its default layouts carried a leader timeout
+    // of 0) is stored as the default, the same as on boot.
+    sval_qmk_settings_repair();
     sval_qmk_settings_save();
     sval_qmk_settings_apply();
     return 0;
@@ -304,11 +379,7 @@ void sval_qmk_settings_reset(void) {
 
     // Set defaults
     settings.tapping_term = TAPPING_TERM;
-#ifdef COMBO_TERM
-    settings.combo_term = COMBO_TERM;
-#else
-    settings.combo_term = 50;
-#endif
+    settings.combo_term   = default_combo_term();
 #ifdef ONESHOT_TIMEOUT
     settings.osk_timeout = ONESHOT_TIMEOUT;
 #else
@@ -319,11 +390,7 @@ void sval_qmk_settings_reset(void) {
 #else
     settings.osk_tap_toggle = 5;
 #endif
-#ifdef AUTO_SHIFT_TIMEOUT
-    settings.auto_shift_timeout = AUTO_SHIFT_TIMEOUT;
-#else
-    settings.auto_shift_timeout = 175;
-#endif
+    settings.auto_shift_timeout = default_auto_shift_timeout();
 #ifdef TAP_CODE_DELAY
     settings.tap_code_delay = TAP_CODE_DELAY;
 #else
@@ -375,17 +442,10 @@ void sval_qmk_settings_reset(void) {
     settings.mousekey_wheel_time_to_max = MOUSEKEY_WHEEL_TIME_TO_MAX;
 #endif
 
-#ifdef LEADER_ENABLE
-#    ifdef LEADER_TIMEOUT
-    settings.leader_timeout = LEADER_TIMEOUT;
-#    else
-    settings.leader_timeout = 300; // QMK default
-#    endif
-    settings.leader_options = 0;
-#    if defined(LEADER_PER_KEY_TIMING) && LEADER_PER_KEY_TIMING
-    settings.leader_options |= (1 << LEADER_PER_KEY_TIMING_BIT);
-#    endif
-#endif
+    // Not LEADER_TIMEOUT: that is the live variable (post_config.h), which
+    // sval_reset() has just loaded from zeroed memory, so the reset stored 0.
+    settings.leader_timeout = SVAL_DEFAULT_LEADER_TIMEOUT;
+    settings.leader_options = default_leader_options();
 
     sval_qmk_settings_save();
     sval_qmk_settings_apply();

@@ -1029,10 +1029,8 @@ enum sval_via_value_id {
     id_idle_long_nap       = 29, // toggle: long naps in deep idle
     id_scan_deep_clock_idx = 30, // u8 dropdown: deep-idle clock 0 = 48 MHz, 1 = 24 MHz, 2 = 12 MHz
     id_thumb_hand          = 31, // read-only: [0] class (enum sval_thumb_hand), [1] raw bits (sval_thumb_hand_raw)
-    id_tapping_term        = 16,
-    id_permissive_hold     = 17,
-    id_hold_on_other_key   = 18,
-    id_retro_tapping       = 19,
+    // 16-19 are reserved: an old "Tapping" menu used them without a handler. The
+    // tapping term and hold options are QMK settings 7 and 22-24 (Sval 0x11/0x12).
     // 31: id_thumb_hand (above)
     id_layer0_color = 32,
     // 32-47 are layer colors (id_layer0_color + layer)
