@@ -326,4 +326,4 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #define PMW33XX_LIFTOFF_DISTANCE 0x00
 
-#define POINTING_DEVICE_ROTATION_270_RIGHT
+#define AZOTEQ_IQS5XX_TAP_ENABLE false
