@@ -221,7 +221,7 @@ bool sval_perf_page(uint8_t page, uint32_t out[SVAL_PERF_PAGE_WORDS]) {
 #else
             const uint32_t build = 0;
 #endif
-            const uint32_t v[] = {global_saved_values.scan_period_us, period, pre, post, global_saved_values.turbo_scan, stage, sval_hw_rev_is_flipfet(), s.raw_down, s.raw_changes, wait, pads | build << 8, merge_waits, host_silent};
+            const uint32_t v[] = {global_saved_values.scan_period_us, period, pre, post, sval_timing_preset(pre, post), stage, sval_hw_rev_is_flipfet(), s.raw_down, s.raw_changes, wait, pads | build << 8, merge_waits, host_silent};
             memcpy(out, v, sizeof(v));
             return true;
         }

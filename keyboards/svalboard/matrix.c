@@ -14,6 +14,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+#include "flicker_latch.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -131,17 +132,14 @@ static void unselect_rows(void) {
 extern matrix_row_t raw_matrix[ROWS_PER_HAND]; // raw values
 extern matrix_row_t matrix[ROWS_PER_HAND];     // debounced values
 
-extern uint16_t sval_prewait_us[];
-extern uint16_t sval_postwait_us[];
+extern uint8_t sval_ping_turbo; // svalboard.c
 
-// Effective scan timing for this frame. Priority: Scan Lab override (while a
-// sweep runs), then the saved explicit microsecond values, then the turbo table.
+// Scan timing for this frame: the Scan Lab override while a sweep runs, else
+// the saved waits. A wait is 0 only when an older half with USB sent it; that
+// half's turbo index fills it in, as it did (sval_timing_effective).
 void sval_scan_timing(uint16_t *pre, uint16_t *post) {
     if (scanlab_timing(pre, post)) return;
-    uint8_t t = global_saved_values.turbo_scan;
-    if (t >= SVAL_TURBO_CHOICES) t = 0;
-    *pre  = global_saved_values.scan_prewait_us  ? global_saved_values.scan_prewait_us  : sval_prewait_us[t];
-    *post = global_saved_values.scan_postwait_us ? global_saved_values.scan_postwait_us : sval_postwait_us[t];
+    sval_timing_effective(global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us, sval_ping_turbo, pre, post);
 }
 static uint16_t cur_prewait_us = 90, cur_postwait_us = 90;
 
@@ -264,6 +262,8 @@ void matrix_init_custom(void) {
             }
         }
     }
+    // SvalMCUMini V1.0 only: which clusters it can scan (mainboard.c), ~1-4 ms.
+    sval_cluster_check();
 }
 bool first_scan = true;
 bool matrix_scan_custom(matrix_row_t current_matrix[]) {
@@ -333,6 +333,14 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
         matrix_read_cols_on_row(curr_matrix, current_row);
     }
     ema16(&stat_led_us, led_on_acc_us);
+    // SvalMCUMini V1.0: an original cluster can't be scanned, so its keys are muted
+    // (its center would read as held). Scan Lab still sees the raw rows.
+    uint8_t muted = sval_muted_rows();
+    if (muted && !scanlab_active()) {
+        for (uint8_t r = 0; r < ROWS_PER_HAND; r++) {
+            if (muted & (1u << r)) curr_matrix[r] = 0;
+        }
+    }
 #ifdef SVAL_PERF_STATS
     // Raw frames with a key down, and raw changes (keyboards/svalboard/perf.c).
     extern void sval_perf_matrix(const matrix_row_t *rows, uint8_t count);
@@ -358,6 +366,7 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
         first_scan = false;
 	return true;
     } else {
+        sval_flicker_frame(curr_matrix, ROWS_PER_HAND); // raw, before debounce (Sval 0x3D)
         bool changed = memcmp(raw_matrix, curr_matrix, sizeof(curr_matrix)) != 0;
         if (changed) {
             memcpy(raw_matrix, curr_matrix, sizeof(curr_matrix));

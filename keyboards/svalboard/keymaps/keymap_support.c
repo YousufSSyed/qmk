@@ -535,12 +535,8 @@ report_mouse_t pointing_device_task_user(report_mouse_t reportMouse) {
 #endif
 
 void mh_change_timeouts(void) {
-    if (sizeof(mh_timer_choices) / sizeof(int16_t) - 1 <= global_saved_values.mh_timer_index) {
-        global_saved_values.mh_timer_index = 0;
-    } else {
-        global_saved_values.mh_timer_index++;
-    }
-    uprintf("mh_timer:%d\n", mh_timer_choices[global_saved_values.mh_timer_index]);
+    sval_automouse_step(&global_saved_values.mh_timer_index, &global_saved_values.automouse_10ms);
+    uprintf("mh_timer:%ld\n", (long)sval_automouse_timeout(global_saved_values.mh_timer_index, global_saved_values.automouse_10ms));
     write_eeprom_kb();
 }
 
@@ -847,7 +843,8 @@ void ps2_mouse_moved_user(report_mouse_t *mouse_report) {
 #endif
 
 void matrix_scan_kb(void) {
-    if ((mh_timer_choices[global_saved_values.mh_timer_index] >= 0) && mouse_mode_enabled && (timer_elapsed(mh_auto_buttons_timer) > mh_timer_choices[global_saved_values.mh_timer_index]) && mouse_keys_pressed == 0 && !velocity_scroll_active()) {
+    const int32_t mh_timeout = sval_automouse_timeout(global_saved_values.mh_timer_index, global_saved_values.automouse_10ms);
+    if ((mh_timeout >= 0) && mouse_mode_enabled && ((int32_t)timer_elapsed(mh_auto_buttons_timer) > mh_timeout) && mouse_keys_pressed == 0 && !velocity_scroll_active()) {
         if (!tp_buttons) {
             mouse_mode(false);
 #if defined CONSOLE_ENABLE

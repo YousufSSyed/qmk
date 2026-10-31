@@ -16,6 +16,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "scanlab.h"
 #include "svalboard.h"
+#include "debounce_sval.h"
 #include "split_util.h"
 #include "split_common/transactions.h"
 #include <string.h>
@@ -305,8 +306,12 @@ void scanlab_handle(const uint8_t *req, uint8_t *rsp) {
             rsp[16] = probe.row;
             put16(&rsp[17], global_saved_values.scan_prewait_us);
             put16(&rsp[19], global_saved_values.scan_postwait_us);
-            rsp[21] = global_saved_values.turbo_scan;
+            rsp[21] = sval_timing_preset(global_saved_values.scan_prewait_us, global_saved_values.scan_postwait_us); // the preset, or 0xFF
             rsp[22] = is_keyboard_master() ? (sval_other_half_connected() ? 1 : 0) : 0;
+            // Capabilities: bit 0, the optical debounce switch (VIA value 48);
+            // bit 1, this half debounces its optical keys now. The half
+            // without USB reports the mode it took from the presence ping.
+            rsp[23] = SCANLAB_CAP_DEBOUNCE_SWITCH | (sval_optical_debounce_on() ? SCANLAB_CAP_OPTICAL_DEBOUNCE_ON : 0);
             return;
         }
         case SCANLAB_OP_IDLE: {
@@ -428,7 +433,7 @@ void scanlab_via_command(uint8_t *data, uint8_t length) {
     }
 
     uint8_t room = length > 3 ? length - 3 : 0;
-    memcpy(args, rsp, room < SCANLAB_RSP_LEN - 1 ? room : SCANLAB_RSP_LEN - 1);
+    memcpy(args, rsp, room < SCANLAB_RSP_LEN ? room : SCANLAB_RSP_LEN);
 }
 #else
 void scanlab_via_command(uint8_t *data, uint8_t length) {

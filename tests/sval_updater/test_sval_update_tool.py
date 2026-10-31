@@ -253,6 +253,49 @@ def main():
         check("version-1" in str(exc), f"a version-1 .svup: {exc}")
     check(lib.host_state() == 0, "a version-1 .svup: nothing sent")
 
+    # A pair UF2, as releases ship (docs/pair-uf2.md): the tool takes the manifest
+    # and the image from its record, as Keybard's loadFirmwareFile does.
+    either = mu.build_manifest(img, hand=2, pointing_id=3, keymap_id=1, flags=0, epoch=0, storage_format=2, fw_version=7, version="tool-test")
+    pair_uf2 = out / "tool_test_pair.uf2"
+    pair_uf2.write_bytes(mu.pair_uf2_bytes(either, img))
+    check(su.load_firmware(pair_uf2) == (either, img), "a pair .uf2: (manifest, image) from its record")
+    rc, board, _ = run_update(pair_uf2, commit_available=False)
+    check(rc == 3 and bytes(lib.host_slot()[:len(img)]) == img, f"a pair .uf2 installs: exit {rc}")
+
+    def refused(path, kind, what):
+        lib.host_lib_reset(0)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                su.Session(FakeBoard(), Args()).run(path)
+            check(False, f"{what} was sent")
+        except su.FirmwareFileError as exc:
+            check(exc.kind == kind, f"{what}: refused as {exc.kind}, expected {kind}")
+            check(str(exc) == su.FILE_MESSAGES[kind], f"{what}: message {exc}")
+        check(lib.host_state() == 0, f"{what}: nothing sent")
+
+    # A plain .uf2 (one half's file, no pair record): Keybard's refusal and words.
+    padded = img + b"\xff" * (-len(img) % 256)
+    pages = [padded[i:i + 256] for i in range(0, len(padded), 256)]
+    plain = out / "tool_test_plain.uf2"
+    plain.write_bytes(b"".join(mu.uf2_block(mu.XIP_BASE + i * 256, pg, i, len(pages)) for i, pg in enumerate(pages)))
+    refused(plain, "no-pair", "a plain .uf2")
+    check("drag the file onto the RPI-RP2 drive" in su.FILE_MESSAGES["no-pair"], "the plain .uf2 message says how to install by hand")
+    # Damaged pair UF2s: a record byte changed (CRC), an image byte changed (SHA-512 in the
+    # manifest is checked by the board, so here the layout: a block cut short), a block renumbered.
+    data = bytearray(pair_uf2.read_bytes())
+    rec = len(data) - 16 * 512 + 32
+    bad_crc = bytearray(data)
+    bad_crc[rec + 20] ^= 0x01
+    damaged = out / "tool_test_damaged.uf2"
+    damaged.write_bytes(bytes(bad_crc))
+    refused(damaged, "damaged", "a pair .uf2 with a changed record")
+    damaged.write_bytes(bytes(data[:-100]))
+    refused(damaged, "damaged", "a cut-short .uf2")
+    renum = bytearray(data)
+    renum[512 + 20] ^= 0x01
+    damaged.write_bytes(bytes(renum))
+    refused(damaged, "damaged", "a .uf2 with a renumbered block")
+
     # the stub refuses COMMIT: exit 3, image staged and verified
     rc, board, _ = run_update(svup, commit_available=False)
     check(rc == 3, f"stub commit: exit {rc}")

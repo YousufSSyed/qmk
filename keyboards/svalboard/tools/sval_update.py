@@ -14,12 +14,18 @@ open handle.
     sval_update.py relay
     sval_update.py diag [--clear]
     sval_update.py abort [--nonce N]
-    sval_update.py update FILE.svup [--half usb|other] [--yes] [--delay S] [--rebind-every S]
+    sval_update.py update FILE.uf2 [--half usb|other] [--yes] [--delay S] [--rebind-every S]
                                     [--min-rebinds N] [--no-commit] [--halt POINT [--halt-unfed]]
-    sval_update.py pair FILE1.svup [FILE2.svup] [--yes] [--delay S] [--rebind-every S]
+    sval_update.py pair FILE.uf2 [FILE2.uf2] [--yes] [--delay S] [--rebind-every S]
     sval_update.py reset-settings [--this-half] [--blank] [--ack]
     sval_update.py storage [--ack]
-    sval_update.py reject FILE.svup
+    sval_update.py reject FILE.uf2
+
+FILE.uf2 is a firmware file as releases ship it: a pair UF2 (x4 on, one file
+for both halves), which carries the update manifest in its pair record
+(docs/pair-uf2.md). The tool takes the manifest and the image from it, as
+Keybard does. A plain .uf2 without the record (a one-half file, or any other
+UF2) is refused with Keybard's message: it installs by hand in BOOTSEL mode.
 
 update sends the manifest, prints the manifest hash you confirm, waits for the
 chord (Index South + Middle South held for 1 s on the half with USB), then
@@ -71,12 +77,12 @@ printed; --min-rebinds N fails the run (before COMMIT) if there were fewer (M1
 S seconds between chunks (slow-transfer test; the session times out after 30 s
 without an op, so --delay 31 gives TIMEOUT).
 
-reject (M1 #6) runs the protocol rejection matrix with FILE.svup, an image
+reject (M1 #6) runs the protocol rejection matrix with FILE.uf2, an image
 this half accepts: unwrapped packets, a second client ID, wrong nonces,
 BEGIN before the chord, an out-of-order CHUNK, END too early, ABORT and
 REBIND from the wrong client, COMMIT with the wrong CRC, then an overrun. It
 needs the chord twice and checks each status and the state after it. It never
-commits. The image-level rejections are .svup files from make_update.py
+commits. The image-level rejections are files from make_update.py
 (--unsafe-allow-bad-image) sent with update.
 
 diag (M1 #13) reports how much of main's stack has never been used since boot
@@ -109,7 +115,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import make_update  # noqa: E402  (same directory: .svup parsing and the CRC)
+import make_update  # noqa: E402  (same directory: the pair UF2, the manifest and the CRC)
 
 CHANNEL = 0x55
 SET_VALUE = 0x07
@@ -135,6 +141,86 @@ USB_HALF_PROTOS = (3, 4)
 OTHER_HALF_PROTOS = (2, 3, 4)
 OLD_FIRMWARE = ("a board on updater protocol 2 (32-byte reports) does not answer this tool: update it with "
                 "the sval_update.py of its release, or copy the .uf2 in BOOTSEL mode")
+
+# A firmware file's refusals, worded as Keybard words them (src/services/updater/uf2.ts
+# FILE_MESSAGES), so the two say the same thing about the same file.
+FILE_MESSAGES = {
+    "not-firmware": "This isn't a Svalboard firmware file (.uf2).",
+    "no-pair": ("This tool installs only firmware files that update both halves, from x4 on. To install this "
+                "file by hand, plug in the half it's for, press its RESET button twice, then drag the file onto "
+                "the RPI-RP2 drive."),
+    "damaged": "This firmware file is damaged. Download it again, then choose it.",
+    "newer": "This firmware file is newer than this tool knows. Get the sval_update.py of its release.",
+    "one-side": ("This firmware file is for one half only. This tool installs only firmware files that update "
+                 "both halves, from x4 on."),
+}
+
+
+class FirmwareFileError(RuntimeError):
+    """A firmware file the tool refuses: str() is the sentence for the person, kind the reason."""
+    def __init__(self, kind, detail=""):
+        super().__init__(FILE_MESSAGES[kind])
+        self.kind = kind
+        self.detail = detail
+
+
+def firmware_from_uf2(data):
+    """(manifest, image) from a pair UF2, refusing as Keybard's loadFirmwareFile does
+    (parsePairUf2): not firmware, a UF2 without the pair record (a one-half file),
+    damaged, a newer record, or a one-half image."""
+    mu = make_update
+
+    def u32(o):
+        return struct.unpack_from("<I", data, o)[0]
+
+    if len(data) < 512 or u32(0) != mu.UF2_MAGIC0 or u32(4) != mu.UF2_MAGIC1:
+        raise FirmwareFileError("not-firmware")
+    if len(data) % 512:
+        raise FirmwareFileError("damaged", "length is not whole 512-byte blocks")
+    count = len(data) // 512
+    addrs = []
+    for i in range(count):
+        o = i * 512
+        if (u32(o), u32(o + 4), u32(o + 508)) != (mu.UF2_MAGIC0, mu.UF2_MAGIC1, mu.UF2_MAGIC_END):
+            raise FirmwareFileError("damaged", f"block {i}: bad magic")
+        if u32(o + 8) != mu.UF2_FLAG_FAMILY or u32(o + 28) != mu.RP2040_FAMILY or u32(o + 16) != mu.PAGE:
+            raise FirmwareFileError("no-pair", f"block {i}: not an RP2040 flash block")
+        if u32(o + 20) != i or u32(o + 24) != count:
+            raise FirmwareFileError("damaged", f"block {i}: numbered {u32(o + 20)} of {u32(o + 24)}")
+        addrs.append(u32(o + 12) - mu.XIP_BASE)
+    pps = mu.PAGES_PER_SECTOR
+    record_at = count - pps
+    pair_layout = count % pps == 0 and count >= 2 * pps and all(a == (i * mu.PAGE if i < record_at else mu.PAIR_RECORD_OFFSET + (i - record_at) * mu.PAGE) for i, a in enumerate(addrs))
+    if not pair_layout:
+        raise FirmwareFileError("no-pair", "the blocks are not an image and a pair record sector")
+    record = data[record_at * 512 + 32:record_at * 512 + 32 + mu.PAGE]
+    if struct.unpack_from("<I", record, 0)[0] != mu.PAIR_MAGIC:
+        raise FirmwareFileError("no-pair", "no pair record")
+    if mu.crc32_mpeg2(record[:mu.PAIR_RECORD_BYTES - 4]) != struct.unpack_from("<I", record, mu.PAIR_RECORD_BYTES - 4)[0]:
+        raise FirmwareFileError("damaged", "the pair record's CRC does not match")
+    if struct.unpack_from("<H", record, 4)[0] != mu.PAIR_RECORD_VERSION:
+        raise FirmwareFileError("newer", "pair record version")
+    try:
+        manifest, image = mu.parse_pair_uf2(data)
+    except mu.Refused as e:
+        raise FirmwareFileError("damaged", str(e)) from None
+    if mu.parse_manifest(manifest)["hand"] != mu.HAND["either"]:
+        raise FirmwareFileError("one-side")
+    return manifest, image
+
+
+def firmware_from_bytes(data):
+    """(manifest, image) from a firmware file's bytes: a pair UF2. The host tests
+    (tests/sval_updater/test_sval_update_tool.py and test_no_chord_tool.py) still
+    hand it a bare manifest-plus-image file, which is read as before."""
+    if data[:4] == struct.pack("<I", make_update.UF2_MAGIC0):
+        return firmware_from_uf2(data)
+    return make_update.parse_svup(data)
+
+
+def load_firmware(path):
+    return firmware_from_bytes(Path(path).read_bytes())
+
 
 STATUS_NAMES = ["OK", "INVALID", "UNAVAILABLE", "FLASH_ERR", "ACCEPTED", "BUSY", "NOT_CONFIRMED", "WRONG_HW", "BAD_SIG", "BAD_HASH", "BAD_IMAGE", "EPOCH", "OUT_OF_ORDER", "OVERRUN", "TOO_LARGE", "TIMEOUT", "OTHER_CLIENT", "UNSUPPORTED", "STORAGE"]
 STATE_NAMES = ["IDLE", "MANIFEST_LOADING", "CONFIRM_WAIT", "VERIFYING_MANIFEST", "ERASING", "RECEIVING", "VERIFYING_IMAGE", "VERIFIED", "COMMITTING", "ERROR", "RELAYING", "RELAYED", "SUBSIDE_COMMITTING"]
@@ -579,7 +665,7 @@ class Session:
         by_pair: this half's install after that; the board must pre-approve it, and the tool
         never asks for a second chord."""
         data = Path(path).read_bytes()
-        manifest, image = make_update.parse_svup(data)
+        manifest, image = firmware_from_bytes(data)
         self.image = image
         m = make_update.parse_manifest(manifest)
         mhash = hashlib.sha512(manifest).digest()[:4]
@@ -641,7 +727,7 @@ class Session:
         if by_pair and not flags & ARM_PRE_APPROVED:
             # Never a second chord (D41): the approval lapsed or was cleared.
             raise UpdaterError("ARM: this half's install was not pre-approved by the pair (the approval was cleared "
-                               "or timed out); nothing was installed on this half. Finish it with: update FILE.svup "
+                               "or timed out); nothing was installed on this half. Finish it with: update FILE.uf2 "
                                "(one chord)")
         usb_half = info["hand"]
         print()
@@ -887,7 +973,7 @@ def pair(dev, args, paths, sessions):
     """Both halves: the other one through this one, then this one over USB; then presence must match (V)."""
     images = []
     for p in paths:
-        manifest, _ = make_update.parse_svup(Path(p).read_bytes())
+        manifest, _ = load_firmware(p)
         images.append((Path(p), make_update.parse_manifest(manifest)))
     board = decode_info(*dev.op(INFO))["hand_id"]
     halves = pair_images(images, board)
@@ -926,7 +1012,7 @@ def pair(dev, args, paths, sessions):
     # Each session is told its half: an either-hand image (hand 2) names neither,
     # and the image's own hand would otherwise pick this half for both.
     sessions.append(Session(dev, with_half(args, "other")))
-    this_manifest = make_update.parse_svup(this[0][0].read_bytes())[0] if one_approval else None
+    this_manifest = load_firmware(this[0][0])[0] if one_approval else None
     rc = sessions[-1].run(other[0][0], confirm_other=False, confirmed=True, pair_with=this_manifest)
     if rc != 0:
         return rc
@@ -1068,7 +1154,7 @@ class Rejects:
     overrun). Two sessions, each confirmed with the chord; nothing is committed."""
     def __init__(self, dev, path):
         self.dev = dev
-        manifest, self.image = make_update.parse_svup(Path(path).read_bytes())
+        manifest, self.image = load_firmware(path)
         self.blob = manifest
         self.crc_body = make_update.crc32_mpeg2(self.image[0x100:])
         self.passed = self.failed = 0
@@ -1197,9 +1283,9 @@ def main():
     ab = sub.add_parser("abort", help="ABORT: clears a latched error from any client, or a session given its nonce")
     ab.add_argument("--nonce", type=lambda s: int(s, 0), default=0)
     rj = sub.add_parser("reject", help="the protocol rejection matrix (M1 #6); needs the chord twice, never commits")
-    rj.add_argument("svup", type=Path, help="an image this half accepts")
+    rj.add_argument("firmware", type=Path, help="a firmware file (.uf2) this half accepts")
     up = sub.add_parser("update")
-    up.add_argument("svup", type=Path)
+    up.add_argument("firmware", type=Path, help="a firmware file (.uf2)")
     up.add_argument("--half", choices=("usb", "other"), help="the half to update (default: the image's own hand picks it); for an MCU moved between hands")
     up.add_argument("--yes", action="store_true", help="flash an image built for another hand or pointing device without asking")
     up.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
@@ -1210,7 +1296,7 @@ def main():
     up.add_argument("--halt", choices=sorted(HALT_POINTS, key=HALT_POINTS.get), help="test-hooks builds: stop the commit at this point for good (M1 #8-#10)")
     up.add_argument("--halt-unfed", action="store_true", help="with --halt: let the watchdog reset the board (M1 #9)")
     pr = sub.add_parser("pair", help="update both halves: the other one through this one, then this one (M2)")
-    pr.add_argument("svup", type=Path, nargs="+", help="one image for each half, in any order, or one either-hand image for both")
+    pr.add_argument("firmware", type=Path, nargs="+", help="firmware files (.uf2): one for both halves, or one for each half in any order")
     pr.add_argument("--yes", action="store_true", help="flash images built for another pointing device without asking")
     pr.add_argument("--delay", type=float, default=0.0, help="seconds between chunks")
     pr.add_argument("--rebind-every", type=float, default=50.0, help="renew the client ID and REBIND every S seconds (0: never)")
@@ -1269,14 +1355,14 @@ def main():
                 return 1
         if args.command == "reject":
             try:
-                return Rejects(dev, args.svup).run()
+                return Rejects(dev, args.firmware).run()
             except (UpdaterError, ClientIdExpired, RuntimeError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
         if args.command == "pair":
             sessions = []
             try:
-                return pair(dev, args, args.svup, sessions)
+                return pair(dev, args, args.firmware, sessions)
             except (UpdaterError, ClientIdExpired, RuntimeError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 if sessions and not args.keep:
@@ -1284,7 +1370,7 @@ def main():
                 return 1
         session = Session(dev, args)
         try:
-            return session.run(args.svup)
+            return session.run(args.firmware)
         except (UpdaterError, ClientIdExpired, RuntimeError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             if not args.keep:
