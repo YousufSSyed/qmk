@@ -10,7 +10,9 @@ WS2812_DRIVER   = vendor
 
 CUSTOM_MATRIX = lite
 
-SRC += axis_scale.c sval_timing.c matrix.c mainboard.c scanlab.c power.c identity.c pointing_detect.c pointer_reprobe.c build_reset.c velocity_scroll.c typing_pause.c flicker_latch.c
+SRC += key_log.c debug_console.c axis_scale.c sval_timing.c matrix.c mainboard.c scanlab.c power.c identity.c pointing_detect.c pointer_reprobe.c build_reset.c velocity_scroll.c pad_follow.c typing_pause.c flicker_latch.c squal.c
+# Every firmware restart is a full chip reset (full_reset.c).
+SRC += full_reset.c
 
 # Settings start at 0x160000; keep firmware below them.
 LDFLAGS += -Wl,-T,keyboards/svalboard/flash_reservation.ld
@@ -50,6 +52,22 @@ VIA_INSECURE = yes
 # debounced in both, 5 ms per key, deferred.
 DEBOUNCE_TYPE = custom
 SRC += debounce_sval.c
+SRC += link_light.c
+
+# Link light tests (link_light.c): a dev-only raw HID protocol (0xFA) that pauses
+# the split link, restarts the other half, or restarts this half as the half
+# without USB. Opt in with -e SVAL_LINK_TEST=yes; needs SVAL_UPDATER (the pause);
+# release builds refuse it.
+ifeq ($(strip $(SVAL_LINK_TEST)), yes)
+  ifeq ($(strip $(SVAL_UPDATE_RELEASE)), yes)
+    $(error SVAL_LINK_TEST cannot be part of a release build)
+  endif
+  ifneq ($(strip $(SVAL_UPDATER)), yes)
+    $(error SVAL_LINK_TEST needs SVAL_UPDATER=yes)
+  endif
+  OPT_DEFS += -DSVAL_LINK_TEST
+endif
+SRC += pad_gestures.c
 
 # On-device action-path tests; opt in with -e SVAL_KEYTEST=yes.
 ifeq ($(strip $(SVAL_KEYTEST)), yes)

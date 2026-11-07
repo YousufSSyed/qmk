@@ -81,6 +81,43 @@ class VelocityScrollTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('OK', result.stdout)
 
+    def test_pad_follow_math(self):
+        # pad_follow.c: a grabbed touchpad finger as relative counts at the hand's DPI.
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'pad_follow'
+            subprocess.run(['gcc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'keyboards/svalboard'), str(HERE / 'pad_follow_test.c'), str(ROOT / 'keyboards/svalboard/pad_follow.c'), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('OK', result.stdout)
+
+    def test_axis_factor(self):
+        # axis_scale.h: sniper and boost factors clamp to 255, never wrap.
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'axis_factor'
+            subprocess.run(['gcc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'keyboards/svalboard'), str(HERE / 'axis_factor_test.c'), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('OK', result.stdout)
+
+    def test_trackball_health_check(self):
+        # trackball.c: the once-a-second check is read-only, catches a reset or stuck sensor,
+        # leaves a half that never had a sensor to the search, and gives up on a gone one.
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'trackball_health'
+            subprocess.run(['gcc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-I', str(HERE / 'trackball_stubs'), '-I', str(ROOT / 'keyboards/svalboard'), str(HERE / 'trackball_health_test.c'), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # The PMW3360 driver's get_cpi writes Config1: the check must not use it.
+            binary = Path(directory) / 'trackball_health_3360'
+            subprocess.run(['gcc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-DSIM_PMW3360', '-I', str(HERE / 'trackball_stubs'), '-I', str(ROOT / 'keyboards/svalboard'), str(HERE / 'trackball_health_test.c'), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # The per-module build, which has the search's own retry (sval_pointer_retry_own).
+            binary = Path(directory) / 'trackball_health_nonauto'
+            subprocess.run(['gcc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-DSIM_NONAUTO', '-I', str(HERE / 'trackball_stubs'), '-I', str(ROOT / 'keyboards/svalboard'), str(HERE / 'trackball_health_test.c'), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_keycodes_are_positions_30_and_31_in_both_keymaps(self):
         for keymap in ('sval', 'blank'):
             data = json.loads((ROOT / f'keyboards/svalboard/keymaps/{keymap}/sval.json').read_text())
@@ -96,6 +133,17 @@ class VelocityScrollTests(unittest.TestCase):
         passthrough = source[source.index('#define MOUSE_PASSTHROUGH_KEYCODE'):]
         passthrough = passthrough[:passthrough.index(')\n')]
         self.assertIn('SV_VELOCITY_SCROLL_TOGGLE', passthrough)
+
+
+class PointingSensorTests(unittest.TestCase):
+    """pointing_squal.h: trackball sensor bins and the POINTING_SENSOR (0x39) SAMPLES and STATS packing."""
+    def test_squal_packing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'squal'
+            subprocess.run(['gcc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'keyboards/svalboard'), str(HERE / 'squal_test.c'), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('OK', result.stdout)
 
 
 if __name__ == '__main__':

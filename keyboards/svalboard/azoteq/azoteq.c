@@ -6,6 +6,8 @@
 #include "drivers/sensors/azoteq_iqs5xx.h"
 #include "svalboard.h"
 #include "pointing_detect.h"
+#include "pad_gestures.h"
+#include "pad_touch.h"
 
 #ifdef SVAL_AZOTEQ_MULTITOUCH
 // Native touchpad builds (azoteq/multitouch.mk): every contact is read, and
@@ -60,8 +62,8 @@ static int32_t azo_scale(int32_t v, uint32_t num, uint32_t den, int32_t *rem) {
 
 static uint16_t azo_timer = 0;
 #endif
-static uint8_t azo_held_buttons = 0;
-static uint16_t azo_cached_cpi = 0;
+static uint8_t  azo_held_buttons = 0;
+static uint16_t azo_cached_cpi   = 0;
 
 // Public in the driver but missing from its header.
 i2c_status_t azoteq_iqs5xx_end_session(void);
@@ -121,9 +123,91 @@ static i2c_status_t sval_iqs_write(uint16_t reg, const uint8_t *data, uint16_t l
     return i2c_write_register16(AZO_I2C_ADDRESS, reg, data, len, AZOTEQ_IQS5XX_TIMEOUT_MS);
 }
 
+// The touchpad tap setting and tuning (pad_gestures.h): tap, two-finger tap,
+// press and hold and the hold time, the dead zone (tap distance), the tap
+// time and the scroll distance, over what the driver's start wrote from the
+// build's defines. Written at every start of the chip (with the glass tuning),
+// on every change, and after the resolution changes (the distances are in its
+// pixels): the dead zone's 1.2 mm default differs from the driver's 25 pixels
+// in every build, so it is always written.
+static volatile bool azo_gestures_pending = false;
+
+// The driver's own scroll distance, pixels (drivers/sensors/azoteq_iqs5xx.c).
+#ifndef AZOTEQ_IQS5XX_SCROLL_INITIAL_DISTANCE
+#    define AZOTEQ_IQS5XX_SCROLL_INITIAL_DISTANCE 0x32
+#endif
+#ifndef AZOTEQ_IQS5XX_TAP_DISTANCE
+#    define AZOTEQ_IQS5XX_TAP_DISTANCE 0x19
+#endif
+#define AZO_REG_RESOLUTION 0x066E // X then Y resolution, 16-bit big-endian
+
+// What the chip runs with since the last write (the touch page reports it).
+#ifdef SVAL_AZOTEQ_MULTITOUCH
+static uint16_t azo_xres = 2048, azo_yres = 1792;
+#else
+static uint16_t azo_xres = 0, azo_yres = 0;
+#endif
+static uint16_t azo_tap_px = AZOTEQ_IQS5XX_TAP_DISTANCE, azo_scroll_px = AZOTEQ_IQS5XX_SCROLL_INITIAL_DISTANCE;
+
+// Inside an open communication window; leaves it open.
+static i2c_status_t azo_write_gestures(void) {
+    uint8_t      res[4];
+    i2c_status_t status = i2c_read_register16(AZO_I2C_ADDRESS, AZO_REG_RESOLUTION, res, sizeof(res), AZOTEQ_IQS5XX_TIMEOUT_MS);
+    if (status != I2C_STATUS_SUCCESS) return status;
+    uint16_t xres = (uint16_t)res[0] << 8 | res[1], yres = (uint16_t)res[2] << 8 | res[3];
+    if (!xres || xres > 4096) xres = 2048; // never seen; the TPS43's full resolution
+    if (!yres || yres > 4096) yres = 1792;
+    uint8_t regs[SVAL_PAD_TUNE_REG_BYTES];
+    status = i2c_read_register16(AZO_I2C_ADDRESS, SVAL_PAD_REG_GESTURES, regs, sizeof(regs), AZOTEQ_IQS5XX_TIMEOUT_MS);
+    if (status != I2C_STATUS_SUCCESS) return status;
+    sval_pad_regs_apply(sval_pad_gestures(), regs);
+    sval_pad_tune_regs_apply(sval_pad_tuning(), xres, AZOTEQ_IQS5XX_SCROLL_INITIAL_DISTANCE, regs);
+    status = sval_iqs_write(SVAL_PAD_REG_GESTURES, regs, sizeof(regs));
+    if (status == I2C_STATUS_SUCCESS) {
+        azo_xres      = xres;
+        azo_yres      = yres;
+        azo_tap_px    = (uint16_t)regs[4] << 8 | regs[5];
+        azo_scroll_px = (uint16_t)regs[17] << 8 | regs[18];
+    }
+    return status;
+}
+
+// The scroll distance in force on this pad, 0.01 mm.
+uint16_t sval_pad_scroll_in_force_mm100(void) {
+    return sval_pad_px_to_mm100(azo_scroll_px, azo_xres ? azo_xres : 2048, SVAL_PAD_WIDTH_MM100);
+}
+
+// The build's own scroll distance at the resolution in force, 0.01 mm.
+uint16_t sval_pad_scroll_build_mm100(void) {
+    return sval_pad_px_to_mm100(AZOTEQ_IQS5XX_SCROLL_INITIAL_DISTANCE, azo_xres ? azo_xres : 2048, SVAL_PAD_WIDTH_MM100);
+}
+
+#ifdef SVAL_AZOTEQ_MULTITOUCH
+// The touch page's view of this pad (azoteq/touch_stream.c).
+void sval_pad_touch_config(sval_pad_touch_cfg_t *cfg) {
+    const uint8_t s = sval_pad_gestures();
+    cfg->xres       = azo_xres;
+    cfg->yres       = azo_yres;
+    cfg->tap_px     = azo_tap_px;
+    cfg->tap_ms     = sval_pad_tap_time_ms(sval_pad_tuning());
+    cfg->hold_ms    = sval_pad_hold_time_ms(s);
+    cfg->hold_on    = sval_pad_hold_on(s);
+}
+#endif
+
+bool sval_pad_gestures_supported(void) {
+    return true;
+}
+
+void sval_pad_gestures_changed(void) {
+    azo_gestures_pending = true;
+}
+
 // Inside an open communication window; ends it.
 static i2c_status_t sval_iqs_apply_tuning(void) {
     i2c_status_t status = I2C_STATUS_SUCCESS;
+
+    status |= azo_write_gestures();
 
     const uint8_t mult[2] = {SVAL_IQS_TOUCH_MULT_SET, SVAL_IQS_TOUCH_MULT_CLEAR};
     status |= sval_iqs_write(SVAL_IQS_REG_TOUCH_MULT_SET, mult, sizeof(mult));
@@ -144,6 +228,7 @@ static void sval_iqs_tune(void) {
         azo_wake();
         status = sval_iqs_apply_tuning();
     }
+    if (status == I2C_STATUS_SUCCESS) azo_gestures_pending = false;
     dprintf("IQS5XX: glass tuning %s (i2c status %d)\n", status == I2C_STATUS_SUCCESS ? "applied" : "FAILED", status);
 }
 
@@ -240,8 +325,33 @@ uint8_t sval_pointer_retry_own(void) {
 }
 #endif
 
+// A changed tap setting, written in a window of its own.
+static void azo_gestures_task(void) {
+    if (!azo_gestures_pending || azo_product == AZOTEQ_IQS5XX_UNKNOWN) return;
+    azo_wake();
+    i2c_status_t status = azo_write_gestures();
+    azoteq_iqs5xx_end_session();
+    if (status != I2C_STATUS_SUCCESS) {
+        azo_wake();
+        status = azo_write_gestures();
+        azoteq_iqs5xx_end_session();
+    }
+    azo_gestures_pending = false; // a failure is not retried here; the next start writes it
+    dprintf("IQS5XX: tap setting %02X %s\n", sval_pad_gestures(), status == I2C_STATUS_SUCCESS ? "written" : "FAILED");
+}
+
+#ifdef SVAL_AZOTEQ_MULTITOUCH
+// Palm rejection on the mouse path (multitouch.c, pad_gestures.h).
+static sval_palm_mouse_t azo_palm;
+#endif
+
 report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
+#ifdef SVAL_AZOTEQ_MULTITOUCH
+    const uint8_t azo_before      = azo_held_buttons;
+    const bool    azo_palm_before = sval_mt_palm(); // the read below may clear the latch (all up) in the read that carries a tap
+#endif
     azo_log_identity();
+    azo_gestures_task();
 #ifdef SVAL_AZOTEQ_MULTITOUCH
     if (!azo_sched_ready) {
         pad_sched_init(&azo_sched);
@@ -252,7 +362,7 @@ report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
         uint32_t call_started = sval_mt_now_us();
         uint8_t  perf_prev    = sval_perf_enter(SVAL_PERF_GAP_PAD);
 #    endif
-        mouse_report     = azoteq_iqs5xx_get_report(mouse_report);
+        mouse_report = azoteq_iqs5xx_get_report(mouse_report);
 #    ifdef SVAL_PERF_STATS
         sval_perf_leave(perf_prev);
         sval_perf_section(SVAL_PERF_SEC_PAD_CALL, sval_mt_now_us() - call_started);
@@ -285,8 +395,17 @@ report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
     }
 #endif
 
+#ifdef SVAL_AZOTEQ_MULTITOUCH
+    // Palm rejection (VIA value 58): while a palm is down, and in the read
+    // where it lifts, this pad's mouse output stops, as the chip's own palm
+    // detect stops it, and its taps don't click. A button held before it (a
+    // drag) stays only while the driver still holds it.
+    const bool azo_palm_after = sval_mt_palm();
+    if (azo_palm_before || azo_palm_after) mouse_report.x = mouse_report.y = mouse_report.h = mouse_report.v = 0;
+    azo_held_buttons = sval_palm_mouse_buttons(&azo_palm, azo_palm_before, azo_palm_after, azo_before, azo_held_buttons);
+#endif
     // Invert V-axis
-    mouse_report.v = -mouse_report.v;
+    mouse_report.v       = -mouse_report.v;
     mouse_report.buttons = azo_held_buttons;
 
 #ifdef SVAL_AZOTEQ_MULTITOUCH
@@ -315,6 +434,11 @@ void pointing_device_driver_set_cpi(uint16_t cpi) {
     if (cpi != azo_cached_cpi) {
         azoteq_iqs5xx_set_cpi(cpi);
         azo_cached_cpi = cpi;
+#ifndef SVAL_AZOTEQ_MULTITOUCH
+        // The chip counts the dead zone and scroll distance in pixels of the
+        // resolution this just set: write them again for the same millimeters.
+        azo_gestures_pending = true;
+#endif
 #ifdef SVAL_AZOTEQ_MULTITOUCH
         azo_num_x = cpi ? AZO_RES(cpi, 43u, AZO_FULL_X) : AZO_FULL_X;
         azo_num_y = cpi ? AZO_RES(cpi, 40u, AZO_FULL_Y) : AZO_FULL_Y;

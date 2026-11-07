@@ -11,7 +11,9 @@ and three- and four-finger swipes. No app runs on the computer.
 - **Windows and Linux** switch the touchpad interface to touchpad mode (HID
   Input Mode 3) when it connects. From then on the operating system's
   touchpad settings apply to the pads, and Keybard's pointer settings (DPI,
-  scroll mode, sniper, natural scroll, axis lock) do not apply to a pad hand.
+  scroll mode, natural scroll, axis lock) do not apply to a pad hand, except
+  while a scroll key drives the firmware's scroll. The pointer keys still
+  work: sniper, boost and the scroll keys (see below).
   The firmware reports this per hand in the Sval pointing identity (0x2C):
   flag `SVAL_POINTER_OS_TOUCHPAD` (0x10), so Keybard can show it.
 - **macOS, a BIOS, or any host that never asks for touchpad mode** gets the
@@ -23,9 +25,14 @@ and three- and four-finger swipes. No app runs on the computer.
 - **Linux:** libinput turns tap-to-click off by default for touchpads with
   buttons; turn it on in the desktop's touchpad settings.
 
-The two pads, one per hand, appear as one surface: the left pad, a 10 mm
-unreachable gap, then the right pad, 96 × 40 mm in all (4572 × 1792 counts). A
-board with one pad uses the same surface, with the pad in its hand's part.
+The two pads, one per hand, make one area: the left pad, a 10 mm unreachable
+gap, then the right pad, 96 × 40 mm in all (4572 × 1792 counts). A board with
+one pad uses the same area, with the pad in its hand's part. The surface the
+operating system sees is seven times that area's width and height, 672 × 280 mm
+(32004 × 12544 counts), at the same counts per mm, with the pads' area in its
+center (`SVAL_PTP_SURFACE_TIMES` in `azoteq/ptp_descriptor.h`). Pointer speed
+and gesture distances are those of the pads; the room around them is where
+boost's scaled travel goes (below).
 
 ## How it works
 
@@ -100,6 +107,72 @@ scroll. A finger already down is followed at once; after it lifts, only a
 finger that lands later is, so one resting on a pad never takes over. When
 it turns off, the pads arm again on an all-up sample, so a finger still
 down never moves the pointer.
+
+**Pointer keys.** While the operating system owns a pad (Windows or Linux in
+touchpad mode), the keys a trackball hand uses work on the pads too
+(`keymaps/keymap_support.c`):
+
+- **Scroll toggle and scroll hold** take the pads from the operating system
+  (only while it owns them: touchpad mode, its touchpad switched on), as
+  Velocity Scroll does: the OS sees every contact lift with Confidence
+  clear (so a finger that just landed is never a tap), and one finger per pad
+  drives the firmware's own scroll, at the hand's DPI and with its scroll
+  settings, exactly where a trackball's counts would enter
+  (`pad_follow.c`). A finger already down is followed at once. When the key
+  lets go, a finger still down comes straight back to the operating system as
+  a new contact where it is, so scrolling turns back into pointing mid-stroke;
+  if it lifts within 300 ms it lifts with Confidence clear, never a tap.
+- **Sniper and boost** leave the pads to the operating system and scale the
+  travel of every contact by the factor in force (`ptp.c`,
+  `sval_ptp_set_scale`). Pressing or releasing the key re-anchors every
+  contact where it was just reported, so the speed changes from the next
+  frame with no jump, no stall and no lift. A finger that lands while another
+  is down enters where the first finger's map puts it, so the fingers'
+  reported spacing stays consistent for gestures; with no finger down it
+  lands at its real position. Positions stay inside the surface, and an axis
+  that reaches its edge slides along it, so the other axis keeps moving and
+  turning back moves at once.
+
+On a Mac, with built-in gestures, or with the touchpad off, the pad is the
+chip's mouse and these keys work on it as they always have. `POINTING_MOTION`
+(`0x2D`, bytes 53-55, `docs/protocol.md`) reports the sniper divisor and boost
+multiplier in force, and `POINTING_CONTACTS` (`0x2F`) gives every contact's
+real position on its pad, never the scaled one.
+
+## The split link's receive
+
+The half with USB receives the other half's replies (its pad snapshot, its
+matrix, its pointing report) by DMA from the PIO receive FIFO into a ring
+(`SERIAL_PIO_RX_DMA`, `platforms/chibios/drivers/vendor/RP/RP2040/serial_vendor.c`).
+Before, an interrupt and a thread wake drained the 8-byte FIFO as bytes
+arrived, and an interrupt handler running longer than 8 byte times (80 us at 1
+Mbaud; USB's handler was measured up to about 300 us) overflowed it: the PIO
+state machine stalled, missed bits, and the transaction failed, often only at
+the 20 ms receive timeout, with the main loop blocked meanwhile. On a touchpad
+on the half without USB that showed as pauses of 25 to 50 ms in the pointer;
+on a trackball there, as lost motion.
+
+- The DMA channel runs only while a transaction does: the updater refuses to
+  program or commit flash while any DMA channel is busy.
+- A framing error fails the receive at once.
+- The wait for a reply spins rather than sleeps. On a trackball pair, idle
+  with the default power saving, that keeps the core out of WFI 5.3 % of the
+  time (0.5 % when sleeping), while sleeping costs about 4 % of the scan
+  rate. `SERIAL_PIO_RX_DMA_POLL_US` above 0 makes it sleep.
+- The link counts as disconnected (QMK then releases the other half's held
+  keys) once failures have gone on for 200 ms (`SPLIT_MIN_DISCONNECT_MS`,
+  `quantum/split_common/split_connection.h`), not after ten failed scans,
+  which the short deadline would pass in a few tens of ms.
+- QMK's per-scan transactions and the pad snapshot fetch get a 3 ms deadline
+  (`SERIAL_USART_SHORT_TIMEOUT`); the other RPCs, the updater's relay among
+  them, keep the 20 ms one, because their other end may take time.
+- The half without USB keeps the interrupt receive: a dedicated high-priority
+  thread drains it, and it only receives short requests. It waits 3 ms for
+  the buffer that follows a handshake (the master sends it at once), so the
+  bytes of a transaction the master gave up on are never taken for the next.
+
+Dev builds (`SVAL_TOUCH_DEV`) count failures by stage on both halves (and,
+on the half with USB, their cost) over the dev command (0xFC op 0x42 action 7).
 
 ## Builds
 

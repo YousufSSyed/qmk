@@ -564,6 +564,7 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             data[18] = (sval_storage_was_reset() ? 1 : 0) | (sval_storage_write_failed() ? 2 : 0) | sval_storage_flags_kb();
             data[19] = sval_get_feature_flags2();
             if (length > 20) data[20] = sval_get_feature_flags3_kb();
+            if (length > 21) data[21] = sval_get_feature_flags4_kb();
             break;
         }
 
@@ -882,10 +883,33 @@ bool sval_handle_command(uint8_t *data, uint8_t length) {
             // Response: [0xDF] [0x2D] [format] [report...]
             // Read-and-clear. format 0: no data. The keyboard defines the report
             // (Svalboard: keyboards/svalboard/docs/protocol.md).
+            // Request [0xDF] [0x2D] [reader] [1]: the touch page instead, which
+            // clears no motion counts (sval_flag3_pad_touch). Page 2: every
+            // finger on each pad (sval_flag3_pad_fingers), the same way.
             if (length > 2) {
+                const uint8_t page = length > 3 ? data[3] : 0;
                 memset(&data[2], 0, length - 2);
-                sval_pointing_motion_kb(&data[2], length - 2);
+                if (page == 1)
+                    sval_pointing_touch_kb(&data[2], length - 2);
+                else if (page == 2)
+                    sval_pointing_fingers_kb(&data[2], length - 2);
+                else
+                    sval_pointing_motion_kb(&data[2], length - 2);
             }
+            break;
+        }
+
+        case sval_cmd_pointing_sensor: {
+            // Request:  [0xDF] [0x39] [op] [hand] [arg lo] [arg hi]
+            // Response: [0xDF] [0x39] [reply...] (keyboards/svalboard/docs/protocol.md, "Pointing sensor")
+            if (length > 5) sval_pointing_sensor_kb(&data[2], length - 2);
+            break;
+        }
+
+        case sval_cmd_debug_console: {
+            // Request:  [0xDF] [0x3E] [op]
+            // Response: [0xDF] [0x3E] [op] [status] [state] (keyboards/svalboard/docs/protocol.md)
+            if (length > 4) sval_debug_console_kb(&data[2], length - 2);
             break;
         }
 
@@ -1225,6 +1249,15 @@ __attribute__((weak)) uint8_t sval_get_feature_flags3_kb(void) {
     return 0;
 }
 
+__attribute__((weak)) uint8_t sval_get_feature_flags4_kb(void) {
+    return 0;
+}
+
+// Without the keyboard's handler: status 0xFF after the echoed op.
+__attribute__((weak)) void sval_debug_console_kb(uint8_t *data, uint8_t length) {
+    data[1] = 0xFF;
+}
+
 // Without the keyboard's handler: status 0xFF after the echoed op.
 __attribute__((weak)) void sval_typing_pause_kb(uint8_t *data, uint8_t length) {
     data[1] = 0xFF;
@@ -1238,9 +1271,15 @@ __attribute__((weak)) void sval_pointing_hardware_kb(uint8_t *out, uint8_t lengt
 
 __attribute__((weak)) void sval_pointing_motion_kb(uint8_t *out, uint8_t length) {}
 
+__attribute__((weak)) void sval_pointing_sensor_kb(uint8_t *data, uint8_t length) {
+    memset(data, 0, length);
+}
+
 __attribute__((weak)) void sval_main_board_kb(uint8_t *out, uint8_t length) {}
 
 __attribute__((weak)) void sval_pointing_contacts_kb(uint8_t *out, uint8_t length) {}
+__attribute__((weak)) void sval_pointing_touch_kb(uint8_t *out, uint8_t length) {}
+__attribute__((weak)) void sval_pointing_fingers_kb(uint8_t *out, uint8_t length) {}
 
 // Override via_command_kb to intercept wrapper and Sval protocol
 bool via_command_kb(uint8_t *data, uint8_t length) {

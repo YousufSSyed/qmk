@@ -47,9 +47,9 @@ Check feature flags before using an extension, send one request at a time per co
 - Request: `DF 2C`
 - Response: `DF 2C <format> <this half: 5 bytes> <other half: 5 bytes>`. `format` is `1`; `0` means the board has nothing to report. "This half" is the one plugged into USB.
 - Each half: `<flags> <built_for> <detected> <Product_ID> <Inverse_Product_ID>`.
-  - `flags`: bit 0 the block holds a report, bit 1 the half is the left half, bit 2 the sensor driver initialized, bit 3 the firmware drives whichever module is attached (the plain `left`/`right` builds), so `built_for` is the module it chose after the probe, or `0` when none answered. Bit 5: the half has no side yet (one-image builds, see Side), and bit 1 means nothing.
+  - `flags`: bit 0 the block holds a report, bit 1 the half is the left half, bit 2 the sensor driver initialized, bit 3 the firmware drives whichever module is attached (the plain `left`/`right` builds), so `built_for` is the module it chose after the probe, or `0` when none answered. Bit 4 (`SVAL_POINTER_OS_TOUCHPAD`, native touchpad builds): the computer has this pad as a touchpad now, the mode in force (clear with built-in gestures, `Touchpad mode`). Bit 5: the half has no side yet (one-image builds, see Side), and bit 1 means nothing. Bit 6 (`SVAL_POINTER_OS_ASKS`, native touchpad builds): the computer asked for this pad as a touchpad (Input Mode 3), whatever `Touchpad mode` says.
   - `built_for`: `0` no pointing module, `1` PMW3360 trackball, `2` PMW3389 trackball, `5` Azoteq trackpad, `6` TrackPoint.
-  - `detected`: `0` not checked yet, `1` PMW3360 (`42 BD`), `2` PMW3389 (`47 B8`), `3` no module answered, `4` the trackball bus answered with some other ID, `5` Azoteq (IDs: product number, high byte first), `6` TrackPoint (first ID byte: its PS/2 device ID).
+  - `detected`: `0` not checked yet, `1` PMW3360 (`42 BD`), `2` PMW3389 (`47 B8`), `3` no module answered, `4` the trackball bus answered with another device's ID pair (the second ID is the first inverted; IDs that aren't a pair count as `3`, and the half resets the sensor), `5` Azoteq (IDs: product number, high byte first), `6` TrackPoint (first ID byte: its PS/2 device ID).
   - Each build checks its own module at startup. When that module doesn't answer, or the build has none, the half checks the other modules' buses about 1.5 s after boot (PS/2, then I2C, then SPI), so `detected` names whatever is attached. Until then it reads `0` (no module build) or `3` (its own module missing). While nothing works, the half looks again, its own module first, then the other buses: 3, 6, 12 and 30 s after boot, and never after that, so a board with no pointing module isn't probed again. It stops sooner once a module works, once a per-module build finds a module it can't drive, or once a module that answers has failed to start four times. A half whose module works is never probed. So `detected`, `built_for` and bit 2 can change during a half's first 30 s, after a host has connected (the other half's block follows within a presence ping, 0.5 s); a host that shows `3` or `0` should read again until then.
 - The other half reports through the split link's half-second presence ping, so its block is zero while it is disconnected, for up to half a second after it connects, and when it runs firmware without this command.
 
@@ -110,6 +110,15 @@ Each hand:
 - A hand that is not valid (no module, the driver didn't start, or the other half is disconnected) has an all-zero block.
 - Touch positions and finger counts are not reported yet: bit 4 and bits 5-6 read `0`.
 
+### Sniper and boost factors
+
+Bytes 53-55: `0x46` (`F`), then the sniper divisor and the boost
+multiplier in force (1 when that key is off, 255 at most), so a host shows the
+real factor instead of guessing it from the keymap. Firmware without them
+leaves byte 53 zero (the reply is zero-filled); a host then shows that sniper
+or boost is on, with no factor. A 32-byte client-wrapped report has no room
+for them.
+
 ### Velocity Scroll
 
 Builds with Velocity Scroll (`SV_VELOCITY_SCROLL`, and its toggle `SV_VELOCITY_SCROLL_TOGGLE`) add a 24-byte block at offsets 29-52, so a host can show it on, the offset from the anchor and the speed it sets, and draw the dead zone and the curve without knowing the build's tunables. Bytes 24-28 are left for the per-reader extension, so the two never overlap.
@@ -139,7 +148,7 @@ Builds with Velocity Scroll (`SV_VELOCITY_SCROLL`, and its toggle `SV_VELOCITY_S
 
 ## Pointing contacts
 
-`POINTING_CONTACTS` (`0x2F`) returns every touch contact down now, each on its own pad, for a live picture of the touchpads. With the native touchpad the computer owns the pads and `POINTING_MOTION` carries no touch positions, so this is how a host app draws the fingers. It is a snapshot: reading clears nothing, so any number of apps can poll it.
+`POINTING_CONTACTS` (`0x2F`) returns every touch contact down now, each on its own pad, for a live picture of the touchpads. With the native touchpad the computer owns the pads and `POINTING_MOTION` carries no touch positions, so this is how a host app draws the fingers. It is a snapshot: reading clears nothing, so any number of apps can poll it. Positions are where each finger is on its pad, also while sniper or boost scales what the computer sees.
 
 - Discovery: GET_INFO byte 19, bit 5 (`sval_flag2_pointing_contacts`, `0x20`). Firmware without the native touchpad leaves it zero.
 - Request: `DF 2F`
@@ -256,6 +265,86 @@ Combos can have names on the board, like layers, tap dances and macros: one name
 - Both need the 64-byte report (34 bytes after `3D`); a client-wrapped 32-byte report is answered with status `3`.
 - A host that reads both ops on a schedule keeps a running count per switch; a switch's presses since the last read are its changes, halved, rounded up when it was up at the last read and down when it was down.
 
+## Pointing sensor
+
+`POINTING_SENSOR` (`0x39`) reports how a PMW3360 or PMW3389 trackball sensor sees its surface, for a characterization panel: SQUAL (surface quality), Raw_Data_Sum, Maximum and Minimum_Raw_data, and the shutter, with the share of time the ball moved. Values are the sensor's raw register values (SQUAL is not scaled).
+
+- Discovery: GET_INFO byte 21 (the fourth feature byte), bit 3 (`sval_flag4_pointing_sensor`, `0x08`). Older firmware leaves it zero, and answers `0x39` with the command byte `0xFF` (unknown command). A half without a PMW sensor answers format `0`.
+- Capture is on only while a host polls: the first request starts it, and it stops 1.5 s (`SVAL_HOST_ACTIVE_MS`) after the last one. While on, the sensor's motion burst, which the driver already reads, carries six more bytes (SQUAL, Raw_Data_Sum, Maximum_Raw_data, Minimum_Raw_data, Shutter_Upper, Shutter_Lower; about 24 microseconds at 2 MHz) on the same transaction. While off, the burst is the usual six bytes. The pointer report and its timing are unchanged. Samples are taken on every read, at rest too, so SQUAL shows with the ball idle. Polling this command counts as host activity, so the board stays out of deep idle and reads at full rate while a panel is open.
+- Each half folds its reads into bins of 50 ms (`SVAL_SQUAL_BIN_MS`) and keeps the newest 256 (12.8 s) in RAM. The half with USB answers for both hands; for the other hand it asks the other half over the split link (`KEYBOARD_SYNC_B`, first byte `0xB9`) only when it is asked. Nothing is pushed over the link. A reply for the other hand is empty (format `0`) while the link is down or paused for an update.
+- The first request after a pause (a new session) starts with an empty ring. Bins are numbered with a 16-bit sequence that keeps counting and wraps.
+- Request: `DF 39 <op> <hand> <arg lo> <arg hi>`. `hand`: `0` left, `1` right. `op` `0` SAMPLES: `arg` is the cursor, the sequence number of the next bin wanted. `op` `1` STATS: `arg` is how many of the newest bins to cover (`0` = all held).
+- Response: `DF 39` then 25 bytes (offsets from the first of them). Byte `0` is the format: `1`, or `0` for no data (the rest zero). Byte `1` is flags for both ops: bit 0 a PMW sensor runs on that hand, bit 1 it is a PMW3389, bit 2 lost (SAMPLES: the cursor was older than the ring, or ahead of it; the reply starts at the oldest bin), bit 3 more bins wait (SAMPLES), bit 4 the hand is the right one, bits 5-6 the op answered, bit 7 the newest bin saw the ball lifted (STATS only; SAMPLES carries it per bin).
+
+SAMPLES (`op 0`), at most two bins per reply:
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | format = `1` |
+| 1 | 1 | flags |
+| 2 | 2 | sequence number of the first bin returned, uint16 little-endian |
+| 4 | 1 | bins returned, `0` to `2` |
+| 5 | 2 | sequence number of the next bin to be made (the head), uint16 little-endian |
+| 7 | 9 each | bins, oldest first |
+
+Each bin:
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | SQUAL, mean of the bin's reads |
+| 1 | 1 | SQUAL, lowest read |
+| 2 | 1 | SQUAL, highest read |
+| 3 | 1 | Raw_Data_Sum, mean |
+| 4 | 1 | Maximum_Raw_data, highest read |
+| 5 | 1 | Minimum_Raw_data, lowest read |
+| 6 | 2 | shutter, mean, uint16 little-endian |
+| 8 | 1 | bits 0-6: reads with motion (127 at most); bit 7: the ball was lifted at some read |
+
+A host keeps its own cursor: ask with the head it was last given, and ask again at once while bit 3 is set. A bin is a mean of every read the pointing task made in its 50 ms (about 15 to 30 on current builds; STATS bytes 22-23 give the measured rate), so a panel that polls every 100 ms asks about once per two bins.
+
+STATS (`op 1`), over the newest bins:
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | format = `1` |
+| 1 | 1 | flags |
+| 2 | 2 | head, as above |
+| 4 | 2 | bins in the window, uint16 little-endian |
+| 6 | 1 | SQUAL lowest |
+| 7 | 1 | SQUAL highest |
+| 8 | 2 | SQUAL mean, times 256, uint16 little-endian |
+| 10 | 1 | Raw_Data_Sum lowest bin mean |
+| 11 | 1 | Raw_Data_Sum highest bin mean |
+| 12 | 1 | Raw_Data_Sum mean |
+| 13 | 1 | Maximum_Raw_data highest |
+| 14 | 1 | Minimum_Raw_data lowest |
+| 15 | 2 | shutter lowest bin mean |
+| 17 | 2 | shutter highest bin mean |
+| 19 | 2 | shutter mean |
+| 21 | 1 | percent of bins with any motion |
+| 22 | 2 | sensor reads per second, from the newest bin, uint16 little-endian (the rate the firmware really achieved) |
+| 24 | 1 | zero |
+
+- The SQUAL minimum and maximum are the lowest and highest single reads; the other lows and highs are of the bins' means (raw maximum and minimum are of single reads).
+- Reader: `keyboards/svalboard/tools/read_squal.py`.
+
+## Debug console
+
+`DEBUG_CONSOLE` (`0x3E`) turns QMK's debug flag (`debug_enable`) on or off, and reads it. The firmware prints key events on the QMK debug console (usage page `0xFF31`) only while the flag is on, and any program on the computer can read that console. Keybard's Settings show it as "Debug console".
+
+- Discovery: GET_INFO byte 21 (the fourth feature byte), bit 2 (`sval_flag4_debug_console`, `0x04`). Builds with the console (`CONSOLE_ENABLE`, every Svalboard build) set it. Older firmware leaves it zero, and answers `0x3E` with the command byte `0xFF` (unknown command).
+- Request: `DF 3E <op>`: `0` off, `1` on, `2` read. Any client may send it.
+- Never saved: debug is off at every power-up, and stays as set until the next power-up or `0x3E`. The half with USB sets its own flag; only that half's console reaches the computer.
+- Response: `DF 3E` then:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | op, echoed |
+| 1 | 1 | status: `0` done, `1` unknown op (nothing changed), `2` the build has no console (nothing changed), `3` report too short, `0xFF` the keyboard has no handler for it (the module's default; nothing changed) |
+| 2 | 1 | the flag now: `0` off, `1` on |
+
+- While on, each key event prints one line, `KL: kc: 0x<keycode>, col: <c>, row: <r>, pressed: <0|1>, time: <ms>, int: <0|1>, count: <n>`, as do the firmware's other debug lines.
+
 ## Debounce mode
 
 The optical keys have a saved debounce mode; Keybard's Scan Lab switches it. The thumb Double Down, the one mechanical switch, is debounced in both modes: 5 ms per key, deferred (a change is reported once it has held for 5 ms).
@@ -270,6 +359,152 @@ The setting is a VIA custom value, not a Sval command:
 - Write: `id_custom_set_value` (`0x07`), channel `0`, value ID `48`, `[1]` or `[0]`; then `id_custom_save` (`0x09`), channel `0`, stores it with the other keyboard settings. It works at once, saved or not.
 - Both halves use the same mode. The half with USB owns the setting and sends its mode in the split presence ping (every 0.5 s; its last byte), as it sends the scan timing; the other half uses it and doesn't store it. Until the first ping, and with an older half on USB, the other half uses its own saved mode. Each half's `STATUS` bit 1 shows the mode it uses, so a host can see the other half follow.
 - Stored in the last spare bit of the keyboard settings' first byte (`optical_debounce_off`, 0 = on), so the settings keep their size and layout stamp: updating to this firmware keeps them.
+
+## Touchpad taps
+
+The touchpad chip (Azoteq IQS5xx) makes clicks of its own while the pad is a mouse: a tap clicks, a two-finger tap right clicks, and a finger held still for the hold time (press and hold) presses the left button until it lifts, for dragging. This setting turns each one on or off and sets the hold time. It applies wherever the pads are a mouse: macOS, a BIOS or boot menu, every OS on builds without the native touchpad, and Windows and Linux until they switch the pads to touchpad mode. In touchpad mode the OS makes its own taps from the contacts, with its own touchpad settings, and the chip's clicks don't reach it (`SVAL_POINTER_OS_TOUCHPAD` in `0x2C`).
+
+The setting is a VIA custom value, not a Sval command:
+
+- Discovery: GET_INFO byte 20, bit 4 (`sval_flag3_pad_gestures`, `0x10`). Every build with the Azoteq driver sets it (the auto builds whatever module is attached; `0x2C` says which hand has a pad). Older firmware leaves it zero, and doesn't answer the values below.
+- Values, channel `0`, read with `id_custom_get_value` (`0x08`) and written with `id_custom_set_value` (`0x07`):
+
+| Value | Name | Data | Default |
+|---|---|---|---|
+| `51` | `id_pad_tap` | `1` a tap clicks, `0` it doesn't | `1` |
+| `52` | `id_pad_two_finger` | `1` a two-finger tap right clicks, `0` it doesn't | `1` |
+| `53` | `id_pad_hold` | `1` press and hold presses the left button, `0` it doesn't | `1` |
+| `54` | `id_pad_hold_ms` | hold time, ms, 16-bit little-endian | `300` |
+
+- The hold time is one of 20, 50, 100, 150, 200, 250, 300, 350, 400, 500, 600, 700, 800, 1000, 1200 or 1500 ms; a write takes the nearest (a tie, the shorter). Read it back for the stored value. Firmware before this held for 20 ms.
+- A write works at once, on both pads: the half with USB writes its chip within a report cycle, and the other half gets the setting in the next presence ping (every 0.5 s; its last byte) and writes its own. `id_custom_save` (`0x09`) stores it with the other keyboard settings. A settings reset sets the defaults again.
+- Defaults: all three on, hold 300 ms (`AZOTEQ_IQS5XX_HOLD_TIME`, QMK's driver default; firmware before this used 20 ms, so a finger resting still clicked almost at once). The stored byte records only changes from the defaults: its 0 means "the build's defaults", and the hold time's default is its own value (index 0), never a stored 20. A board that has never changed the setting writes nothing to the chip beyond what the driver's start writes from the build's defines, and after an update it holds for 300 ms. A self-built firmware that changes those defines keeps them until the setting is changed.
+- The chip loses the setting when it restarts, so the firmware writes it again after every start of the chip (with the glass tuning), as long as it differs from the defaults.
+- Stored in two bytes of their own after the keyboard settings' magic (the setting and its complement), not in the keyboard settings, which have no spare byte left: the settings keep their size and layout stamp, so updating to this firmware keeps them. Two bytes that don't match read as the defaults.
+- Split: with an older half on USB, the other half keeps its own saved setting (the defaults, unless it once ran on USB with another). An older half without USB ignores the byte, and its pad keeps its build's taps.
+
+## Touchpad tuning
+
+How the touchpad chip (Azoteq IQS5xx) decides a tap or a press and hold, and when two fingers start to scroll. The chip counts these distances in pixels of its output resolution, and that resolution differs between builds: the native touchpad keeps the full 2048 pixels across the pad's 43 mm, and the builds without it scale it to the pointer DPI (about 1354 at 800 cpi). The firmware takes each distance in 0.01 mm and converts it from the resolution the chip has, read back from the chip at each write and written again when the DPI changes it, so it is the same size in every build.
+
+- Discovery: GET_INFO byte 20, bit 5 (`sval_flag3_pad_tuning`, `0x20`). Every build with the Azoteq driver sets it, with bit 4 (`Touchpad taps`).
+- Values, channel `0`, 16-bit little-endian, read with `id_custom_get_value` (`0x08`) and written with `id_custom_set_value` (`0x07`):
+
+| Value | Name | Data | Default |
+|---|---|---|---|
+| `55` | `id_pad_dead_zone` | the dead zone, 0.01 mm: a tap or a press and hold is canceled once the finger moves farther than this from where it touched down (the chip's Tap distance, `0x06BB`) | `120` (1.2 mm) |
+| `56` | `id_pad_tap_ms` | the tap time, ms: a tap must lift within it; press and hold fires at the tap time plus the hold time (`0x06B9`) | `150` |
+| `57` | `id_pad_scroll_start` | how far two fingers move before they scroll, 0.01 mm (`0x06C8`); `0` is the build's own | the build's own (50 pixels: 1.05 mm on the native touchpad) |
+
+- The dead zone is one of 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6, 2.0, 2.5, 3.0 or 4.0 mm; the tap time one of 50, 75, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 500, 600, 800 or 1000 ms; the scroll distance the build's own or one of 0.3, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0 or 10.0 mm. A write takes the nearest (a tie, the smaller). Read it back for the stored value.
+- Reading `57` while it is the build's own gives that distance in 0.01 mm at the resolution in force (`105` on the native touchpad); writing that same number back, or `0`, keeps the build's own.
+- Before this, the dead zone was the driver's 25 pixels in every build: about 0.52 mm on the native touchpad (the release image) and 0.79 mm at 800 cpi. The default is now 1.2 mm in every build: 57 pixels on the native touchpad and about 38 at 800 cpi. The tap time and the scroll distance keep what every build had.
+- A write works at once and reaches the other half the way the tap setting does (the presence ping, a 16-bit word after its byte). `id_custom_save` (`0x09`) stores it. A settings reset sets the defaults again.
+- Stored in four bytes of their own after the tap setting's two (the setting and its complement), so the settings keep their size and layout stamp. Bytes that don't check out read as the defaults.
+
+## Touchpad palm rejection
+
+A contact larger than a fingertip, such as the heel of a hand resting on a pad, can be treated as a palm. Off by default: every build before this treated every contact as a finger, and so does this one until it is set.
+
+- Discovery: GET_INFO byte 21 (the fourth feature byte), bit 0 (`sval_flag4_pad_palm`, `0x01`). The native touchpad builds set it; they read every contact's area from the chip. Older firmware leaves byte 21 zero.
+- Value `58`, `id_pad_palm`, channel `0`, 16-bit little-endian (the high byte is always 0): a contact whose area is more than this many of the chip's channels is a palm; `0` (the default) is off. Areas are counted in channels as the chip reports them (datasheet 5.2.5): on the TPS43 a channel is about 5.4 x 5.7 mm (31 mm²), so 3 channels is a contact about 11 mm across. A write above 56 (the TPS43's 8 x 7 channels) stores 56. Read it back for the stored value.
+- In touchpad mode (Input Mode 3, Windows and Linux): a palm contact is reported with Confidence clear, in that report and every one after it until it lifts, as the Windows Precision Touchpad rules ask for a contact that isn't a finger. The computer ignores it; the other fingers on the pad carry on.
+- With built-in gestures (on a Mac, in a BIOS, before Windows or Linux asks for touchpad mode, or with `Touchpad mode` below set to built-in gestures): while a palm is down the pad's pointer and scroll output stop and its taps don't click, until every finger on that pad lifts, including the tap or two-finger tap the chip reports in that lift. A button held before it (a drag) stays held for as long as the chip holds it, and is released when the chip releases it. This matches what the chip's own palm detect does, so one threshold serves both.
+- The chip's own palm rejection (the `PALM_REJECT` bit, set by the driver in every build, with the chip's stored Palm reject threshold) is unchanged and runs in both modes as before: when it fires, the chip reports no positions for that cycle, and the touchpad reports the pad's contacts once with Confidence clear, then lifts them.
+- The touch pages show it: `Touchpad fingers` byte 1 is the threshold in force, and each finger's area is there to compare against it.
+- A write works at once and reaches the other half in the presence ping (its last byte), as the tap setting does. `id_custom_save` (`0x09`) stores it. A settings reset turns it off.
+- Stored in two bytes of their own after the tuning's four (the value and its complement), so the settings keep their size and layout stamp. Bytes that don't check out read as off. With an older half on USB, the other half keeps its own saved value (off, unless it once ran on USB with another); an older half without USB ignores it.
+
+## Touchpad mode
+
+Whether the pads are a touchpad when Windows or Linux asks for one. Touchpad mode is what the board ships with: the computer gets every contact (a Windows Precision Touchpad) and makes its own taps, scrolling and gestures, with its own touchpad settings. The chip's built-in gestures (tap, two-finger tap and scroll, press and hold, tuned by `Touchpad taps` and `Touchpad tuning`) are the fallback: on a Mac, in a BIOS, and before the computer asks.
+
+- Discovery: GET_INFO byte 21, bit 1 (`sval_flag4_pad_mode`, `0x02`). The native touchpad builds set it.
+- Value `59`, `id_pad_touchpad_mode`, channel `0`, one byte: `0` Automatic (the default, and what every build did before it): touchpad mode whenever the computer writes Input Mode 3. `1` Built-in gestures: the pads stay on the chip's gestures even after the computer writes Input Mode 3. Other values store `0`.
+- With built-in gestures the touchpad interface stays: the computer still lists the touchpad and reads back the Input Mode it wrote, but gets no contacts, and the pads' pointer, scroll and clicks come over the mouse interface as on a Mac. A switch takes effect at once: contacts the computer has are released (as when it leaves touchpad mode), and back in Automatic the pads report again from their next all-up sample.
+- Two flags tell them apart. The mode in force: the touch pages' "the computer has this pad as a touchpad" bits and `0x2C`'s `SVAL_POINTER_OS_TOUCHPAD` (flags bit 4) are set only while the pad's contacts go to the computer, so they are clear with built-in gestures even while the computer asks. What the computer asked for: `0x2C`'s `SVAL_POINTER_OS_ASKS` (flags bit 6) is set while it has written Input Mode 3, whatever this setting. A host shows the gesture settings by the mode in force, or by this setting.
+- A write works at once and reaches the other half in the presence ping (its last byte). `id_custom_save` (`0x09`) stores it. A settings reset sets Automatic.
+- Stored in two bytes of their own after the palm rejection's two (the value and its complement), so the settings keep their size and layout stamp. Bytes that don't check out read as Automatic.
+
+## Touchpad touch
+
+The touch page of `POINTING_MOTION` shows each pad's touch as the chip's tap and press-and-hold rules see it: where the finger touched down, where it is, how long it has been down, how far it has moved from the down point, and the chip's gesture events. It is for the editor's touchpad visualizer, so a user can see why a touch did or didn't click. It only watches: nothing about it changes what the pads report.
+
+- Discovery: GET_INFO byte 20, bit 6 (`sval_flag3_pad_touch`, `0x40`). The native touchpad builds set it; they read every finger's position from the chip. Other builds leave it zero, and answer the request below with the motion page.
+- Request: `DF 2D <reader> 01` (byte 3 is the page; `0`, or nothing, is the motion page above). Older firmware ignores byte 3 and answers with the motion page (format `1`).
+- It reads and clears the events only. It doesn't clear the motion counts, and it doesn't count as host activity.
+- The board follows the pads only while a host has read this page within the last 1.5 s. The half with USB then fetches the other pad's block over the split link every 16 ms. The first read after a pause starts fresh: a touch already down then shows from the next read.
+- Response: `DF 2D` then 56 bytes. `format` `0` means no data (the half without USB).
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | format = `2` |
+| 1 | 1 | bit 0 a tap clicks, bit 1 a two-finger tap right clicks, bit 2 press and hold presses the left button (`Touchpad taps`) |
+| 2 | 1 | ms since the previous touch-page read, up to 255; `0` on the first |
+| 3 | 1 | bit 0: bytes 48-55 hold each pad's finger size (firmware before it leaves them zero) |
+| 4 | 2 | the dead zone in force, 0.01 mm |
+| 6 | 2 | the tap time in force, ms |
+| 8 | 2 | the hold time in force, ms |
+| 10 | 2 | the pad's width, 0.01 mm (`4300`) |
+| 12 | 2 | the pad's height, 0.01 mm (`4000`) |
+| 14 | 16 | the left pad |
+| 30 | 16 | the right pad |
+| 46 | 2 | the scroll distance in force on the USB half's pad, 0.01 mm |
+| 48 | 3 | the left pad's first finger: touch strength (16-bit little-endian), then area (channels) |
+| 51 | 3 | the right pad's first finger, the same |
+| 54 | 1 | channels across the pad (TPS43: `8`) |
+| 55 | 1 | channels down the pad (TPS43: `7`) |
+
+Each pad:
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | flags: bit 0 valid (this pad is read and the block is live), bit 1 a finger is down, bit 2 the computer has this pad as a touchpad now (its clicks are the computer's, not the chip's; the mode in force, clear with built-in gestures, `Touchpad mode`), bit 3 this touch has left the dead zone, bits 4-6 fingers down now (0-5), bit 7 the chip reports press and hold now |
+| 1 | 1 | events since the last touch-page read: bit 0 touch down, bit 1 the last finger lifted, bit 2 the chip's single tap, bit 3 its two-finger tap, bit 4 press and hold began, bit 5 a scroll, bit 6 the touch left the dead zone while a tap or a hold could still fire (that cancels it), bit 7 a swipe or zoom |
+| 2 | 2 | x, 0.01 mm across the pad (the first finger) |
+| 4 | 2 | y, 0.01 mm down the pad |
+| 6 | 2 | down x, where this touch began |
+| 8 | 2 | down y |
+| 10 | 2 | ms since touch-down while a finger is down; the last touch's length after it lifts |
+| 12 | 2 | the farthest this touch has been from its down point, 0.01 mm |
+| 14 | 2 | the tap distance the chip has, pixels |
+
+- Coordinates are in the chip's own orientation on that pad, as `POINTING_CONTACTS` gives them, in 0.01 mm. While no finger is down, x and y are where the last touch lifted.
+- A single tap is reported as the finger lifts; press and hold at the tap time plus the hold time, while the touch has stayed inside the dead zone. Bit 6 of the events is the firmware's own check: Euclidean distance in the chip's pixels, more than the tap distance, before the tap time ends (or before the hold fires, with press and hold on). The chip doesn't report a cancel, and its datasheet doesn't say how it measures the distance, so a touch near the edge can come out either way.
+- A block that is not valid (no pad on that hand, or the other half is disconnected or has older firmware) is all zero.
+- Finger size: the chip's own numbers for the first finger (datasheet 5.2.4-5.2.5), zero while no finger is down. Touch strength is the sum of the finger's channel deltas: it rises with pressure and contact, and its scale depends on the pad's sensitivity, so it compares touches on one pad rather than measuring anything. Area is how many channels the finger covers. A channel is the pad's width and height divided by bytes 54 and 55 (about 5.4 x 5.7 mm on the TPS43), so area times that is roughly the contact's footprint. Both come from the contact read the native touchpad already makes every cycle: they cost no I2C, and the other half's reply grows by these 3 bytes inside its existing 32-byte split RPC.
+
+## Touchpad fingers
+
+The fingers page of `POINTING_MOTION` shows every finger the chip reports on each pad (up to 5), each with its position and area, and the chip's two-finger rule as it applies it: where the two fingers started, how far they have travelled on average, and whether the chip started a scroll or reported a two-finger tap. It is for the editor's touchpad visualizer, next to the touch page above. It only watches.
+
+- Discovery: GET_INFO byte 20, bit 7 (`sval_flag3_pad_fingers`, `0x80`). The native touchpad builds set it. Older firmware answers the request below with the motion page (format `1`).
+- Request: `DF 2D <reader> 02`. Read it beside the touch page (page 1); each page clears only its own events.
+- The board follows the fingers only while a host has read this page within the last 1.5 s, and then the half with USB fetches the other pad's block over the split link every 16 ms (its own split request, `0xA9`, a 29-byte reply inside the 32-byte RPC; older firmware answers it with zeros). The first read after a pause starts fresh.
+- Cost: the native touchpad already reads every finger that is down in each pad read (`drivers/sensors/azoteq_iqs5xx.c`, sized to the contacts), so this adds no I2C and changes nothing about the pads' reports. While the page is read, each half does a little arithmetic per pad read, and the split link carries one more 32-byte reply every 16 ms.
+- Response: `DF 2D` then 56 bytes. `format` `0` means no data (the half without USB).
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | format = `1` |
+| 1 | 1 | the palm rejection threshold in force, channels (`Touchpad palm rejection`); `0` off |
+| 2 | 27 | the left pad |
+| 29 | 27 | the right pad |
+
+Each pad:
+
+| off | size | field |
+|---|---|---|
+| 0 | 1 | flags: bit 0 valid, bit 1 the computer has this pad as a touchpad (its taps and scrolling are the computer's), bit 2 the chip's own palm detect is on now, bit 3 the chip sees more fingers than it reports, bit 4 a two-finger touch is live, bit 5 the chip reported a scroll during that two-finger touch, bit 6 the chip reported a two-finger tap since the last read, bit 7 bytes 22-26 hold a two-finger touch (the live one, or the last) |
+| 1 | 1 | the chip's finger slots that hold a finger now, bits 0-4 |
+| 2 | 20 | five slots of 4 bytes: `x \| y << 12`, 24-bit little-endian, in 0.02 mm across and down the pad; then the finger's area in channels. An empty slot is zero |
+| 22 | 3 | the two-finger touch's start: the centroid of the two fingers where they were when the second landed, as a slot's position |
+| 25 | 1 | the two fingers' average travel since then, 0.05 mm (up to 255) |
+| 26 | 1 | ms since the second finger landed (or how long the two-finger touch lasted), in 4 ms (up to 255) |
+
+- Slots are the chip's own (datasheet 5.2.6): a finger keeps its slot while it is down, so the slot number identifies it. Coordinates are in the chip's orientation on that pad, as the touch page gives them.
+- Two fingers (datasheet 6.4-6.7): a two-finger touch starts when a second finger lands beside a single one, and lasts while the same two, and only two, stay down. A third finger, or a lift, ends it, and only a new touch starts another (three fingers down to two is not one). The chip starts a scroll once the two fingers' average travel (each from where it was when the second landed) passes the scroll distance (`Touchpad tuning`, value 57), with the motion within the scroll angle of an axis; byte 25 is that average, so a host can draw it against the scroll distance. A two-finger tap is two taps at once: each finger inside the dead zone and lifted within the tap time; the chip reports it as they lift.
+- Position precision is 0.02 mm, plenty for drawing; the area is the chip's number for each finger (the touch page has the first finger's strength).
 
 ## Scan timing
 

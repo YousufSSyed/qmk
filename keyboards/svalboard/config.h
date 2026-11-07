@@ -35,6 +35,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define MATRIX_COLS  6
 #define PFET_ROWS
 #define EE_HANDS
+// Warning: DEBUG_MATRIX_SCAN_RATE forces debug on at every boot
+// (quantum/keyboard.c, and keyboard_post_init_kb then leaves it on), so the
+// debug console prints every key event (key_log.c) to any program on the
+// host. Dev builds only.
 //#define DEBUG_MATRIX_SCAN_RATE
 // Svalboard stores its config in VIA custom config area
 // saved_values_t (~54 bytes) + 3 bytes magic = ~60 bytes, round to 100
@@ -277,6 +281,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define USB_MAX_POWER_CONSUMPTION 500
 #define USB_SUSPEND_WAKEUP_DELAY 500
 #define SERIAL_USART_SPEED 1000000
+// The split link's receive on the half with USB goes by DMA, and QMK's own
+// per-scan transactions and the touchpad's snapshot fetch get a 3 ms deadline
+// (the other RPCs, the updater's relay among them, keep the 20 ms one):
+// platforms/chibios/drivers/vendor/RP/RP2040/serial_vendor.c,
+// platforms/chibios/drivers/serial_protocol.c, docs/native-touchpad.md.
+#define SERIAL_PIO_RX_DMA
+#define SERIAL_USART_SHORT_TIMEOUT 3
+// With the short deadline, ten failed scans can pass in a few tens of ms: the
+// link counts as disconnected (the other half's held keys released) once
+// failures have gone on for 200 ms instead (quantum/split_common/split_connection.h).
+#define SPLIT_MIN_DISCONNECT_MS 200
 
 #define MOUSE_EXTENDED_REPORT
 #define SPLIT_POINTING_ENABLE

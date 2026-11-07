@@ -29,6 +29,28 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fn
 "$out/test_timing"
 "$out/test_debounce"
 
+# Touchpad tap setting (kb/pad_gestures.c): defaults are today's behavior, each
+# switch, the hold time table, the stored record, the chip's gesture register
+# bytes, split sync with older halves.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$kb" "$root/tests/sval_pad_gestures/test_pad_gestures.c" "$kb/pad_gestures.c" -o "$out/test_pad_gestures"
+
+# Touchpad touch page (kb/pad_touch.c): touch down and up, the chip's gesture
+# events, drift out of the dead zone while a tap or a hold could fire, the
+# 16-byte block in 0.01 mm, events cleared by a read and kept by a merge.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$kb" "$root/tests/sval_pad_touch/test_pad_touch.c" "$kb/pad_touch.c" "$kb/pad_gestures.c" -o "$out/test_pad_touch"
+"$out/test_pad_touch"
+"$out/test_pad_gestures"
+
+# The key-event line on the debug console (kb/key_log.c): nothing while debug
+# is off, the KL: line while it is on; DEBUG_CONSOLE (Sval 0x3E,
+# kb/debug_console.c) with and without the console in the build.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all     -I"$root/tests/sval_key_log/stub" -I"$kb" "$root/tests/sval_key_log/test_key_log.c" -o "$out/test_key_log"
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DCONSOLE_ENABLE     -I"$root/tests/sval_key_log/stub" -I"$kb" "$root/tests/sval_key_log/test_key_log.c" -o "$out/test_key_log_console"
+"$out/test_key_log_console"
+"$out/test_key_log"
+
 # Settings reset on the first boot of a different firmware build (kb/build_reset.c).
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
     -DBUILD_RESET_HOST_TEST -I"$kb" "$tests/test_build_reset.c" "$kb/build_reset.c" -o "$out/test_build_reset"
@@ -53,6 +75,14 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined
 # The client ID lease (modules/svalboard/core/client_wrapper.c) across the
 # 32-bit timer wrap: the typing pause is tied to one ID.
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/tests/sval_client_id/stub" -I"$root/modules/svalboard/core"     "$root/tests/sval_client_id/test_client_id.c" -o "$out/test_client_id"
+# The split link's disconnection check (quantum/split_common/split_connection.h):
+# a time on top of the error count, so short receive deadlines never disconnect early.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -I"$root/quantum/split_common"     "$root/tests/sval_split/test_connection.c" -o "$out/test_split_connection"
+"$out/test_split_connection"
+# The link light's rules (keyboards/svalboard/link_light.c): armed by a pairing,
+# shown on a loss, cleared when it comes back, dark in USB suspend.
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O1 -g     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer     -DSVAL_LINK_HOST_TEST -I"$root/tests/sval_link" -I"$root/keyboards/svalboard"     "$root/tests/sval_link/test_link_light.c" -o "$out/test_link_light"
+"$out/test_link_light"
 "$out/test_flicker_latch"
 "$out/test_typing_pause"
 "$out/test_client_id"
