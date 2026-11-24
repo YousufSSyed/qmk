@@ -8,6 +8,18 @@
 #include "pointing_detect.h"
 #include "pad_gestures.h"
 #include "pad_touch.h"
+#include "pad_gesture_guard.h"
+
+// Gesture switches the build sets (drivers/sensors/azoteq_iqs5xx.c defaults).
+#ifndef AZOTEQ_IQS5XX_SWIPE_X_ENABLE
+#    define AZOTEQ_IQS5XX_SWIPE_X_ENABLE false
+#endif
+#ifndef AZOTEQ_IQS5XX_SWIPE_Y_ENABLE
+#    define AZOTEQ_IQS5XX_SWIPE_Y_ENABLE false
+#endif
+// A report the guard ignored (click diagnostics record it): why, the base
+// bytes after the guard, and the gesture bytes as the chip sent them.
+void sval_pad_guard_ignored_kb(uint8_t why, const uint8_t *base, uint8_t ge0, uint8_t ge1, bool woke);
 
 #ifdef SVAL_AZOTEQ_MULTITOUCH
 // Native touchpad builds (azoteq/multitouch.mk): every contact is read, and
@@ -90,7 +102,8 @@ static void azo_wake(void) {
 // glass gives about twice the touch deltas, so the stock touch thresholds
 // fire on noise and drift. Azoteq applications engineering's settings for
 // 0.7 mm glass (2026-04-24) double the touch multipliers and let the part
-// fall into its low-power, environment-tracking mode sooner. They are written
+// fall into its low-power, environment-tracking mode sooner (that part is not
+// applied by default; see SVAL_IQS_IDLE_MODE_TIMEOUT_S). They are written
 // at run time after every start of the chip, because the start resets the
 // chip (its runtime registers return to the stored settings) and the driver
 // then sets the idle timeout to 255 s. Nothing here writes the chip's stored
@@ -112,11 +125,12 @@ static void azo_wake(void) {
 #    define SVAL_IQS_LP1_REPORT_RATE_MS 50 // stock 80
 #endif
 // Seconds of no touch before the part drops from Idle into LP1 (ALP mode).
-// Azoteq: 2 s. The stock QMK driver sets 255 (never) to avoid the LP1 report
-// rate adding up to SVAL_IQS_LP1_REPORT_RATE_MS of first-touch latency; set
-// this to 255 to get that behavior back if the wake-up feels laggy.
+// 255 = never, as the stock QMK driver sets it: power-saving modes are off by
+// default. LP1 adds up to SVAL_IQS_LP1_REPORT_RATE_MS of first-touch latency,
+// and its first reads after waking can look like a phantom tap. Azoteq's glass
+// tuning suggests 2 s; build with that value to opt in.
 #ifndef SVAL_IQS_IDLE_MODE_TIMEOUT_S
-#    define SVAL_IQS_IDLE_MODE_TIMEOUT_S 2
+#    define SVAL_IQS_IDLE_MODE_TIMEOUT_S 255
 #endif
 
 static i2c_status_t sval_iqs_write(uint16_t reg, const uint8_t *data, uint16_t len) {
@@ -340,6 +354,51 @@ static void azo_gestures_task(void) {
     dprintf("IQS5XX: tap setting %02X %s\n", sval_pad_gestures(), status == I2C_STATUS_SUCCESS ? "written" : "FAILED");
 }
 
+// ------------------------------------------------------------------------
+// The chip's gesture reports (pad_gesture_guard.h): each read is checked
+// before the driver acts on it. A report of a gesture whose fingers were not
+// seen just before, or of exclusive gestures at once, is ignored, and the
+// Keybard touchpad settings are applied here too, not only to the chip's
+// enable bits, so an off setting never clicks.
+static pad_guard_t azo_guard;
+static uint16_t    azo_guard_ignored;
+
+uint16_t sval_pad_guard_ignored(void) {
+    return azo_guard_ignored;
+}
+
+bool azoteq_iqs5xx_frame_filter_kb(uint8_t *base, bool woke) {
+    static bool started = false;
+    if (!started) {
+        pad_guard_init(&azo_guard);
+        started = true;
+    }
+    const uint8_t         s   = sval_pad_gestures();
+    const pad_guard_cfg_t cfg = {
+        .tap        = sval_pad_tap_on(s),
+        .two_finger = sval_pad_two_finger_on(s),
+        .hold       = sval_pad_hold_on(s),
+        .swipes     = AZOTEQ_IQS5XX_SWIPE_X_ENABLE || AZOTEQ_IQS5XX_SWIPE_Y_ENABLE,
+        .tap_ms     = sval_pad_tap_time_ms(sval_pad_tuning()),
+    };
+    const uint8_t ge0 = base[PAD_B_GE0], ge1 = base[PAD_B_GE1];
+    const uint8_t why = pad_guard_frame(&azo_guard, &cfg, base, timer_read32(), woke);
+    if (why) {
+        if (azo_guard_ignored < UINT16_MAX) azo_guard_ignored++;
+        dprintf("IQS5XX: ignored report (reason %u): cycle %u ge0 %02X ge1 %02X sys %02X %02X fingers %u%s\n", why, base[PAD_B_CYCLE], ge0, ge1, base[PAD_B_SYS0], base[PAD_B_SYS1], base[PAD_B_FINGERS], woke ? " (woke)" : "");
+        sval_pad_guard_ignored_kb(why, base, ge0, ge1, woke);
+    }
+    return why != PAD_GUARD_BAD_FRAME;
+}
+
+__attribute__((weak)) void sval_pad_guard_ignored_kb(uint8_t why, const uint8_t *base, uint8_t ge0, uint8_t ge1, bool woke) {
+    (void)why;
+    (void)base;
+    (void)ge0;
+    (void)ge1;
+    (void)woke;
+}
+
 #ifdef SVAL_AZOTEQ_MULTITOUCH
 // Palm rejection on the mouse path (multitouch.c, pad_gestures.h).
 static sval_palm_mouse_t azo_palm;
@@ -375,8 +434,9 @@ report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
         pad_sched_done(&azo_sched, start, end, ok, !retried, slots, AZOTEQ_IQS5XX_REPORT_RATE * 1000u);
         mouse_report.x = azo_scale(mouse_report.x, azo_num_x, AZO_FULL_X, &azo_rem[0]);
         mouse_report.y = azo_scale(mouse_report.y, azo_num_y, AZO_FULL_Y, &azo_rem[1]);
-        mouse_report.h = azo_scale(mouse_report.h, azo_num_x, AZO_FULL_X, &azo_rem[2]);
-        mouse_report.v = azo_scale(mouse_report.v, azo_num_y, AZO_FULL_Y, &azo_rem[3]);
+        // A two-finger scroll stays in the pad's full-resolution pixels:
+        // keymaps/keymap_support.c turns it into wheel counts and applies
+        // the Scroll speed there (pad_scroll.h), so the pointer DPI does not change scroll.
     }
 #else
     if (timer_elapsed(azo_timer) >= AZO_MS) {
@@ -392,6 +452,16 @@ report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
         sval_perf_i2c(sval_perf_now_us() - started, true);
 #    endif
         azo_held_buttons = mouse_report.buttons;
+        // The chip counts a scroll in pixels of the resolution the DPI set;
+        // bring it to the pad's full resolution so one scroll unit serves
+        // every build (keymaps/keymap_support.c, pad_scroll.h).
+        if (azo_cached_cpi && (mouse_report.h || mouse_report.v)) {
+            uint32_t rx = ((uint32_t)azo_cached_cpi * 43u * 10u + 127u) / 254u, ry = ((uint32_t)azo_cached_cpi * 40u * 10u + 127u) / 254u;
+            if (rx > 2048u) rx = 2048u;
+            if (ry > 1792u) ry = 1792u;
+            if (rx && rx < 2048u) mouse_report.h = (int32_t)mouse_report.h * 2048 / (int32_t)rx;
+            if (ry && ry < 1792u) mouse_report.v = (int32_t)mouse_report.v * 1792 / (int32_t)ry;
+        }
     }
 #endif
 

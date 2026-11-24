@@ -343,7 +343,7 @@ STATS (`op 1`), over the newest bins:
 | 1 | 1 | status: `0` done, `1` unknown op (nothing changed), `2` the build has no console (nothing changed), `3` report too short, `0xFF` the keyboard has no handler for it (the module's default; nothing changed) |
 | 2 | 1 | the flag now: `0` off, `1` on |
 
-- While on, each key event prints one line, `KL: kc: 0x<keycode>, col: <c>, row: <r>, pressed: <0|1>, time: <ms>, int: <0|1>, count: <n>`, as do the firmware's other debug lines.
+- While on, each key event prints one line, `KL: kc: 0x<keycode> (<name>), col: <c>, row: <r>, pressed: <0|1>, time: <ms>, int: <0|1>, count: <n>`, as do the firmware's other debug lines.
 
 ## Debounce mode
 
@@ -425,6 +425,30 @@ Whether the pads are a touchpad when Windows or Linux asks for one. Touchpad mod
 - Two flags tell them apart. The mode in force: the touch pages' "the computer has this pad as a touchpad" bits and `0x2C`'s `SVAL_POINTER_OS_TOUCHPAD` (flags bit 4) are set only while the pad's contacts go to the computer, so they are clear with built-in gestures even while the computer asks. What the computer asked for: `0x2C`'s `SVAL_POINTER_OS_ASKS` (flags bit 6) is set while it has written Input Mode 3, whatever this setting. A host shows the gesture settings by the mode in force, or by this setting.
 - A write works at once and reaches the other half in the presence ping (its last byte). `id_custom_save` (`0x09`) stores it. A settings reset sets Automatic.
 - Stored in two bytes of their own after the palm rejection's two (the value and its complement), so the settings keep their size and layout stamp. Bytes that don't check out read as Automatic.
+
+## Scroll speed
+
+How fast motion becomes scroll, one setting per hand, the same on every pointing module. It applies wherever a hand's motion scrolls: Scroll Mode, the Scroll Toggle keys, Drag Scroll, and a touchpad's two-finger scroll in built-in gestures. Velocity Scroll has its own curve and is not changed by it. Sniper and Boost still act on top while held.
+
+- Discovery: GET_INFO byte 21, bit 5 (`sval_flag4_scroll_speed`, `0x20`). Every build sets it. Older firmware leaves it zero. (Bit 3 is the trackball sensor page, `0x39`. The test build set bit 4 for value `60` alone, so a host must not read bit 4 as values `61` and `62`.)
+- Values `61` (`id_scroll_speed_left`) and `62` (`id_scroll_speed_right`), channel `0`, 16-bit little-endian: the hand's Scroll speed as a percent, 20 to 1000 (0.2x to 10x); 100 is 1.0x, the default. A write outside the range stores the nearest end. Read it back for the stored value.
+- Value `60` (`id_pad_scroll_speed_alias`) answers as the touchpad hand's Scroll speed, for a host written against the test build that had it: a write sets every touchpad hand (the right hand when none is known), a read returns the first one. Bit 4 of byte 21 (`sval_flag4_pad_scroll_speed_alias`, `0x10`) says so, the bit the test build set for it; Azoteq builds set it.
+- Independent of Pointer speed: motion becomes millimeters first, then wheel counts at a fixed rate, then the Scroll speed. A trackball counts x 25.4 / DPI mm, with 31.5 hi-res counts per mm at 1.0x (what 800 DPI scrolled before). A touchpad scrolls 170 pad pixels per detent at 1.0x (180 pixels per line on a Mac). A TrackPoint scrolls its raw counts as 800 DPI does (its DPI setting does nothing). The pointer's DPI is not an input. Remainders carry, so slow scroll is not lost.
+- The computer's own divisor applies after the multiplier, so 2.0x is twice as fast on a Mac and on Windows.
+- A write works at once. `id_custom_save` (`0x09`) stores it. A settings reset sets 1.0x. All scroll conversion runs on the half with USB, so nothing syncs between the halves.
+- First boot of this firmware on settings saved without it: each hand's Scroll speed is set to its DPI over 800, so scrolling does not change (a touchpad counts at most 1210 DPI, so 151%; a TrackPoint stays at 100%; above 8000 DPI the speed stops at 1000). A board that ran the test build keeps its touchpad speed (value `60`). The speed is set once the hand's module is known, a second or two after boot, and a speed a host writes before that is kept.
+- A touchpad hand's saved DPI index is lowered at boot to the touchpad's maximum, 1200, and written back. Behavior is the same, since the pointer already stopped gaining there; the stored value now matches.
+- Stored in five bytes of their own after the touchpad mode's two and three more that the test build used (left, right, and a check byte), so the settings keep their size and layout stamp. Bytes that don't check out are not a record, and the migration above runs.
+
+## Pointer speed per module
+
+The DPI list (`id_left_dpi` 1 and `id_right_dpi` 3, an index) now ends at 16000, appended after 12000 so saved indexes stay valid. Each hand's list stops at its module's maximum: touchpad 1200, PMW3360 12000, PMW3389 16000, TrackPoint 3200. The DPI step keys stop there, and a write above it stores the maximum. Before a hand's module is known the whole list is allowed.
+
+- A touchpad hand's saved index is held to 1200 at boot (Scroll speed, above), and a trackball hand's to its sensor's maximum.
+- Discovery: GET_INFO byte 21, bit 6 (`sval_flag4_trackpoint_speed`, `0x40`): a TrackPoint's DPI list is its Pointer speed. Every build sets it. Older firmware leaves it zero, and there a TrackPoint's DPI does nothing.
+- A TrackPoint has no DPI to set. Its list is a software Pointer speed applied to its counts as DPI over 800, with remainders carried: 800 is 1:1, exactly the motion it has always had; 400 is half, 1600 double, up to 3200 (4x). The half the TrackPoint is on applies it, so the speed reaches it the way a DPI does.
+- First boot of this firmware on settings saved without a Scroll speed: a TrackPoint hand's saved index is set to 800 (index 3), since its DPI did nothing before, so its motion does not change. A touch of the TrackPoint in the second or two before its module is known can still use the old index.
+- Scroll does not follow Pointer speed: a TrackPoint's scaled counts divide by the speed's DPI for scroll, so Scroll speed gives the same scroll at every Pointer speed.
 
 ## Touchpad touch
 
@@ -517,6 +541,16 @@ The board scans its keys with two saved waits per row, in microseconds: before r
 - The `SV_TURBO_SCAN` key steps both waits to the first preset faster than the slower wait now, and from 15 µs (or faster) back to 90, and saves them. On a board at 45 / 5 µs it goes to 30 / 30.
 - Upgrading: firmware before this stored `0` in a wait to mean "use the turbo table at the saved turbo index". At the first boot, a wait of `0` is filled in from the table with that index, and saved, so every board keeps the timing it ran. A board on turbo 6 with both waits at 0 reads 15 / 15 afterwards; one on turbo 0, 90 / 90; explicit waits are kept as they are. The settings keep their size and layout stamp, so nothing else resets. The byte that held the turbo index now holds the auto mouse layer timeout (below).
 - Split: the half with USB sends both waits in the presence ping (every 0.5 s), as before, with the matching preset (0 for none) in the turbo byte. The other half uses them and doesn't store them. Waits are never 0 now, so an older half without USB runs them too. A new half without USB under an older half with USB that still sends 0 fills a 0 wait in from the turbo byte, as before.
+
+## Auto mouse layers
+
+The layers where pointer motion does not switch to the auto mouse layer.
+
+- Discovery: GET_INFO byte 21 (the fourth feature byte), bit 7 (`sval_flag4_automouse_layers`, `0x80`). Every Svalboard build sets it. Older firmware leaves it zero and doesn't answer the values below; a host must not write them then.
+- `id_automouse_layers_only` (VIA value `63`): `0`, Everywhere (the default, and the behavior before this setting); `1`, Only on Selected Layers.
+- `id_automouse_layer_mask` (VIA value `64`), 16-bit little-endian: bit `n` set, Auto Mouse is off on layer `n`. It counts only while value 63 is `1`, so a host can switch back to Everywhere without losing the layers picked. The auto mouse layer's own bit (layer 15) never counts.
+- The layer that counts is the highest active layer other than the auto mouse layer, with the default layer included: the layer the user is on, however they reached it. While it is a disabled layer, motion neither turns the mouse layer on nor counts toward the activation threshold, and a mouse layer already on goes off at the next scan once no mouse button is held. Mouse keys pressed on the mouse layer behave as before.
+- Storage: settings area record 9 (`settings_ids.h`), 4 bytes: `[mode][mask lo][mask hi][0xA5 ^ the three]`. A board with no record (or a record that fails the check) reads as Everywhere with no layers, the behavior before this setting.
 
 ## Auto mouse layer timeout
 

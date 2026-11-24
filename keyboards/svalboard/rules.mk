@@ -10,7 +10,11 @@ WS2812_DRIVER   = vendor
 
 CUSTOM_MATRIX = lite
 
-SRC += key_log.c debug_console.c axis_scale.c sval_timing.c matrix.c mainboard.c scanlab.c power.c identity.c pointing_detect.c pointer_reprobe.c build_reset.c velocity_scroll.c pad_follow.c typing_pause.c flicker_latch.c squal.c
+# Key names for the debug console's key log (keycode_names.c).
+KEYCODE_STRING_ENABLE = yes
+SRC += keycode_names.c
+SRC += automouse_layers.c
+SRC += settings_area.c key_log.c debug_console.c axis_scale.c sval_timing.c matrix.c mainboard.c scanlab.c power.c identity.c pointing_detect.c pointer_reprobe.c build_reset.c velocity_scroll.c pad_follow.c pad_scroll.c scroll_speed.c pointer_speed.c wheel_pace.c typing_pause.c flicker_latch.c squal.c
 # Every firmware restart is a full chip reset (full_reset.c).
 SRC += full_reset.c
 
@@ -84,6 +88,17 @@ ifeq ($(strip $(SVAL_PERF_STATS)), yes)
   endif
   OPT_DEFS += -DSVAL_PERF_STATS
   SRC += perf.c
+endif
+
+# Scroll test motion (scroll_test.h: raw HID 0xFC op 0x44, synthetic sensor
+# motion for unattended wheel measurements). Dev builds only: opt in with
+# -e SVAL_SCROLL_TEST=yes; release builds refuse it.
+ifeq ($(strip $(SVAL_SCROLL_TEST)), yes)
+  ifeq ($(strip $(SVAL_UPDATE_RELEASE)), yes)
+    $(error SVAL_SCROLL_TEST cannot be part of a release build)
+  endif
+  OPT_DEFS += -DSVAL_SCROLL_TEST
+  SRC += scroll_test.c
 endif
 
 # Bench builds that reset stored settings when flashed over other firmware; opt in with -e SVAL_TEST_WIPE=yes.
@@ -163,6 +178,13 @@ ifeq ($(strip $(SVAL_UPDATER)), yes)
       $(error SVAL_UPDATE_NO_CHORD cannot be part of a release build)
     endif
     OPT_DEFS += -DSVAL_UPDATE_NO_CHORD
+  endif
+  # Relay fault injection for the test boards (docs/updater.md, "Relay faults").
+  ifeq ($(strip $(SVAL_RELAY_FAULTS)), yes)
+    ifneq ($(strip $(SVAL_UPDATE_TEST_HOOKS)), yes)
+      $(error SVAL_RELAY_FAULTS needs SVAL_UPDATE_TEST_HOOKS=yes)
+    endif
+    OPT_DEFS += -DSVAL_RELAY_FAULTS
   endif
   ifeq ($(strip $(SVAL_UPDATE_RELEASE)), yes)
     OPT_DEFS += -DSVAL_UPDATE_RELEASE

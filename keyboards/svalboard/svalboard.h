@@ -21,6 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "quantum.h"
 #include "pointing_motion_vs.h"
 #include "sval_timing.h"
+#include "automouse_layers.h"
 
 struct layer_hsv {
     uint8_t hue;
@@ -57,6 +58,10 @@ struct __attribute__((__packed__)) saved_values {
     uint8_t  idle_flags;          // SVAL_IDLE_* bits: pointer rest, RGB dim, CPU sleep, low clock, long naps
     uint8_t  scan_deep_clock_idx; // deep-idle clock when SVAL_IDLE_LOW_CLOCK: 0 = 48 MHz, 1 = 24 MHz, 2 = 12 MHz
 };
+
+// Auto Mouse layers (automouse_layers.h), saved in their own record.
+extern uint8_t  sval_automouse_layers_mode;
+extern uint16_t sval_automouse_layer_mask;
 
 // RPC structure for split keyboard sync
 typedef struct __attribute__((__packed__)) _presence_rpc_t {
@@ -216,6 +221,13 @@ bool     sval_pad_palm_supported(void);
 // for a touchpad. Native touchpad builds (azoteq/ptp.c) apply it.
 bool     sval_pad_builtin_gestures(void);
 uint8_t  sval_pad_hands(void);                                                  // hands whose pointing module is an Azoteq pad (bit 0 left, bit 1 right)
+// Scroll speed (scroll_speed.h): a hand's multiplier in percent (hand 0 left, 1 right), and its
+// module's kind (enum sval_scroll_kind: trackball, pad, TrackPoint).
+uint16_t sval_scroll_speed(uint8_t hand);
+uint8_t  sval_hand_scroll_kind(uint8_t hand);
+// The highest DPI index a hand's module reaches, and an index held to it (pointer_speed.h).
+uint8_t  sval_hand_dpi_limit(uint8_t hand);
+uint8_t  sval_hand_dpi_clamp(uint8_t hand, uint8_t index);
 void     sval_scan_timing(uint16_t *pre, uint16_t *post);                       // matrix.c
 uint8_t  sval_pushed_mask(bool thumbs);                                         // matrix.c
 void     sval_row_drive_raw(uint8_t row, bool on);                              // matrix.c: no critical section
